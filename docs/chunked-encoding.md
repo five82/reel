@@ -1,18 +1,17 @@
 # Chunked Encoding in Reel
 
-This document explains reel's parallel chunked encoding system, covering the complete pipeline from scene detection through final muxing.
+This document explains reel's parallel chunked encoding system, covering the complete pipeline from chunking through final muxing.
 
 ## Overview
 
-Reel uses a **scene-based chunked encoding** approach where:
+Reel uses a **fixed-length chunked encoding** approach where:
 
-1. The source video is analyzed for scene changes
-2. The video is split into chunks at scene boundaries
-3. Multiple chunks are encoded in parallel using SVT-AV1
-4. Encoded chunks are concatenated back into a single video
-5. Audio is re-encoded and muxed with the final video
+1. The source video is split into fixed-length chunks
+2. Multiple chunks are encoded in parallel using SVT-AV1
+3. Encoded chunks are concatenated back into a single video
+4. Audio is re-encoded and muxed with the final video
 
-This approach enables efficient parallelization while maintaining quality at scene transitions.
+This approach enables efficient parallelization with predictable chunk sizes.
 
 ## Pipeline Stages
 
@@ -26,12 +25,7 @@ Input Video
          │
          ▼
 ┌─────────────────┐
-│ Scene Detection │ ─── FFmpeg scene filter identifies cut points
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Chunk Creation  │ ─── Split long scenes, create chunk list
+│ Chunk Creation  │ ─── Split video into fixed-length chunks
 └────────┬────────┘
          │
          ▼
@@ -88,67 +82,32 @@ The index is cached as a `.ffindex` file alongside the source, allowing resume w
 - HDR mastering display metadata
 - Content light level information
 
-## Stage 2: Scene Detection
+## Stage 2: Chunk Creation
 
-Scene detection identifies natural cut points in the video where quality loss from chunk boundaries would be invisible.
+The video is divided into fixed-length chunks for parallel encoding.
 
-### How It Works
+### Chunk Size
 
-FFmpeg's `select` filter analyzes frame-to-frame differences:
-
-```
-ffmpeg -i input -vf "select='gt(scene,threshold)',showinfo" -an -f null -
-```
-
-The filter outputs timestamps where the scene change score exceeds the threshold. These timestamps are converted to frame numbers using the video's frame rate.
-
-### Settings
-
-| Setting | Default | Range | Description |
-|---------|---------|-------|-------------|
-| `SceneThreshold` | 0.5 | 0.0-1.0 | Higher values = fewer, larger scenes |
-
-A threshold of 0.5 works well for most content. Lower values (0.3) may be needed for fast-paced action; higher values (0.7) for static content.
-
-### Output
-
-Scene boundaries are written to `scenes.txt` in the work directory:
+Chunks use a fixed frame count based on the video's frame rate:
 
 ```
-0
-847
-1623
-2891
-...
-```
-
-Each line is a frame number marking a scene start (and the end of the previous scene).
-
-## Stage 3: Chunk Creation
-
-Scene boundaries are converted into encoding chunks with validation and splitting of overly long scenes.
-
-### Maximum Chunk Size
-
-To prevent memory issues and ensure reasonable encoding times, scenes are limited to:
-
-```
-max_frames = min(fps × 30, 1000)
+chunk_frames = min(fps × 30, 1000)
 ```
 
 For 24fps content, this is 720 frames (~30 seconds). For 60fps, it's 1000 frames (~17 seconds).
 
-### Long Scene Splitting
-
-Scenes exceeding the maximum are split into equal parts:
+### Example
 
 ```
-Original scene: frames 0-2000 (2000 frames)
-Max frames: 1000
+Total frames: 5000
+Chunk size: 1000 frames
 
 Result:
   Chunk 0: frames 0-1000
   Chunk 1: frames 1000-2000
+  Chunk 2: frames 2000-3000
+  Chunk 3: frames 3000-4000
+  Chunk 4: frames 4000-5000
 ```
 
 ### Chunk Data Structure
@@ -158,7 +117,7 @@ Each chunk contains:
 - **Start frame**: Inclusive
 - **End frame**: Exclusive
 
-## Stage 4: Crop Detection
+## Stage 3: Crop Detection
 
 Automatic black bar detection identifies letterboxing/pillarboxing for removal.
 
@@ -177,7 +136,7 @@ Automatic black bar detection identifies letterboxing/pillarboxing for removal.
 
 When disabled (`--no-crop`), the full frame is encoded.
 
-## Stage 5: Parallel Encoding
+## Stage 4: Parallel Encoding
 
 The core of reel's performance comes from parallel chunk encoding.
 
@@ -272,8 +231,8 @@ SvtAv1EncApp \
 ```
 
 Key parameters:
-- `--keyint 0`: No forced keyframes (scenes already split at cuts)
-- `--scd 0`: Disable internal scene detection (already done)
+- `--keyint 0`: No forced keyframes (each chunk starts fresh)
+- `--scd 0`: Disable internal scene detection
 - `--passes 1`: Single-pass encoding
 - `--rc 0`: CRF (constant quality) mode
 
@@ -292,7 +251,7 @@ Format: `{chunk_index} {frame_count} {file_size}`
 
 On resume, completed chunks are skipped and encoding continues from where it stopped.
 
-## Stage 6: Chunk Concatenation
+## Stage 5: Chunk Concatenation
 
 Encoded IVF files are merged into a single video stream.
 
@@ -325,7 +284,7 @@ For videos with more than 500 chunks, a batched approach is used:
 
 This avoids FFmpeg limitations with very large file lists.
 
-## Stage 7: Audio Encoding
+## Stage 6: Audio Encoding
 
 Audio is extracted from the source and re-encoded to Opus.
 
@@ -352,7 +311,7 @@ ffmpeg -i source \
   audio.mka
 ```
 
-## Stage 8: Final Muxing
+## Stage 7: Final Muxing
 
 The final step combines all components into the output MKV.
 
@@ -411,7 +370,6 @@ ffmpeg \
 | Setting | CLI Flag | Default | Description |
 |---------|----------|---------|-------------|
 | Crop Mode | `--no-crop` | auto | Disable auto-cropping |
-| Scene Threshold | `--scene-threshold` | 0.5 | Scene detection sensitivity |
 
 ### Parallel Encoding Settings
 
@@ -428,7 +386,6 @@ work_dir/
 │   ├── 0000.ivf      # Encoded chunk 0
 │   ├── 0001.ivf      # Encoded chunk 1
 │   └── ...
-├── scenes.txt        # Scene boundaries
 ├── done.txt          # Completed chunks (for resume)
 ├── video.mkv         # Concatenated video
 ├── audio.mka         # Encoded audio
@@ -451,12 +408,12 @@ The buffer setting controls how many chunks can be dispatched ahead:
 - Increase for smoother worker utilization
 - Has minimal memory impact (only chunk metadata is buffered, not frames)
 
-### Scene Detection
+### Chunk Size
 
-Lower scene thresholds create more (smaller) chunks:
-- More parallelism opportunities
-- More overhead from chunk boundaries
-- Generally, default (0.5) works well
+Fixed-length chunks provide predictable encoding behavior:
+- Consistent memory usage per worker
+- Predictable encoding progress
+- Simple resume semantics
 
 ## Troubleshooting
 
@@ -480,6 +437,4 @@ Simply re-run the same command. Completed chunks in `done.txt` will be skipped.
 
 ### Quality Issues at Chunk Boundaries
 
-This shouldn't happen with scene-based splitting. If visible:
-1. Lower scene threshold for more cuts at natural boundaries
-2. Check that keyframes align with scene changes
+With fixed-length chunks, boundaries may occasionally fall mid-scene. SVT-AV1's internal quality management typically handles this well. If visible artifacts occur at chunk boundaries, this is a known limitation of the fixed-length approach.

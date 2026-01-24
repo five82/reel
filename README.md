@@ -1,10 +1,10 @@
 # reel
 
-FFmpeg wrapper for AV1 encoding with SVT-AV1 and Opus audio. Uses opinionated defaults so you can encode without dealing with ffmpeg's complexity.
+AV1 encoding tool using SvtAv1EncApp and FFMS2 for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
 
 ## Features
 
-- Parallel chunked encoding with scene-based splitting
+- Parallel chunked encoding with fixed-length chunks
 - Automatic black bar crop detection
 - HDR10/HLG metadata preservation
 - Multi-track audio transcoding to Opus
@@ -14,17 +14,17 @@ FFmpeg wrapper for AV1 encoding with SVT-AV1 and Opus audio. Uses opinionated de
 ## Requirements
 
 - Go 1.25+
-- FFmpeg with `libsvtav1` and `libopus`
 - SvtAv1EncApp (SVT-AV1 standalone encoder)
 - FFMS2 (for frame-accurate video indexing)
+- FFmpeg with `libopus` (for audio transcoding)
 - MediaInfo
 
 ```bash
 # Ubuntu/Debian
 sudo apt-get install ffmpeg mediainfo libffms2-dev svt-av1
 
-# Verify FFmpeg has required encoders
-ffmpeg -encoders | grep -E "svtav1|opus"
+# Verify FFmpeg has Opus encoder
+ffmpeg -encoders | grep opus
 ```
 
 ## Install
@@ -112,7 +112,7 @@ reel/
     ├── encoder/        # SVT-AV1 command building
     ├── encode/         # Parallel chunk encoding pipeline
     ├── chunk/          # Chunk management
-    ├── keyframe/       # Scene detection and keyframe extraction
+    ├── keyframe/       # Keyframe extraction
     ├── worker/         # Worker pool for parallel encoding
     ├── ffms/           # FFMS2 bindings for frame indexing
     ├── ffmpeg/         # FFmpeg parameter building

@@ -46,7 +46,7 @@ reel encode -v -i input.mkv -o output/
 
 ## Parallel Chunked Encoding
 
-Reel splits videos at scene boundaries and encodes chunks in parallel:
+Reel splits videos into fixed-length chunks and encodes them in parallel:
 
 ```bash
 # Auto-detected parallelism (1 worker per 8 CPU cores, max 4)
