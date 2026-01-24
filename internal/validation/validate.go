@@ -5,8 +5,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/five82/drapto/internal/ffprobe"
-	"github.com/five82/drapto/internal/mediainfo"
+	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/mediainfo"
 )
 
 const (

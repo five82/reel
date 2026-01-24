@@ -2,7 +2,7 @@
 package validation
 
 import (
-	"github.com/five82/drapto/internal/mediainfo"
+	"github.com/five82/reel/internal/mediainfo"
 )
 
 // HDRValidationResult contains the result of HDR validation.

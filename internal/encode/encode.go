@@ -8,11 +8,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/five82/drapto/internal/chunk"
-	"github.com/five82/drapto/internal/encoder"
-	"github.com/five82/drapto/internal/ffms"
-	"github.com/five82/drapto/internal/util"
-	"github.com/five82/drapto/internal/worker"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/encoder"
+	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/worker"
 )
 
 // EncodeConfig contains configuration for the parallel encode pipeline.

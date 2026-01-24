@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/five82/drapto/internal/ffms"
+	"github.com/five82/reel/internal/ffms"
 )
 
 // writeConcatFile writes a FFmpeg concat file with the given paths.

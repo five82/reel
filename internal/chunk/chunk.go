@@ -257,5 +257,5 @@ func WorkDirName(inputPath string) string {
 	// Remove extension
 	ext := filepath.Ext(base)
 	name := base[:len(base)-len(ext)]
-	return fmt.Sprintf(".drapto-%s", name)
+	return fmt.Sprintf(".reel-%s", name)
 }

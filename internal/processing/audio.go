@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/five82/drapto/internal/ffmpeg"
-	"github.com/five82/drapto/internal/ffprobe"
+	"github.com/five82/reel/internal/ffmpeg"
+	"github.com/five82/reel/internal/ffprobe"
 )
 
 // GetAudioChannels returns audio channel counts for a file.

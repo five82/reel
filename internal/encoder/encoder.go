@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/five82/drapto/internal/ffms"
+	"github.com/five82/reel/internal/ffms"
 )
 
 const svtEncBinary = "SvtAv1EncApp"

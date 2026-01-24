@@ -1,24 +1,24 @@
 # Usage Guide
 
-Run `drapto encode --help` for the authoritative flag list. The sections below provide practical context.
+Run `reel encode --help` for the authoritative flag list. The sections below provide practical context.
 
 ## CLI Basics
 
 ```bash
 # Basic encode
-drapto encode -i input.mkv -o output/
+reel encode -i input.mkv -o output/
 
 # Batch encode an entire directory
-drapto encode -i /videos/ -o /encoded/
+reel encode -i /videos/ -o /encoded/
 
 # Override quality settings
-drapto encode -i input.mkv -o output/ --crf 24 --preset 6
+reel encode -i input.mkv -o output/ --crf 24 --preset 6
 
 # Resolution-specific CRF (SD, HD, UHD)
-drapto encode -i input.mkv -o output/ --crf 25,27,29
+reel encode -i input.mkv -o output/ --crf 25,27,29
 
 # Verbose output
-drapto encode -v -i input.mkv -o output/
+reel encode -v -i input.mkv -o output/
 ```
 
 ## Frequently Used Options
@@ -40,30 +40,30 @@ drapto encode -v -i input.mkv -o output/
 - `--disable-autocrop`: Skip black-bar detection and cropping
 
 **Output**
-- `-l, --log-dir <DIR>`: Override the log directory (defaults to `~/.local/state/drapto/logs`)
+- `-l, --log-dir <DIR>`: Override the log directory (defaults to `~/.local/state/reel/logs`)
 - `-v, --verbose`: Verbose output with detailed status
 - `--no-log`: Disable log file creation
 
 ## Parallel Chunked Encoding
 
-Drapto splits videos at scene boundaries and encodes chunks in parallel:
+Reel splits videos at scene boundaries and encodes chunks in parallel:
 
 ```bash
 # Auto-detected parallelism (1 worker per 8 CPU cores, max 4)
-drapto encode -i input.mkv -o output/
+reel encode -i input.mkv -o output/
 
 # Manual worker count
-drapto encode -i input.mkv -o output/ --workers 8 --buffer 8
+reel encode -i input.mkv -o output/ --workers 8 --buffer 8
 
 # Adjust threads per worker
-drapto encode -i input.mkv -o output/ --workers 2 --threads 4
+reel encode -i input.mkv -o output/ --workers 2 --threads 4
 ```
 
 See [docs/chunked-encoding.md](chunked-encoding.md) for details on how chunked encoding works.
 
 ## HDR Support
 
-Drapto automatically detects and preserves HDR content using MediaInfo for color space analysis:
+Reel automatically detects and preserves HDR content using MediaInfo for color space analysis:
 - Detects HDR based on color primaries (BT.2020, BT.2100)
 - Recognizes HDR transfer characteristics (PQ, HLG)
 - Adapts processing parameters and metadata handling for HDR sources
@@ -100,8 +100,8 @@ Foreground runs show real-time progress with ETA, fps, and reduction stats. For 
 
 ```bash
 # Verbose logging
-drapto encode -v -i input.mkv -o output/
+reel encode -v -i input.mkv -o output/
 
 # Check log files
-ls ~/.local/state/drapto/logs/
+ls ~/.local/state/reel/logs/
 ```

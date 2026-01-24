@@ -1,4 +1,4 @@
-module github.com/five82/drapto
+module github.com/five82/reel
 
 go 1.25
 

@@ -1,11 +1,11 @@
-// Package drapto provides a Go library for AV1 video encoding with SVT-AV1.
+// Package reel provides a Go library for AV1 video encoding with SVT-AV1.
 //
 // This file re-exports the internal Reporter interface and associated types
 // to allow callers to receive all encoding events directly.
 
-package drapto
+package reel
 
-import "github.com/five82/drapto/internal/reporter"
+import "github.com/five82/reel/internal/reporter"
 
 // Reporter defines the interface for progress reporting during encoding.
 // Implement this interface to receive detailed events about encoding progress.

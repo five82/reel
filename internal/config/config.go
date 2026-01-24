@@ -1,4 +1,4 @@
-// Package config provides configuration types and defaults for drapto.
+// Package config provides configuration types and defaults for reel.
 package config
 
 import "fmt"

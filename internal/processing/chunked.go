@@ -10,14 +10,14 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/five82/drapto/internal/chunk"
-	"github.com/five82/drapto/internal/config"
-	"github.com/five82/drapto/internal/encode"
-	"github.com/five82/drapto/internal/ffms"
-	"github.com/five82/drapto/internal/ffprobe"
-	"github.com/five82/drapto/internal/keyframe"
-	"github.com/five82/drapto/internal/reporter"
-	"github.com/five82/drapto/internal/worker"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/encode"
+	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/keyframe"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/worker"
 )
 
 // ProcessChunked runs the chunked encoding pipeline for a single file.

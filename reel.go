@@ -1,13 +1,13 @@
-// Package drapto provides a Go library for AV1 video encoding with SVT-AV1.
+// Package reel provides a Go library for AV1 video encoding with SVT-AV1.
 //
-// Drapto is an opinionated FFmpeg wrapper that handles the complexity of
+// Reel is an opinionated FFmpeg wrapper that handles the complexity of
 // AV1 encoding with sensible defaults, automatic crop detection, HDR metadata
 // preservation, and post-encode validation.
 //
 // Basic usage:
 //
-//	encoder, err := drapto.New(
-//	    drapto.WithCRF(27),
+//	encoder, err := reel.New(
+//	    reel.WithCRF(27),
 //	)
 //	if err != nil {
 //	    log.Fatal(err)
@@ -20,17 +20,17 @@
 //
 //	fmt.Printf("Encoded: %s, reduction: %.1f%%\n",
 //	    result.OutputFile, result.SizeReductionPercent)
-package drapto
+package reel
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/five82/drapto/internal/config"
-	"github.com/five82/drapto/internal/discovery"
-	"github.com/five82/drapto/internal/processing"
-	"github.com/five82/drapto/internal/reporter"
-	"github.com/five82/drapto/internal/util"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/discovery"
+	"github.com/five82/reel/internal/processing"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/util"
 )
 
 // Encoder is the main entry point for video encoding.

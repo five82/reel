@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/five82/drapto/internal/ffprobe"
+	"github.com/five82/reel/internal/ffprobe"
 )
 
 // ExtractAudio extracts audio streams from the source video.

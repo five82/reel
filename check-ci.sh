@@ -1,5 +1,5 @@
 #!/bin/bash
-# Local CI check for drapto.
+# Local CI check for reel.
 # Mirrors the GitHub Actions workflow.
 
 set -euo pipefail

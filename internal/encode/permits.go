@@ -1,6 +1,6 @@
 package encode
 
-import "github.com/five82/drapto/internal/util"
+import "github.com/five82/reel/internal/util"
 
 // Estimated memory per worker by resolution (bytes).
 // Based on real-world SVT-AV1 measurements.

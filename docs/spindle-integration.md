@@ -1,28 +1,28 @@
 # Spindle Integration
 
-Drapto is designed to be embedded by Spindle during the `ENCODING` stage. This document covers the integration contract.
+Reel is designed to be embedded by Spindle during the `ENCODING` stage. This document covers the integration contract.
 
 ## Library API
 
 ```go
-import "github.com/five82/drapto"
+import "github.com/five82/reel"
 
 // Create encoder with options
-encoder, err := drapto.New(
-    drapto.WithCRF(27),
-    drapto.WithWorkers(4),
-    drapto.WithChunkBuffer(4),
+encoder, err := reel.New(
+    reel.WithCRF(27),
+    reel.WithWorkers(4),
+    reel.WithChunkBuffer(4),
 )
 if err != nil {
     log.Fatal(err)
 }
 
 // Encode with progress callback
-result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event drapto.Event) error {
+result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event reel.Event) error {
     switch e := event.(type) {
-    case drapto.EncodingProgressEvent:
+    case reel.EncodingProgressEvent:
         fmt.Printf("Progress: %.1f%%\n", e.Percent)
-    case drapto.EncodingCompleteEvent:
+    case reel.EncodingCompleteEvent:
         fmt.Printf("Done: %.1f%% reduction\n", e.SizeReductionPercent)
     }
     return nil
@@ -33,13 +33,13 @@ result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event drapto.Eve
 
 ```go
 // Quality settings
-drapto.WithCRF(crf uint8)                        // CRF quality level (0-63, lower = better)
-drapto.WithCRFByResolution(sd, hd, uhd uint8)    // Resolution-specific CRF values
+reel.WithCRF(crf uint8)                        // CRF quality level (0-63, lower = better)
+reel.WithCRFByResolution(sd, hd, uhd uint8)    // Resolution-specific CRF values
 
 // Processing options
-drapto.WithDisableAutocrop()                     // Skip automatic crop detection
-drapto.WithWorkers(n int)                        // Number of parallel encoder workers
-drapto.WithChunkBuffer(n int)                    // Extra chunks to buffer in memory
+reel.WithDisableAutocrop()                     // Skip automatic crop detection
+reel.WithWorkers(n int)                        // Number of parallel encoder workers
+reel.WithChunkBuffer(n int)                    // Extra chunks to buffer in memory
 ```
 
 ## Encoding Methods
@@ -55,7 +55,7 @@ result, err := encoder.EncodeWithReporter(ctx, input, outputDir, reporter)
 batchResult, err := encoder.EncodeBatch(ctx, inputs, outputDir, handler)
 
 // Find video files in directory
-files, err := drapto.FindVideos(dir)
+files, err := reel.FindVideos(dir)
 ```
 
 ## Result Types
@@ -83,7 +83,7 @@ type BatchResult struct {
 
 ## Event Types
 
-All events implement `drapto.Event` interface with `Type()` and `Timestamp()` methods.
+All events implement `reel.Event` interface with `Type()` and `Timestamp()` methods.
 
 ### Progress Events
 

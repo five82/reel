@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/five82/drapto/internal/util"
+	"github.com/five82/reel/internal/util"
 )
 
 // FindVideoFiles finds video files in the given directory.

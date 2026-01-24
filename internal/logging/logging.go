@@ -1,4 +1,4 @@
-// Package logging provides file logging for drapto CLI.
+// Package logging provides file logging for reel CLI.
 package logging
 
 import (
@@ -12,17 +12,17 @@ import (
 )
 
 // DefaultLogDir returns the default log directory following XDG Base Directory Spec.
-// Uses $XDG_STATE_HOME/drapto/logs, defaulting to ~/.local/state/drapto/logs.
+// Uses $XDG_STATE_HOME/reel/logs, defaulting to ~/.local/state/reel/logs.
 func DefaultLogDir() string {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "drapto", "logs")
+		return filepath.Join(dir, "reel", "logs")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// Fallback to current directory if home can't be determined
-		return filepath.Join(".", "drapto", "logs")
+		return filepath.Join(".", "reel", "logs")
 	}
-	return filepath.Join(home, ".local", "state", "drapto", "logs")
+	return filepath.Join(home, ".local", "state", "reel", "logs")
 }
 
 // level represents the logging level.
@@ -56,7 +56,7 @@ func Setup(logDir string, verbose, noLog bool, cmdArgs []string) (*Logger, error
 
 	// Generate timestamped filename
 	timestamp := time.Now().Format("20060102_150405")
-	filename := fmt.Sprintf("drapto_encode_run_%s.log", timestamp)
+	filename := fmt.Sprintf("reel_encode_run_%s.log", timestamp)
 	filePath := filepath.Join(logDir, filename)
 
 	// Open log file
@@ -81,7 +81,7 @@ func Setup(logDir string, verbose, noLog bool, cmdArgs []string) (*Logger, error
 
 	// Log startup
 	l.Info("Command: %s", strings.Join(cmdArgs, " "))
-	l.Info("Drapto encoder starting")
+	l.Info("Reel encoder starting")
 	if verbose {
 		l.Info("Debug level logging enabled")
 	}

@@ -1,10 +1,10 @@
-# Chunked Encoding in Drapto
+# Chunked Encoding in Reel
 
-This document explains drapto's parallel chunked encoding system, covering the complete pipeline from scene detection through final muxing.
+This document explains reel's parallel chunked encoding system, covering the complete pipeline from scene detection through final muxing.
 
 ## Overview
 
-Drapto uses a **scene-based chunked encoding** approach where:
+Reel uses a **scene-based chunked encoding** approach where:
 
 1. The source video is analyzed for scene changes
 2. The video is split into chunks at scene boundaries
@@ -69,7 +69,7 @@ Input Video
 
 ## Stage 1: Video Indexing (FFMS2)
 
-Before any processing begins, drapto creates an FFMS2 index of the source video. This enables:
+Before any processing begins, reel creates an FFMS2 index of the source video. This enables:
 
 - **Frame-accurate seeking**: Extract any frame by number without decode overhead
 - **Metadata extraction**: Resolution, frame rate, HDR parameters
@@ -179,11 +179,11 @@ When disabled (`--no-crop`), the full frame is encoded.
 
 ## Stage 5: Parallel Encoding
 
-The core of drapto's performance comes from parallel chunk encoding.
+The core of reel's performance comes from parallel chunk encoding.
 
 ### Architecture
 
-Drapto uses a **streaming frame pipeline** where each worker decodes and encodes frames one at a time, dramatically reducing memory usage:
+Reel uses a **streaming frame pipeline** where each worker decodes and encodes frames one at a time, dramatically reducing memory usage:
 
 ```
 ┌──────────────────┐
@@ -464,14 +464,14 @@ Lower scene thresholds create more (smaller) chunks:
 
 The streaming pipeline uses ~1 GB per worker (mostly SVT-AV1). If still running out of memory:
 ```bash
-drapto --workers 1 input.mkv
+reel --workers 1 input.mkv
 ```
 
 ### Slow Encoding
 
 If encoding seems slower than expected, you may be CPU-bound. Each worker runs an SVT-AV1 process:
 ```bash
-drapto --workers 2 input.mkv  # Try fewer workers on slower systems
+reel --workers 2 input.mkv  # Try fewer workers on slower systems
 ```
 
 ### Resume After Crash

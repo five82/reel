@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/fatih/color"
-	"github.com/five82/drapto/internal/util"
+	"github.com/five82/reel/internal/util"
 	"github.com/schollz/progressbar/v3"
 )
 

@@ -36,7 +36,7 @@ dmypy.json
 .roomodes
 
 # Go
-/drapto
+/reel
 *.exe
 *.exe~
 *.dll
@@ -48,4 +48,4 @@ go.work
 go.work.sum
 
 # Output doc
-docs/drapto_output
+docs/reel_output

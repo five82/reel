@@ -1,4 +1,4 @@
-# drapto
+# reel
 
 FFmpeg wrapper for AV1 encoding with SVT-AV1 and Opus audio. Uses opinionated defaults so you can encode without dealing with ffmpeg's complexity.
 
@@ -30,22 +30,22 @@ ffmpeg -encoders | grep -E "svtav1|opus"
 ## Install
 
 ```bash
-go install github.com/five82/drapto/cmd/drapto@latest
+go install github.com/five82/reel/cmd/reel@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/five82/drapto
-cd drapto
-go build -o drapto ./cmd/drapto
+git clone https://github.com/five82/reel
+cd reel
+go build -o reel ./cmd/reel
 ```
 
 ## Usage
 
 ```bash
-drapto encode -i input.mkv -o output/
-drapto encode -i /videos/ -o /encoded/
+reel encode -i input.mkv -o output/
+reel encode -i /videos/ -o /encoded/
 ```
 
 ### Options
@@ -68,31 +68,31 @@ Processing Options:
   --threads <N>        Threads per worker (SVT-AV1 --lp flag, default: auto)
 
 Output Options:
-  -l, --log-dir        Log directory (defaults to ~/.local/state/drapto/logs)
+  -l, --log-dir        Log directory (defaults to ~/.local/state/reel/logs)
   -v, --verbose        Verbose output
   --no-log             Disable log file creation
 ```
 
 ## Library Usage
 
-Drapto can be used as a Go library:
+Reel can be used as a Go library:
 
 ```go
-import "github.com/five82/drapto"
+import "github.com/five82/reel"
 
-encoder, err := drapto.New(
-    drapto.WithCRF(27),
-    drapto.WithWorkers(4),
+encoder, err := reel.New(
+    reel.WithCRF(27),
+    reel.WithWorkers(4),
 )
 if err != nil {
     log.Fatal(err)
 }
 
-result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event drapto.Event) error {
+result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event reel.Event) error {
     switch e := event.(type) {
-    case drapto.EncodingProgressEvent:
+    case reel.EncodingProgressEvent:
         fmt.Printf("Progress: %.1f%%\n", e.Percent)
-    case drapto.EncodingCompleteEvent:
+    case reel.EncodingCompleteEvent:
         fmt.Printf("Done: %.1f%% reduction\n", e.SizeReductionPercent)
     }
     return nil
@@ -102,10 +102,10 @@ result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event drapto.Eve
 ## Project Structure
 
 ```
-drapto/
-├── drapto.go           # Public API
+reel/
+├── reel.go             # Public API
 ├── events.go           # Event types for progress callbacks
-├── cmd/drapto/         # CLI
+├── cmd/reel/           # CLI
 └── internal/
     ├── config/         # Configuration and defaults
     ├── discovery/      # Video file discovery

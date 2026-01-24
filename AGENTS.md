@@ -13,7 +13,7 @@ Do not modify this header.
 
 ## Project Snapshot
 
-Drapto is an **AV1 encoding tool** using FFMS2 + SvtAv1EncApp for parallel chunked encoding with scene-based splitting. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
+Reel is an **AV1 encoding tool** using FFMS2 + SvtAv1EncApp for parallel chunked encoding with scene-based splitting. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
 
 - **Scope**: Single-developer hobby project - avoid over-engineering
 - **Environment**: Go 1.25+, FFmpeg (libopus), SvtAv1EncApp, FFMS2, MediaInfo
@@ -23,16 +23,16 @@ Drapto is an **AV1 encoding tool** using FFMS2 + SvtAv1EncApp for parallel chunk
 
 | Repo | Path | Role |
 |------|------|------|
-| drapto | `~/projects/drapto/` | AV1 encoding tool (this repo) |
-| spindle | `~/projects/spindle/` | Orchestrator that shells out to Drapto during ENCODING |
-| flyer | `~/projects/flyer/` | Read-only TUI for Spindle (not a Drapto consumer) |
+| reel | `~/projects/reel/` | AV1 encoding tool (this repo) |
+| spindle | `~/projects/spindle/` | Orchestrator that shells out to Reel during ENCODING |
+| flyer | `~/projects/flyer/` | Read-only TUI for Spindle (not a Reel consumer) |
 
-GitHub: [drapto](https://github.com/five82/drapto) | [spindle](https://github.com/five82/spindle) | [flyer](https://github.com/five82/flyer)
+GitHub: [reel](https://github.com/five82/reel) | [spindle](https://github.com/five82/spindle) | [flyer](https://github.com/five82/flyer)
 
 ## Build, Test, Lint
 
 ```bash
-go build -o drapto ./cmd/drapto       # Build CLI
+go build -o reel ./cmd/reel       # Build CLI
 go test ./...                         # Test
 go test -race ./...                   # Race detector
 golangci-lint run                     # Lint
@@ -42,8 +42,8 @@ golangci-lint run                     # Lint
 ## Architecture
 
 ```
-drapto.go, events.go     # Public API: Encoder, Options, EventHandler
-cmd/drapto/main.go       # CLI wrapper (flag-based)
+reel.go, events.go     # Public API: Encoder, Options, EventHandler
+cmd/reel/main.go       # CLI wrapper (flag-based)
 internal/
 ├── config/              # Configuration and defaults
 ├── discovery/           # Video file discovery
@@ -75,8 +75,8 @@ internal/
 | Validation checks | `internal/validation/validate.go` |
 | Terminal output | `internal/reporter/terminal.go` |
 | HDR detection | `internal/mediainfo/mediainfo.go`, `internal/ffprobe/ffprobe.go` |
-| Public API | `drapto.go` |
-| CLI flags | `cmd/drapto/main.go` |
+| Public API | `reel.go` |
+| CLI flags | `cmd/reel/main.go` |
 
 ## CLI Output Style
 
@@ -93,8 +93,8 @@ See `docs/spindle-integration.md` for library API usage and event types.
 
 1. Keep it simple - small hobby project
 2. Prefer unit tests over actual encodes (encoding is slow)
-3. When running drapto with timeout, use at least 120 seconds
+3. When running reel with timeout, use at least 120 seconds
 
 ## Log Files
 
-Drapto logs are stored in `~/.local/state/drapto/logs/`
+Reel logs are stored in `~/.local/state/reel/logs/`

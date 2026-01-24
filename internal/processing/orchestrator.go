@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/five82/drapto/internal/config"
-	"github.com/five82/drapto/internal/encoder"
-	"github.com/five82/drapto/internal/ffmpeg"
-	"github.com/five82/drapto/internal/ffprobe"
-	"github.com/five82/drapto/internal/mediainfo"
-	"github.com/five82/drapto/internal/reporter"
-	"github.com/five82/drapto/internal/util"
-	"github.com/five82/drapto/internal/validation"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/encoder"
+	"github.com/five82/reel/internal/ffmpeg"
+	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/mediainfo"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/validation"
 )
 
 // EncodeResult contains the result of a single file encode.

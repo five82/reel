@@ -71,7 +71,7 @@ func EnsureDirectoryWritable(path string) error {
 	}
 
 	// Check if directory is writable by attempting to create a test file
-	testPath := filepath.Join(path, ".drapto_write_test")
+	testPath := filepath.Join(path, ".reel_write_test")
 	f, err := os.Create(testPath)
 	if err != nil {
 		return fmt.Errorf("directory is not writable: %s", path)

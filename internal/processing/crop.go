@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/five82/drapto/internal/ffprobe"
+	"github.com/five82/reel/internal/ffprobe"
 )
 
 // cropDetectionConcurrency is the maximum number of concurrent crop detection samples.

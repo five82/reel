@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/five82/drapto/internal/util"
+	"github.com/five82/reel/internal/util"
 )
 
 // LogReporter writes encoding events to a log file.

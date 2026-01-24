@@ -1,5 +1,5 @@
-// Package drapto provides a Go library for AV1 video encoding with SVT-AV1.
-package drapto
+// Package reel provides a Go library for AV1 video encoding with SVT-AV1.
+package reel
 
 import "time"
 
@@ -22,7 +22,7 @@ const (
 	EventTypeError              = "error"
 )
 
-// Event is the interface for all drapto events.
+// Event is the interface for all reel events.
 type Event interface {
 	Type() string
 	Timestamp() int64

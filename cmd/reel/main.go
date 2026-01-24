@@ -1,4 +1,4 @@
-// Package main provides the CLI entry point for Drapto.
+// Package main provides the CLI entry point for Reel.
 package main
 
 import (
@@ -12,16 +12,16 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/five82/drapto/internal/config"
-	"github.com/five82/drapto/internal/discovery"
-	"github.com/five82/drapto/internal/logging"
-	"github.com/five82/drapto/internal/processing"
-	"github.com/five82/drapto/internal/reporter"
-	"github.com/five82/drapto/internal/util"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/discovery"
+	"github.com/five82/reel/internal/logging"
+	"github.com/five82/reel/internal/processing"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/util"
 )
 
 const (
-	appName    = "drapto"
+	appName    = "reel"
 	appVersion = "0.2.0"
 )
 
@@ -94,7 +94,7 @@ Required:
   -o, --output <PATH>    Output directory (or filename if input is a single file)
 
 Options:
-  -l, --log-dir <PATH>   Log directory (defaults to ~/.local/state/drapto/logs)
+  -l, --log-dir <PATH>   Log directory (defaults to ~/.local/state/reel/logs)
   -v, --verbose          Enable verbose output for troubleshooting
 
 Quality Settings:
@@ -113,7 +113,7 @@ Processing Options:
                            optimal threads based on resolution. Override if needed.
 
 Output Options:
-  --no-log               Disable Drapto log file creation
+  --no-log               Disable Reel log file creation
 `, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset, defaultWorkers, defaultBuffer)
 	}
 
