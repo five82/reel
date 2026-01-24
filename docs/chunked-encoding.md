@@ -86,28 +86,34 @@ The index is cached as a `.ffindex` file alongside the source, allowing resume w
 
 The video is divided into fixed-length chunks for parallel encoding.
 
-### Chunk Size
+### Chunk Duration
 
-Chunks use a fixed frame count based on the video's frame rate:
+Chunk duration varies by resolution to balance encoder efficiency with parallelism:
 
-```
-chunk_frames = min(fps × 30, 1000)
-```
+| Resolution | Chunk Duration | Example (24fps) |
+|------------|----------------|-----------------|
+| SD/720p | 20 seconds | 480 frames |
+| 1080p | 30 seconds | 720 frames |
+| 4K | 45 seconds | 1080 frames |
 
-For 24fps content, this is 720 frames (~30 seconds). For 60fps, it's 1000 frames (~17 seconds).
+Formula: `chunk_frames = fps × chunk_duration`
+
+Longer chunks for higher resolutions provide better encoder warmup and efficiency.
 
 ### Example
 
 ```
+1080p video at 24fps:
 Total frames: 5000
-Chunk size: 1000 frames
+Chunk duration: 30 seconds
+Chunk size: 720 frames
 
 Result:
-  Chunk 0: frames 0-1000
-  Chunk 1: frames 1000-2000
-  Chunk 2: frames 2000-3000
-  Chunk 3: frames 3000-4000
-  Chunk 4: frames 4000-5000
+  Chunk 0: frames 0-720
+  Chunk 1: frames 720-1440
+  Chunk 2: frames 1440-2160
+  ...
+  Chunk 6: frames 4320-5000 (final partial chunk)
 ```
 
 ### Chunk Data Structure
@@ -191,25 +197,31 @@ With the streaming pipeline, memory usage is dramatically reduced:
 1. **Per-worker frame buffer**: Each worker allocates a single-frame buffer (~6 MB for 1080p 10-bit)
 2. **Semaphore**: Limits in-flight chunks to `workers + buffer` for orderly processing
 3. **Per-worker VidSrc**: Each worker creates its own FFMS2 video source for thread safety
-4. **SVT-AV1 overhead**: Each encoder process uses ~1 GB of memory
+4. **SVT-AV1 overhead**: Memory varies by resolution (see below)
 
-**Total memory per worker**: ~1 GB (encoder) + ~6 MB (frame buffer) ≈ 1 GB
+**Memory per worker by resolution**:
+
+| Resolution | Memory per Worker |
+|------------|-------------------|
+| SD/720p | ~512 MB |
+| 1080p | ~2 GB |
+| 4K | ~5 GB |
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `Workers` | `numCPU/8` (1-4) | Parallel encoder instances |
-| `ChunkBuffer` | `Workers` | Extra chunks to buffer |
+| `Workers` | auto | Parallel encoder instances |
+| `ChunkBuffer` | 4 | Prefetch buffer to keep workers fed |
 
-Auto-detection allocates 1 worker per 8 CPU cores, minimum 1, maximum 4.
+Auto-detection requests up to 24 workers, then caps based on available memory and resolution. For example, with 32 GB RAM encoding 4K content (~5 GB per worker), approximately 4-5 workers would be used.
 
 ### SVT-AV1 Invocation
 
-Each worker runs SVT-AV1 with YUV piped to stdin:
+Each worker runs SVT-AV1 with YUV piped to stdin (wrapped with `nice -n 19`):
 
 ```
-SvtAv1EncApp \
+nice -n 19 SvtAv1EncApp \
   -i stdin \
   --input-depth 10 \
   --color-format 1 \
@@ -220,21 +232,23 @@ SvtAv1EncApp \
   --fps-num {num} \
   --fps-denom {denom} \
   --frames {count} \
-  --keyint 0 \
+  --keyint {fps × 10} \
   --rc 0 \
-  --scd 0 \
+  --scd 1 \
   --crf {value} \
   --preset {preset} \
   --tune {tune} \
+  --lp {threads} \
   [HDR parameters] \
   -b output.ivf
 ```
 
 Key parameters:
-- `--keyint 0`: No forced keyframes (each chunk starts fresh)
-- `--scd 0`: Disable internal scene detection
+- `--keyint`: Keyframe interval of 10 seconds (e.g., 240 frames for 24fps)
+- `--scd 1`: Scene change detection enabled for natural keyframe placement
 - `--passes 1`: Single-pass encoding
 - `--rc 0`: CRF (constant quality) mode
+- `--lp`: Threads per worker (auto-calculated based on CPU topology)
 
 ### Resume Support
 
@@ -352,9 +366,14 @@ ffmpeg \
 
 | Setting | CLI Flag | Default | Range | Description |
 |---------|----------|---------|-------|-------------|
-| CRF | `--crf` | 27 | 0-63 | Quality level (lower = better) |
+| CRF | `--crf` | varies | 0-63 | Quality level (lower = better) |
 | Preset | `--preset` | 6 | 0-13 | Speed/quality tradeoff (lower = slower) |
 | Tune | `--tune` | 0 | 0+ | Encoder tuning mode |
+
+CRF defaults vary by resolution:
+- SD (<1920 width): 25
+- HD (1920-3839 width): 27
+- UHD (≥3840 width): 29
 
 ### Advanced SVT-AV1 Settings
 
@@ -375,8 +394,8 @@ ffmpeg \
 
 | Setting | CLI Flag | Default | Description |
 |---------|----------|---------|-------------|
-| Workers | `--workers` | auto | Parallel encoders |
-| Buffer | `--buffer` | workers | Chunk buffer size |
+| Workers | `--workers` | auto | Parallel encoders (capped by memory) |
+| Buffer | `--buffer` | 4 | Chunk prefetch buffer |
 
 ## Work Directory Structure
 
@@ -396,30 +415,30 @@ work_dir/
 
 ### Worker Count
 
-More workers increase parallelism with modest memory impact:
-- Each worker uses ~1 GB (SVT-AV1 process + single frame buffer)
+More workers increase parallelism but require more memory:
+- Memory per worker depends on resolution: ~512 MB (SD), ~2 GB (1080p), ~5 GB (4K)
 - Streaming design eliminates per-chunk YUV buffer overhead
-- Auto-detection allocates 1 worker per 8 CPU cores (min 1, max 4)
+- Auto-detection caps workers based on 70% of available memory
 
 ### Buffer Size
 
 The buffer setting controls how many chunks can be dispatched ahead:
-- Default: Equal to worker count
-- Increase for smoother worker utilization
+- Default: 4 chunks
+- Increase for smoother worker utilization on systems with fast I/O
 - Has minimal memory impact (only chunk metadata is buffered, not frames)
 
-### Chunk Size
+### Chunk Duration
 
-Fixed-length chunks provide predictable encoding behavior:
-- Consistent memory usage per worker
-- Predictable encoding progress
-- Simple resume semantics
+Resolution-based chunk durations balance efficiency and parallelism:
+- SD/720p: 20s chunks for faster iteration
+- 1080p: 30s chunks for balanced performance
+- 4K: 45s chunks for better encoder warmup
 
 ## Troubleshooting
 
 ### Out of Memory
 
-The streaming pipeline uses ~1 GB per worker (mostly SVT-AV1). If still running out of memory:
+Memory usage depends on resolution (~512 MB for SD, ~2 GB for 1080p, ~5 GB for 4K per worker). If running out of memory:
 ```bash
 reel --workers 1 input.mkv
 ```
@@ -437,4 +456,4 @@ Simply re-run the same command. Completed chunks in `done.txt` will be skipped.
 
 ### Quality Issues at Chunk Boundaries
 
-With fixed-length chunks, boundaries may occasionally fall mid-scene. SVT-AV1's internal quality management typically handles this well. If visible artifacts occur at chunk boundaries, this is a known limitation of the fixed-length approach.
+With fixed-length chunks, boundaries may occasionally fall mid-scene. SVT-AV1's scene change detection (`--scd 1`) and regular keyframe interval (`--keyint` at 10 seconds) help maintain quality across chunk boundaries. Visible artifacts at boundaries are rare but possible with very fast motion at chunk edges.
