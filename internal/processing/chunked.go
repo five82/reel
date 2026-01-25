@@ -21,6 +21,7 @@ import (
 )
 
 // ProcessChunked runs the chunked encoding pipeline for a single file.
+// Returns the crop result so the caller can use it for validation.
 func ProcessChunked(
 	ctx context.Context,
 	cfg *config.Config,
@@ -29,11 +30,11 @@ func ProcessChunked(
 	audioStreams []ffprobe.AudioStreamInfo,
 	quality uint32,
 	rep reporter.Reporter,
-) error {
+) (CropResult, error) {
 	// Create work directory
 	workDir := chunk.GetWorkDirPath(inputPath, cfg.GetTempDir())
 	if err := chunk.CreateWorkDir(workDir); err != nil {
-		return fmt.Errorf("failed to create work directory: %w", err)
+		return CropResult{}, fmt.Errorf("failed to create work directory: %w", err)
 	}
 
 	// Cleanup on completion (unless resuming a failed encode)
@@ -75,7 +76,7 @@ func ProcessChunked(
 		if idx != nil {
 			idx.Close()
 		}
-		return err
+		return CropResult{}, err
 	}
 	defer idx.Close()
 
@@ -90,7 +91,7 @@ func ProcessChunked(
 	// Get video info (needs index)
 	vidInf, err := ffms.GetVidInf(idx)
 	if err != nil {
-		return fmt.Errorf("failed to get video info: %w", err)
+		return CropResult{}, fmt.Errorf("failed to get video info: %w", err)
 	}
 
 	// Generate fixed-length chunks based on resolution (using config values)
@@ -105,13 +106,13 @@ func ProcessChunked(
 		chunkDuration,
 	)
 	if err != nil {
-		return fmt.Errorf("chunk generation failed: %w", err)
+		return CropResult{}, fmt.Errorf("chunk generation failed: %w", err)
 	}
 
 	// Load scenes
 	scenes, err := chunk.LoadScenes(sceneFile, vidInf.Frames)
 	if err != nil {
-		return fmt.Errorf("failed to load scenes: %w", err)
+		return CropResult{}, fmt.Errorf("failed to load scenes: %w", err)
 	}
 	rep.Verbose(fmt.Sprintf("Created %d chunks", len(scenes)))
 
@@ -229,7 +230,7 @@ func ProcessChunked(
 	if encodeErr != nil {
 		// Wait for audio to finish before returning
 		<-audioDone
-		return fmt.Errorf("chunked encoding failed: %w", encodeErr)
+		return CropResult{}, fmt.Errorf("chunked encoding failed: %w", encodeErr)
 	}
 
 	// Merge IVF files
@@ -238,28 +239,28 @@ func ProcessChunked(
 		// Use batched merge for large number of chunks
 		if err := chunk.MergeBatched(workDir, len(chunks)); err != nil {
 			<-audioDone
-			return fmt.Errorf("batched merge failed: %w", err)
+			return CropResult{}, fmt.Errorf("batched merge failed: %w", err)
 		}
 	}
 
 	if err := chunk.MergeOutput(workDir, outputPath, vidInf, inputPath); err != nil {
 		<-audioDone
-		return fmt.Errorf("video merge failed: %w", err)
+		return CropResult{}, fmt.Errorf("video merge failed: %w", err)
 	}
 
 	// Wait for audio extraction to complete
 	<-audioDone
 	if audioErr != nil {
-		return fmt.Errorf("audio extraction failed: %w", audioErr)
+		return CropResult{}, fmt.Errorf("audio extraction failed: %w", audioErr)
 	}
 
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
 	if err := chunk.MuxFinal(inputPath, workDir, outputPath, audioStreams); err != nil {
-		return fmt.Errorf("final mux failed: %w", err)
+		return CropResult{}, fmt.Errorf("final mux failed: %w", err)
 	}
 
-	return nil
+	return cropResult, nil
 }
 
 // parseCropFilter extracts cropH and cropV from a crop filter string.

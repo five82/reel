@@ -162,7 +162,7 @@ func ProcessVideos(
 		})
 
 		// Run chunked encoding with FFMS2 + SvtAv1EncApp
-		encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
+		cropResult, encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
 		encodeSuccess := encodeError == nil
 
 		if !encodeSuccess {
@@ -182,7 +182,7 @@ func ProcessVideos(
 		encodingSpeed := float32(videoProps.DurationSecs) / float32(fileElapsedTime.Seconds())
 
 		// Calculate expected dimensions after crop
-		expectedWidth, expectedHeight := GetOutputDimensions(videoProps.Width, videoProps.Height, encodeParams.CropFilter)
+		expectedWidth, expectedHeight := GetOutputDimensions(videoProps.Width, videoProps.Height, cropResult.CropFilter)
 
 		// Validate output
 		expectedDims := &[2]uint32{expectedWidth, expectedHeight}
