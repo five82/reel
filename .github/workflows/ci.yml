@@ -20,7 +20,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.x'
           cache: true
@@ -51,7 +51,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.x'
           cache: true
@@ -74,7 +74,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25.x'
           cache: true
