@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install FFMS2
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install FFMS2
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install FFMS2
         run: sudo apt-get update && sudo apt-get install -y libffms2-dev
