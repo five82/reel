@@ -2,6 +2,16 @@
 
 AV1 encoding tool using SvtAv1EncApp and FFMS2 for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
 
+## Expectations
+
+This repository is shared as is. Reel is a personal encoding tool I built for my own workflow, hardware, and preferences. I've open sourced it because I believe in sharing but I'm not an active maintainer.
+
+- Experimental: This is an incomplete early stage project that is purely experimental at this point. I would recommend looking at av1an or xav for parallel chunked encoding.
+- Personal-first: Things will change and break as I iterate.
+- Best-effort only: This is a part-time hobby project and I work on it when I'm able to. I may be slow to respond to questions or may not respond at all.
+- PRs: Pull requests are welcome if they align with the project's goals but I may be slow to review them or may not accept changes that don't fit my own use case.
+- “Vibe coded”: I’m not a Go developer and this project started as (and remains) a vibe-coding experiment. Expect rough edges.
+
 ## Features
 
 - Parallel chunked encoding with fixed-length chunks
@@ -133,3 +143,7 @@ go test ./...
 golangci-lint run
 ./check-ci.sh          # Full CI check
 ```
+
+## Credit
+
+Thanks to xav for the FFMS2 parallel chunked encoding approach.
