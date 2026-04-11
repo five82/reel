@@ -6,7 +6,7 @@ require (
 	github.com/fatih/color v1.19.0
 	github.com/schollz/progressbar/v3 v3.19.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.42.0
+	golang.org/x/sys v0.43.0
 )
 
 require (
