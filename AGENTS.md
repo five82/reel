@@ -16,7 +16,7 @@ Do not modify this header.
 Reel is an **AV1 encoding tool** using FFMS2 + SvtAv1EncApp for parallel chunked encoding. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
 
 - **Scope**: Single-developer hobby project - avoid over-engineering
-- **Environment**: Go 1.25+, FFmpeg (libopus), SvtAv1EncApp, FFMS2, MediaInfo
+- **Environment**: Go 1.26+, FFmpeg (libopus), SvtAv1EncApp, FFMS2, MediaInfo
 - **Design**: Library-first for Spindle embedding, with CLI wrapper
 
 ## Related Repos

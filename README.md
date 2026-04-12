@@ -23,7 +23,7 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - SvtAv1EncApp (SVT-AV1 standalone encoder)
 - FFMS2 (for frame-accurate video indexing)
 - FFmpeg with `libopus` (for audio transcoding)
