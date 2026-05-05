@@ -220,15 +220,7 @@ func ProcessChunked(
 
 	// Merge IVF files
 	rep.StageProgress(reporter.StageProgress{Stage: "Merging", Message: "Merging encoded chunks"})
-	if len(chunks) > 500 {
-		// Use batched merge for large number of chunks
-		if err := chunk.MergeBatched(workDir, len(chunks)); err != nil {
-			<-audioDone
-			return CropResult{}, fmt.Errorf("batched merge failed: %w", err)
-		}
-	}
-
-	if err := chunk.MergeOutput(workDir, outputPath, vidInf, inputPath); err != nil {
+	if err := chunk.MergeOutput(workDir, vidInf, len(chunks)); err != nil {
 		<-audioDone
 		return CropResult{}, fmt.Errorf("video merge failed: %w", err)
 	}

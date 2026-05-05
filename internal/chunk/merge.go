@@ -2,10 +2,13 @@
 package chunk
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/five82/reel/internal/ffms"
 )
@@ -28,7 +31,7 @@ func writeConcatFile(concatPath string, paths []string) (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to get absolute path for %s: %w", p, err)
 		}
-		if _, err := fmt.Fprintf(f, "file '%s'\n", absPath); err != nil {
+		if _, err := fmt.Fprintf(f, "file '%s'\n", escapeConcatPath(absPath)); err != nil {
 			return fmt.Errorf("failed to write to concat file: %w", err)
 		}
 	}
@@ -36,63 +39,93 @@ func writeConcatFile(concatPath string, paths []string) (err error) {
 	return nil
 }
 
-// MergeOutput concatenates all IVF files into a single video file.
-func MergeOutput(workDir, outputPath string, inf *ffms.VidInf, inputPath string) error {
-	// Validate FPS to prevent division by zero
-	if inf.FPSDen == 0 {
-		return fmt.Errorf("invalid video info: FPS denominator is 0")
+func escapeConcatPath(path string) string {
+	return strings.ReplaceAll(path, "'", "'\\''")
+}
+
+// MergeOutput concatenates all chunk IVF files into a single IVF video file.
+func MergeOutput(workDir string, inf *ffms.VidInf, numChunks int) error {
+	if numChunks <= 0 {
+		return fmt.Errorf("no chunks to merge")
+	}
+	const maxUint32 = int64(^uint32(0))
+	if inf.Frames < 0 || int64(inf.Frames) > maxUint32 {
+		return fmt.Errorf("invalid video info: frame count %d cannot be stored in IVF header", inf.Frames)
 	}
 
-	encodeDir := filepath.Join(workDir, "encode")
-
-	// Find all IVF files
-	ivfFiles, err := filepath.Glob(filepath.Join(encodeDir, "*.ivf"))
-	if err != nil {
-		return fmt.Errorf("failed to find IVF files: %w", err)
+	ivfFiles := make([]string, numChunks)
+	for i := range numChunks {
+		ivfFiles[i] = IVFPath(workDir, i)
 	}
 
-	if len(ivfFiles) == 0 {
-		return fmt.Errorf("no IVF files found in %s", encodeDir)
+	if err := concatIVF(ivfFiles, GetVideoPath(workDir), uint32(inf.Frames)); err != nil {
+		return fmt.Errorf("ivf concat failed: %w", err)
 	}
-
-	// Create concat list file
-	concatPath := filepath.Join(workDir, "concat.txt")
-	if err := writeConcatFile(concatPath, ivfFiles); err != nil {
-		return err
-	}
-
-	// Calculate FPS for output
-	fps := float64(inf.FPSNum) / float64(inf.FPSDen)
-
-	// Create intermediate video file (video only)
-	videoPath := filepath.Join(workDir, "video.mkv")
-
-	// Build FFmpeg concat command
-	args := []string{
-		"-hide_banner",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", concatPath,
-		"-c", "copy",
-		"-r", fmt.Sprintf("%.6f", fps),
-		"-fflags", "+genpts+igndts+discardcorrupt+bitexact",
-		"-avoid_negative_ts", "make_zero",
-		"-reset_timestamps", "1",
-		"-start_at_zero",
-		"-y",
-		videoPath,
-	}
-
-	cmd := exec.Command("ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ffmpeg concat failed: %w\nOutput: %s", err, string(output))
-	}
-
-	// Cleanup concat file
-	_ = os.Remove(concatPath)
-
 	return nil
+}
+
+func concatIVF(files []string, outputPath string, totalFrames uint32) (err error) {
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create merged IVF: %w", err)
+	}
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close merged IVF: %w", cerr)
+		}
+	}()
+
+	var frameIdx uint32
+	for i, path := range files {
+		if err := appendIVF(out, path, i == 0, totalFrames, &frameIdx); err != nil {
+			return err
+		}
+	}
+	if frameIdx != totalFrames {
+		return fmt.Errorf("merged IVF contains %d frames, expected %d", frameIdx, totalFrames)
+	}
+	return nil
+}
+
+func appendIVF(out io.Writer, path string, includeHeader bool, totalFrames uint32, frameIdx *uint32) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open IVF chunk %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	header := make([]byte, 32)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return fmt.Errorf("failed to read IVF header from %s: %w", path, err)
+	}
+	if string(header[:4]) != "DKIF" || binary.LittleEndian.Uint16(header[6:8]) != 32 {
+		return fmt.Errorf("invalid IVF header in %s", path)
+	}
+
+	if includeHeader {
+		binary.LittleEndian.PutUint32(header[24:28], totalFrames)
+		if _, err := out.Write(header); err != nil {
+			return fmt.Errorf("failed to write IVF header: %w", err)
+		}
+	}
+	for {
+		frameHeader := make([]byte, 12)
+		if _, err := io.ReadFull(file, frameHeader); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("failed to read IVF frame header from %s: %w", path, err)
+		}
+		frameSize := binary.LittleEndian.Uint32(frameHeader[:4])
+		binary.LittleEndian.PutUint64(frameHeader[4:12], uint64(*frameIdx))
+		if _, err := out.Write(frameHeader); err != nil {
+			return fmt.Errorf("failed to write IVF frame header: %w", err)
+		}
+		if _, err := io.CopyN(out, file, int64(frameSize)); err != nil {
+			return fmt.Errorf("failed to append IVF frame from %s: %w", path, err)
+		}
+		*frameIdx = *frameIdx + 1
+	}
 }
 
 // MergeBatched handles large numbers of IVF files by merging in batches.
@@ -198,7 +231,7 @@ func MergeBatched(workDir string, numChunks int) error {
 
 // GetVideoPath returns the path to the merged video file.
 func GetVideoPath(workDir string) string {
-	return filepath.Join(workDir, "video.mkv")
+	return filepath.Join(workDir, "video.ivf")
 }
 
 // GetAudioPath returns the path to the extracted audio file.
