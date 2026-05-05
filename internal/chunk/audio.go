@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
+	"github.com/five82/reel/internal/ffmpeg"
 	"github.com/five82/reel/internal/ffprobe"
 )
 
@@ -30,9 +32,11 @@ func ExtractAudio(inputPath, workDir string, audioStreams []ffprobe.AudioStreamI
 	for i, stream := range audioStreams {
 		args = append(args, "-map", fmt.Sprintf("0:a:%d", stream.Index))
 		args = append(args, fmt.Sprintf("-c:a:%d", i), "libopus")
-		bitrate := calculateAudioBitrate(stream.Channels)
+		bitrate := ffmpeg.CalculateAudioBitrate(stream.Channels)
 		args = append(args, fmt.Sprintf("-b:a:%d", i), fmt.Sprintf("%dk", bitrate))
 		args = append(args, fmt.Sprintf("-filter:a:%d", i), "aformat=channel_layouts=7.1|5.1|stereo|mono")
+		args = append(args, audioMetadataArgs(i, stream)...)
+		args = append(args, audioDispositionArgs(i, stream.Disposition)...)
 	}
 
 	args = append(args, "-y", audioPath)
@@ -44,22 +48,6 @@ func ExtractAudio(inputPath, workDir string, audioStreams []ffprobe.AudioStreamI
 	}
 
 	return nil
-}
-
-// calculateAudioBitrate returns audio bitrate in kbps based on channel count.
-func calculateAudioBitrate(channels uint32) uint32 {
-	switch channels {
-	case 1:
-		return 64 // Mono
-	case 2:
-		return 128 // Stereo
-	case 6:
-		return 256 // 5.1 surround
-	case 8:
-		return 384 // 7.1 surround
-	default:
-		return channels * 48 // ~48 kbps per channel for non-standard configs
-	}
 }
 
 // MuxFinal combines the encoded video with audio and other streams.
@@ -112,6 +100,12 @@ func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.Audi
 	if displayAspect != "" {
 		args = append(args, "-aspect:v:0", displayAspect)
 	}
+	if hasAudio {
+		for i, stream := range audioStreams {
+			args = append(args, audioMetadataArgs(i, stream)...)
+			args = append(args, audioDispositionArgs(i, stream.Disposition)...)
+		}
+	}
 
 	// Faststart for web playback
 	args = append(args, "-movflags", "+faststart")
@@ -125,6 +119,51 @@ func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.Audi
 	}
 
 	return nil
+}
+
+func audioMetadataArgs(outputIndex int, stream ffprobe.AudioStreamInfo) []string {
+	var args []string
+	if stream.Language != "" {
+		args = append(args, fmt.Sprintf("-metadata:s:a:%d", outputIndex), "language="+stream.Language)
+	}
+	if stream.Title != "" {
+		args = append(args, fmt.Sprintf("-metadata:s:a:%d", outputIndex), "title="+stream.Title)
+	}
+	return args
+}
+
+func audioDispositionArgs(outputIndex int, disposition ffprobe.StreamDisposition) []string {
+	return []string{fmt.Sprintf("-disposition:a:%d", outputIndex), audioDispositionValue(disposition)}
+}
+
+func audioDispositionValue(d ffprobe.StreamDisposition) string {
+	flags := audioDispositionFlags(d)
+	if len(flags) == 0 {
+		return "0"
+	}
+	return strings.Join(flags, "+")
+}
+
+func audioDispositionFlags(d ffprobe.StreamDisposition) []string {
+	var flags []string
+	addFlag := func(enabled int, name string) {
+		if enabled != 0 {
+			flags = append(flags, name)
+		}
+	}
+	addFlag(d.Default, "default")
+	addFlag(d.Dub, "dub")
+	addFlag(d.Original, "original")
+	addFlag(d.Comment, "comment")
+	addFlag(d.Lyrics, "lyrics")
+	addFlag(d.Karaoke, "karaoke")
+	addFlag(d.Forced, "forced")
+	addFlag(d.HearingImpaired, "hearing_impaired")
+	addFlag(d.VisualImpaired, "visual_impaired")
+	addFlag(d.CleanEffects, "clean_effects")
+	addFlag(d.AttachedPic, "attached_pic")
+	addFlag(d.TimedThumbnails, "timed_thumbnails")
+	return flags
 }
 
 // CleanupWorkDir removes the work directory and all its contents.

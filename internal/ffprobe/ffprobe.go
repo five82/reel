@@ -42,6 +42,8 @@ type AudioStreamInfo struct {
 	CodecName   string
 	Profile     string
 	Index       int
+	Language    string
+	Title       string
 	IsSpatial   bool // Always false (spatial support removed)
 	Disposition StreamDisposition
 }
@@ -86,6 +88,7 @@ type ffprobeStream struct {
 	ColorSpace        string            `json:"color_space"`
 	BitsPerRawSample  string            `json:"bits_per_raw_sample"`
 	SampleAspectRatio string            `json:"sample_aspect_ratio"`
+	Tags              map[string]string `json:"tags"`
 	Disposition       StreamDisposition `json:"disposition"`
 }
 
@@ -266,6 +269,8 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 			CodecName:   stream.CodecName,
 			Profile:     stream.Profile,
 			Index:       audioIndex,
+			Language:    tagValue(stream.Tags, "language"),
+			Title:       tagValue(stream.Tags, "title"),
 			IsSpatial:   false, // Spatial audio support removed
 			Disposition: stream.Disposition,
 		})
@@ -274,6 +279,21 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 	}
 
 	return streams, nil
+}
+
+func tagValue(tags map[string]string, key string) string {
+	if tags == nil {
+		return ""
+	}
+	if value := tags[key]; value != "" {
+		return value
+	}
+	for k, value := range tags {
+		if strings.EqualFold(k, key) {
+			return value
+		}
+	}
+	return ""
 }
 
 // detectHDR determines if content is HDR based on color metadata.
