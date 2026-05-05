@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/encode"
@@ -46,39 +44,22 @@ func ProcessChunked(
 	}()
 
 	// ========================================================================
-	// PHASE 1: Run FFMS2 indexing and crop detection in parallel
+	// PHASE 1: Run FFMS2 indexing and luma-based crop detection
 	// ========================================================================
 	rep.StageProgress(reporter.StageProgress{Stage: "Preparing", Message: "Indexing video and detecting crop"})
 
-	var idx *ffms.VidIdx
-	var cropResult CropResult
-
-	phase1, _ := errgroup.WithContext(ctx)
-
-	// FFMS2 indexing goroutine
-	phase1.Go(func() error {
-		var err error
-		idx, err = ffms.NewVidIdx(inputPath, true)
-		if err != nil {
-			return fmt.Errorf("failed to create video index: %w", err)
-		}
-		return nil
-	})
-
-	// Crop detection goroutine
-	phase1.Go(func() error {
-		cropResult = DetectCrop(inputPath, videoProps, cfg.CropMode == "none")
-		return nil
-	})
-
-	// Wait for phase 1 to complete
-	if err := phase1.Wait(); err != nil {
-		if idx != nil {
-			idx.Close()
-		}
-		return CropResult{}, err
+	idx, err := ffms.NewVidIdx(inputPath, true)
+	if err != nil {
+		return CropResult{}, fmt.Errorf("failed to create video index: %w", err)
 	}
 	defer idx.Close()
+
+	vidInf, err := ffms.GetVidInf(idx)
+	if err != nil {
+		return CropResult{}, fmt.Errorf("failed to get video info: %w", err)
+	}
+
+	cropResult := DetectCrop(idx, vidInf, videoProps, cfg.CropMode == "none")
 
 	// Report crop detection result
 	rep.CropResult(reporter.CropSummary{
@@ -87,12 +68,6 @@ func ProcessChunked(
 		Required: cropResult.Required,
 		Disabled: cfg.CropMode == "none",
 	})
-
-	// Get video info (needs index)
-	vidInf, err := ffms.GetVidInf(idx)
-	if err != nil {
-		return CropResult{}, fmt.Errorf("failed to get video info: %w", err)
-	}
 
 	// Generate fixed-length chunks based on resolution (using config values)
 	chunkDuration := cfg.ChunkDurationForWidth(vidInf.Width)

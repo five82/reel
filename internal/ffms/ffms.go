@@ -609,10 +609,55 @@ func CalcFrameSize(inf *VidInf, cropCalc *CropCalc) int {
 	return CalcPackedSize(w, h)
 }
 
+// LumaFrame is a borrowed view of a decoded frame's Y plane.
+// Data remains valid until the next frame request on the same VidSrc or until the VidSrc is closed.
+type LumaFrame struct {
+	Data    []byte
+	Stride  int
+	Width   int
+	Height  int
+	Is10Bit bool
+}
+
 // Frame represents a decoded video frame with plane pointers.
 type Frame struct {
 	Data     [3]unsafe.Pointer // Y, U, V plane pointers
 	Linesize [3]int            // Stride for each plane
+}
+
+// ExtractLumaFrame retrieves a borrowed view of a frame's luma plane.
+func ExtractLumaFrame(src *VidSrc, frameIdx int, inf *VidInf) (*LumaFrame, error) {
+	if src == nil || src.ptr == nil {
+		return nil, fmt.Errorf("nil video source")
+	}
+	if inf == nil {
+		return nil, fmt.Errorf("nil video info")
+	}
+
+	errInfo := C.create_error_info()
+	defer C.free_error_info(errInfo)
+
+	frame := C.FFMS_GetFrame(src.ptr, C.int(frameIdx), errInfo)
+	if frame == nil {
+		return nil, fmt.Errorf("failed to get frame %d: %s", frameIdx, C.GoString(C.get_error_message(errInfo)))
+	}
+	if frame.Data[0] == nil {
+		return nil, fmt.Errorf("frame %d has nil luma data", frameIdx)
+	}
+
+	stride := int(frame.Linesize[0])
+	height := int(inf.Height)
+	if stride <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid luma geometry for frame %d: stride=%d height=%d", frameIdx, stride, height)
+	}
+
+	return &LumaFrame{
+		Data:    unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[0])), stride*height),
+		Stride:  stride,
+		Width:   int(inf.Width),
+		Height:  height,
+		Is10Bit: inf.Is10Bit,
+	}, nil
 }
 
 // GetFrame retrieves a single frame from the video source.
