@@ -34,6 +34,7 @@ static const char* get_error_message(FFMS_ErrorInfo* err) {
 import "C"
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -110,16 +111,10 @@ const (
 
 // CropCalc contains crop calculation parameters for frame extraction.
 type CropCalc struct {
-	NewW     uint32 // Cropped width
-	NewH     uint32 // Cropped height
-	YStride  int    // Source Y plane stride assuming tightly packed input
-	UVStride int    // Source UV plane stride assuming tightly packed input
-	YStart   int    // Byte offset to first Y pixel assuming tightly packed input
-	YLen     int    // Bytes per row of cropped Y
-	UVOff    int    // Byte offset to first UV pixel assuming tightly packed input
-	UVLen    int    // Bytes per row of cropped UV
-	CropX    uint32 // Left crop offset
-	CropY    uint32 // Top crop offset
+	NewW  uint32 // Cropped width
+	NewH  uint32 // Cropped height
+	CropX uint32 // Left crop offset
+	CropY uint32 // Top crop offset
 }
 
 // CropRect describes the exact source rectangle to encode.
@@ -296,59 +291,25 @@ func GetDecodeStratForRect(_ *VidIdx, inf *VidInf, rect *CropRect) (DecodeStrat,
 		}
 	}
 
-	// Determine if we need stride handling.
-	// ExtractFrame always honors frame linesizes, so the fast/stride distinction is informational.
-	needsStride := false
-
-	var strat DecodeStrat
+	strat := B8Fast
 	if inf.Is10Bit {
-		if hasCrop {
-			if needsStride {
-				strat = B10CropStride
-			} else {
-				strat = B10CropFast
-			}
+		strat = B10Fast
+	}
+	if hasCrop {
+		if inf.Is10Bit {
+			strat = B10CropFast
 		} else {
-			if needsStride {
-				strat = B10Stride
-			} else {
-				strat = B10Fast
-			}
-		}
-	} else {
-		if hasCrop {
-			if needsStride {
-				strat = B8CropStride
-			} else {
-				strat = B8CropFast
-			}
-		} else {
-			if needsStride {
-				strat = B8Stride
-			} else {
-				strat = B8Fast
-			}
+			strat = B8CropFast
 		}
 	}
 
 	var cropCalc *CropCalc
 	if hasCrop {
-		bytesPerPixel := 1
-		if inf.Is10Bit {
-			bytesPerPixel = 2
-		}
-
 		cropCalc = &CropCalc{
-			NewW:     rect.Width,
-			NewH:     rect.Height,
-			YStride:  int(inf.Width) * bytesPerPixel,
-			UVStride: int(inf.Width) * bytesPerPixel / 2,
-			YStart:   int(rect.Y)*int(inf.Width)*bytesPerPixel + int(rect.X)*bytesPerPixel,
-			YLen:     int(rect.Width) * bytesPerPixel,
-			UVOff:    int(rect.Y/2)*int(inf.Width)*bytesPerPixel/2 + int(rect.X)*bytesPerPixel/2,
-			UVLen:    int(rect.Width) * bytesPerPixel / 2,
-			CropX:    rect.X,
-			CropY:    rect.Y,
+			NewW:  rect.Width,
+			NewH:  rect.Height,
+			CropX: rect.X,
+			CropY: rect.Y,
 		}
 	}
 
@@ -564,22 +525,9 @@ func convert8to10bit(dst, src []byte, width, height, srcStride int) {
 			sample8 := uint16(src[srcRowStart+col])
 			sample10 := sample8 << 2
 
-			// Write as 16-bit little-endian
-			dst[dstOff] = byte(sample10 & 0xFF)
-			dst[dstOff+1] = byte(sample10 >> 8)
+			binary.LittleEndian.PutUint16(dst[dstOff:], sample10)
 			dstOff += 2
 		}
-	}
-}
-
-// copyPlaneCropped copies plane data with cropping.
-func copyPlaneCropped(dst, src []byte, rows, startOffset, rowLen, stride int) {
-	srcOff := startOffset
-	dstOff := 0
-	for row := 0; row < rows; row++ {
-		copy(dst[dstOff:dstOff+rowLen], src[srcOff:srcOff+rowLen])
-		srcOff += stride
-		dstOff += rowLen
 	}
 }
 

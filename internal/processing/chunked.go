@@ -59,7 +59,7 @@ func ProcessChunked(
 		return CropResult{}, fmt.Errorf("failed to get video info: %w", err)
 	}
 
-	cropResult := DetectCrop(idx, vidInf, videoProps, cfg.CropMode == "none")
+	cropResult := DetectCrop(idx, vidInf, cfg.CropMode == "none")
 
 	// Report crop detection result
 	rep.CropResult(reporter.CropSummary{
@@ -242,8 +242,7 @@ func ProcessChunked(
 	return cropResult, nil
 }
 
-// parseCropFilter extracts an exact FFmpeg crop rectangle.
-// Format: "crop=W:H:X:Y" where X is left offset and Y is top offset.
+// displayAspectAfterCrop returns the display aspect ratio to signal after cropping anamorphic sources.
 func displayAspectAfterCrop(props *ffprobe.VideoProperties, cropRect *ffms.CropRect) string {
 	if props == nil || props.SampleAspectRatioNum == 0 || props.SampleAspectRatioDen == 0 {
 		return ""

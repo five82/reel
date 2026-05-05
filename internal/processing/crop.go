@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/five82/reel/internal/ffms"
-	"github.com/five82/reel/internal/ffprobe"
 )
 
 const (
@@ -39,7 +38,7 @@ type detectedCrop struct {
 // DetectCrop detects black bars using FFMS2-decoded luma samples.
 // It samples the middle 70% of the video, ignores all-black frames, and uses the
 // minimum crop seen across valid samples so mixed-aspect content is not over-cropped.
-func DetectCrop(idx *ffms.VidIdx, inf *ffms.VidInf, _ *ffprobe.VideoProperties, disableCrop bool) CropResult {
+func DetectCrop(idx *ffms.VidIdx, inf *ffms.VidInf, disableCrop bool) CropResult {
 	if disableCrop {
 		return CropResult{Required: false, Message: "Skipped"}
 	}
