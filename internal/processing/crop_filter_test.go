@@ -38,7 +38,7 @@ func TestDisplayAspectAfterCrop(t *testing.T) {
 	}
 	crop := &ffms.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
 
-	got := displayAspectAfterCrop(props, crop)
+	got := displayAspectAfterCrop(props, nil, crop)
 	if got != "64:27" {
 		t.Fatalf("displayAspectAfterCrop() = %q, want %q", got, "64:27")
 	}
@@ -51,7 +51,22 @@ func TestDisplayAspectAfterCropIgnoresSquarePixels(t *testing.T) {
 		SampleAspectRatioNum: 1,
 		SampleAspectRatioDen: 1,
 	}
-	if got := displayAspectAfterCrop(props, nil); got != "" {
+	if got := displayAspectAfterCrop(props, nil, nil); got != "" {
 		t.Fatalf("displayAspectAfterCrop() = %q, want empty string", got)
+	}
+}
+
+func TestDisplayAspectAfterCropFallsBackToFFMSInfo(t *testing.T) {
+	inf := &ffms.VidInf{
+		Width:                720,
+		Height:               480,
+		SampleAspectRatioNum: 32,
+		SampleAspectRatioDen: 27,
+	}
+	crop := &ffms.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
+
+	got := displayAspectAfterCrop(nil, inf, crop)
+	if got != "64:27" {
+		t.Fatalf("displayAspectAfterCrop() = %q, want %q", got, "64:27")
 	}
 }

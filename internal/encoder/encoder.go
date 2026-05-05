@@ -50,7 +50,7 @@ func buildSvtArgs(cfg *EncConfig) []string {
 		"-i", "stdin",
 		"--input-depth", "10", // Always 10-bit input (8-bit sources are converted)
 		"--color-format", "1", // YUV420
-		"--profile", "0",      // Main profile
+		"--profile", "0", // Main profile
 		"--passes", "1",
 		"--tile-rows", "0",
 		"--tile-columns", "0",
@@ -59,9 +59,9 @@ func buildSvtArgs(cfg *EncConfig) []string {
 		"--fps-num", fmt.Sprintf("%d", cfg.Inf.FPSNum),
 		"--fps-denom", fmt.Sprintf("%d", cfg.Inf.FPSDen),
 		"--keyint", fmt.Sprintf("%d", keyintFrames), // Keyframe every 10 seconds
-		"--rc", "0",       // CRF mode
-		"--scd", "1",      // Enable scene change detection for keyframes within chunks
-		"--scm", "0",      // Screen content mode disabled
+		"--rc", "0", // CRF mode
+		"--scd", "1", // Enable scene change detection for keyframes within chunks
+		"--scm", "0", // Screen content mode disabled
 		"--progress", "2", // Progress to stderr
 		"--frames", fmt.Sprintf("%d", cfg.Frames),
 		"--crf", fmt.Sprintf("%.0f", cfg.CRF),
@@ -85,6 +85,12 @@ func buildSvtArgs(cfg *EncConfig) []string {
 	}
 	if cfg.Inf.MatrixCoefficients != nil {
 		args = append(args, "--matrix-coefficients", fmt.Sprintf("%d", *cfg.Inf.MatrixCoefficients))
+	}
+	if cfg.Inf.ColorRange != nil {
+		args = append(args, "--color-range", fmt.Sprintf("%d", *cfg.Inf.ColorRange))
+	}
+	if cfg.Inf.ChromaSamplePosition != nil {
+		args = append(args, "--chroma-sample-position", chromaSamplePosition(*cfg.Inf.ChromaSamplePosition))
 	}
 
 	// Add mastering display if available
@@ -115,6 +121,17 @@ func buildSvtArgs(cfg *EncConfig) []string {
 	args = append(args, "-b", cfg.Output)
 
 	return args
+}
+
+func chromaSamplePosition(position int32) string {
+	switch position {
+	case 1:
+		return "vertical"
+	case 2:
+		return "colocated"
+	default:
+		return "unknown"
+	}
 }
 
 // SvtArgsString returns a human-readable string of the SVT-AV1 arguments.

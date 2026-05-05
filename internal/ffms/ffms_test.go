@@ -78,6 +78,16 @@ func TestGetDecodeStratForRectSupportsAsymmetricCrop(t *testing.T) {
 	}
 }
 
+func TestSVTMetadataMapping(t *testing.T) {
+	assertInt32Ptr(t, svtColorRange(1), 0)
+	assertInt32Ptr(t, svtColorRange(2), 1)
+	assertNil(t, svtColorRange(0))
+
+	assertInt32Ptr(t, svtChromaSamplePosition(1), 1)
+	assertInt32Ptr(t, svtChromaSamplePosition(3), 2)
+	assertNil(t, svtChromaSamplePosition(2))
+}
+
 func make8BitPlane(width, height, stride int, base byte) []byte {
 	plane := make([]byte, stride*height)
 	for row := 0; row < height; row++ {
@@ -115,5 +125,22 @@ func assertSamples(t *testing.T, got, want []uint16) {
 		if got[i] != want[i] {
 			t.Fatalf("sample %d = %d, want %d\ngot:  %v\nwant: %v", i, got[i], want[i], got, want)
 		}
+	}
+}
+
+func assertInt32Ptr(t *testing.T, got *int32, want int32) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("got nil, want %d", want)
+	}
+	if *got != want {
+		t.Fatalf("got %d, want %d", *got, want)
+	}
+}
+
+func assertNil(t *testing.T, got *int32) {
+	t.Helper()
+	if got != nil {
+		t.Fatalf("got %d, want nil", *got)
 	}
 }

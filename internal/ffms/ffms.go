@@ -67,9 +67,13 @@ type VidInf struct {
 	FPSNum                  uint32
 	FPSDen                  uint32
 	Frames                  int
+	SampleAspectRatioNum    uint32
+	SampleAspectRatioDen    uint32
 	ColorPrimaries          *int32
 	TransferCharacteristics *int32
 	MatrixCoefficients      *int32
+	ColorRange              *int32
+	ChromaSamplePosition    *int32
 	Is10Bit                 bool
 	MasteringDisplay        *string
 	ContentLight            *string
@@ -206,6 +210,10 @@ func GetVidInf(idx *VidIdx) (*VidInf, error) {
 		Frames:      int(props.NumFrames),
 		PixelFormat: int(frame.ConvertedPixelFormat),
 	}
+	if props.SARNum > 0 && props.SARDen > 0 {
+		inf.SampleAspectRatioNum = uint32(props.SARNum)
+		inf.SampleAspectRatioDen = uint32(props.SARDen)
+	}
 
 	// Determine if 10-bit based on pixel format
 	pixFmt := int(frame.ConvertedPixelFormat)
@@ -221,41 +229,128 @@ func GetVidInf(idx *VidIdx) (*VidInf, error) {
 		tc := int32(frame.TransferCharateristics)
 		inf.TransferCharacteristics = &tc
 	}
-	if frame.ColorSpace > 0 {
-		mc := int32(frame.ColorSpace)
+	colorSpace := int(frame.ColorSpace)
+	if colorSpace <= 0 {
+		colorSpace = int(props.ColorSpace)
+	}
+	if colorSpace > 0 {
+		mc := int32(colorSpace)
 		inf.MatrixCoefficients = &mc
 	}
-
-	// Extract mastering display metadata (SMPTE 2086) if available
-	if props.HasMasteringDisplayPrimaries != 0 && props.HasMasteringDisplayLuminance != 0 {
-		// Format: G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)
-		// Array indices: 0=Red, 1=Green, 2=Blue (matching SVT-AV1 expected order)
-		md := fmt.Sprintf(
-			"G(%.4f,%.4f)B(%.4f,%.4f)R(%.4f,%.4f)WP(%.4f,%.4f)L(%.4f,%.4f)",
-			float64(props.MasteringDisplayPrimariesX[1]),
-			float64(props.MasteringDisplayPrimariesY[1]),
-			float64(props.MasteringDisplayPrimariesX[2]),
-			float64(props.MasteringDisplayPrimariesY[2]),
-			float64(props.MasteringDisplayPrimariesX[0]),
-			float64(props.MasteringDisplayPrimariesY[0]),
-			float64(props.MasteringDisplayWhitePointX),
-			float64(props.MasteringDisplayWhitePointY),
-			float64(props.MasteringDisplayMaxLuminance),
-			float64(props.MasteringDisplayMinLuminance),
-		)
-		inf.MasteringDisplay = &md
+	rangeSource := int(frame.ColorRange)
+	if rangeSource == 0 {
+		rangeSource = int(props.ColorRange)
 	}
+	inf.ColorRange = svtColorRange(rangeSource)
+	inf.ChromaSamplePosition = svtChromaSamplePosition(int(frame.ChromaLocation))
 
-	// Extract content light level (MaxCLL, MaxFALL) if available
-	if props.HasContentLightLevel != 0 {
-		cl := fmt.Sprintf("%d,%d",
-			props.ContentLightLevelMax,
-			props.ContentLightLevelAverage,
-		)
-		inf.ContentLight = &cl
+	// Prefer per-frame HDR metadata when present, then fall back to stream/container properties.
+	if md := masteringDisplayFromFrame(frame); md != nil {
+		inf.MasteringDisplay = md
+	} else {
+		inf.MasteringDisplay = masteringDisplayFromProps(props)
+	}
+	if cl := contentLightFromFrame(frame); cl != nil {
+		inf.ContentLight = cl
+	} else {
+		inf.ContentLight = contentLightFromProps(props)
 	}
 
 	return inf, nil
+}
+
+func svtColorRange(ffmsRange int) *int32 {
+	var rangeValue int32
+	switch ffmsRange {
+	case C.FFMS_CR_MPEG:
+		rangeValue = 0 // SVT-AV1 studio/limited range
+	case C.FFMS_CR_JPEG:
+		rangeValue = 1 // SVT-AV1 full range
+	default:
+		return nil
+	}
+	return &rangeValue
+}
+
+func svtChromaSamplePosition(ffmsLocation int) *int32 {
+	var position int32
+	switch ffmsLocation {
+	case C.FFMS_LOC_LEFT:
+		position = 1 // AV1 vertical/left
+	case C.FFMS_LOC_TOPLEFT:
+		position = 2 // AV1 colocated/topleft
+	default:
+		return nil
+	}
+	return &position
+}
+
+func masteringDisplayFromFrame(frame *C.FFMS_Frame) *string {
+	if frame.HasMasteringDisplayPrimaries == 0 || frame.HasMasteringDisplayLuminance == 0 {
+		return nil
+	}
+	return formatMasteringDisplay(
+		float64(frame.MasteringDisplayPrimariesX[0]),
+		float64(frame.MasteringDisplayPrimariesY[0]),
+		float64(frame.MasteringDisplayPrimariesX[1]),
+		float64(frame.MasteringDisplayPrimariesY[1]),
+		float64(frame.MasteringDisplayPrimariesX[2]),
+		float64(frame.MasteringDisplayPrimariesY[2]),
+		float64(frame.MasteringDisplayWhitePointX),
+		float64(frame.MasteringDisplayWhitePointY),
+		float64(frame.MasteringDisplayMaxLuminance),
+		float64(frame.MasteringDisplayMinLuminance),
+	)
+}
+
+func masteringDisplayFromProps(props *C.FFMS_VideoProperties) *string {
+	if props.HasMasteringDisplayPrimaries == 0 || props.HasMasteringDisplayLuminance == 0 {
+		return nil
+	}
+	return formatMasteringDisplay(
+		float64(props.MasteringDisplayPrimariesX[0]),
+		float64(props.MasteringDisplayPrimariesY[0]),
+		float64(props.MasteringDisplayPrimariesX[1]),
+		float64(props.MasteringDisplayPrimariesY[1]),
+		float64(props.MasteringDisplayPrimariesX[2]),
+		float64(props.MasteringDisplayPrimariesY[2]),
+		float64(props.MasteringDisplayWhitePointX),
+		float64(props.MasteringDisplayWhitePointY),
+		float64(props.MasteringDisplayMaxLuminance),
+		float64(props.MasteringDisplayMinLuminance),
+	)
+}
+
+func formatMasteringDisplay(rx, ry, gx, gy, bx, by, wpx, wpy, maxLum, minLum float64) *string {
+	// SVT-AV1 expects G, B, R ordering in the mastering-display string.
+	md := fmt.Sprintf(
+		"G(%.4f,%.4f)B(%.4f,%.4f)R(%.4f,%.4f)WP(%.4f,%.4f)L(%.4f,%.4f)",
+		gx, gy,
+		bx, by,
+		rx, ry,
+		wpx, wpy,
+		maxLum, minLum,
+	)
+	return &md
+}
+
+func contentLightFromFrame(frame *C.FFMS_Frame) *string {
+	if frame.HasContentLightLevel == 0 {
+		return nil
+	}
+	return formatContentLight(uint32(frame.ContentLightLevelMax), uint32(frame.ContentLightLevelAverage))
+}
+
+func contentLightFromProps(props *C.FFMS_VideoProperties) *string {
+	if props.HasContentLightLevel == 0 {
+		return nil
+	}
+	return formatContentLight(uint32(props.ContentLightLevelMax), uint32(props.ContentLightLevelAverage))
+}
+
+func formatContentLight(maxCLL, maxFALL uint32) *string {
+	cl := fmt.Sprintf("%d,%d", maxCLL, maxFALL)
+	return &cl
 }
 
 // GetDecodeStrat determines the optimal decoding strategy based on video properties.

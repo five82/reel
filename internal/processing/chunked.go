@@ -225,7 +225,7 @@ func ProcessChunked(
 		return CropResult{}, fmt.Errorf("video merge failed: %w", err)
 	}
 
-	displayAspect := displayAspectAfterCrop(videoProps, cropRect)
+	displayAspect := displayAspectAfterCrop(videoProps, vidInf, cropRect)
 
 	// Wait for audio extraction to complete
 	<-audioDone
@@ -243,16 +243,12 @@ func ProcessChunked(
 }
 
 // displayAspectAfterCrop returns the display aspect ratio to signal after cropping anamorphic sources.
-func displayAspectAfterCrop(props *ffprobe.VideoProperties, cropRect *ffms.CropRect) string {
-	if props == nil || props.SampleAspectRatioNum == 0 || props.SampleAspectRatioDen == 0 {
-		return ""
-	}
-	if props.SampleAspectRatioNum == props.SampleAspectRatioDen {
+func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *ffms.VidInf, cropRect *ffms.CropRect) string {
+	width, height, sarNum, sarDen := aspectInputs(props, inf)
+	if sarNum == 0 || sarDen == 0 || sarNum == sarDen {
 		return ""
 	}
 
-	width := props.Width
-	height := props.Height
 	if cropRect != nil {
 		width = cropRect.Width
 		height = cropRect.Height
@@ -261,10 +257,32 @@ func displayAspectAfterCrop(props *ffprobe.VideoProperties, cropRect *ffms.CropR
 		return ""
 	}
 
-	num := uint64(width) * uint64(props.SampleAspectRatioNum)
-	den := uint64(height) * uint64(props.SampleAspectRatioDen)
+	num := uint64(width) * uint64(sarNum)
+	den := uint64(height) * uint64(sarDen)
 	g := gcd(num, den)
 	return fmt.Sprintf("%d:%d", num/g, den/g)
+}
+
+func aspectInputs(props *ffprobe.VideoProperties, inf *ffms.VidInf) (width, height, sarNum, sarDen uint32) {
+	if props != nil {
+		width = props.Width
+		height = props.Height
+		sarNum = props.SampleAspectRatioNum
+		sarDen = props.SampleAspectRatioDen
+	}
+	if inf != nil {
+		if width == 0 {
+			width = inf.Width
+		}
+		if height == 0 {
+			height = inf.Height
+		}
+		if sarNum == 0 || sarDen == 0 {
+			sarNum = inf.SampleAspectRatioNum
+			sarDen = inf.SampleAspectRatioDen
+		}
+	}
+	return width, height, sarNum, sarDen
 }
 
 func gcd(a, b uint64) uint64 {
