@@ -130,11 +130,14 @@ func ProcessChunked(
 	avgChunkDuration := avgChunkFrames / fps
 	rep.Verbose(fmt.Sprintf("Average chunk duration: %.1fs (%d frames)", avgChunkDuration, int(avgChunkFrames)))
 
-	// Convert crop filter to cropH/cropV
-	var cropH, cropV uint32
+	// Convert crop filter to an exact source rectangle.
+	var cropRect *ffms.CropRect
 	if cropResult.Required && cropResult.CropFilter != "" {
-		cropH, cropV = parseCropFilter(cropResult.CropFilter, videoProps.Width, videoProps.Height)
-		rep.Verbose(fmt.Sprintf("Crop offsets: horizontal %d, vertical %d", cropH, cropV))
+		cropRect, err = parseCropFilter(cropResult.CropFilter, videoProps.Width, videoProps.Height)
+		if err != nil {
+			return CropResult{}, fmt.Errorf("invalid crop filter %q: %w", cropResult.CropFilter, err)
+		}
+		rep.Verbose(fmt.Sprintf("Crop rectangle: %dx%d at +%d+%d", cropRect.Width, cropRect.Height, cropRect.X, cropRect.Y))
 	}
 
 	// Setup encode config
@@ -222,8 +225,7 @@ func ProcessChunked(
 		encCfg,
 		idx,
 		workDir,
-		cropH,
-		cropV,
+		cropRect,
 		progressCallback,
 	)
 
@@ -248,6 +250,8 @@ func ProcessChunked(
 		return CropResult{}, fmt.Errorf("video merge failed: %w", err)
 	}
 
+	displayAspect := displayAspectAfterCrop(videoProps, cropRect)
+
 	// Wait for audio extraction to complete
 	<-audioDone
 	if audioErr != nil {
@@ -256,30 +260,63 @@ func ProcessChunked(
 
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
-	if err := chunk.MuxFinal(inputPath, workDir, outputPath, audioStreams); err != nil {
+	if err := chunk.MuxFinal(inputPath, workDir, outputPath, audioStreams, displayAspect); err != nil {
 		return CropResult{}, fmt.Errorf("final mux failed: %w", err)
 	}
 
 	return cropResult, nil
 }
 
-// parseCropFilter extracts cropH and cropV from a crop filter string.
+// parseCropFilter extracts an exact FFmpeg crop rectangle.
 // Format: "crop=W:H:X:Y" where X is left offset and Y is top offset.
-func parseCropFilter(filter string, srcWidth, srcHeight uint32) (cropH, cropV uint32) {
-	// Parse "crop=W:H:X:Y"
+func displayAspectAfterCrop(props *ffprobe.VideoProperties, cropRect *ffms.CropRect) string {
+	if props == nil || props.SampleAspectRatioNum == 0 || props.SampleAspectRatioDen == 0 {
+		return ""
+	}
+	if props.SampleAspectRatioNum == props.SampleAspectRatioDen {
+		return ""
+	}
+
+	width := props.Width
+	height := props.Height
+	if cropRect != nil {
+		width = cropRect.Width
+		height = cropRect.Height
+	}
+	if width == 0 || height == 0 {
+		return ""
+	}
+
+	num := uint64(width) * uint64(props.SampleAspectRatioNum)
+	den := uint64(height) * uint64(props.SampleAspectRatioDen)
+	g := gcd(num, den)
+	return fmt.Sprintf("%d:%d", num/g, den/g)
+}
+
+func gcd(a, b uint64) uint64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*ffms.CropRect, error) {
 	var w, h, x, y uint32
 	_, err := fmt.Sscanf(filter, "crop=%d:%d:%d:%d", &w, &h, &x, &y)
 	if err != nil {
-		return 0, 0
+		return nil, err
+	}
+	if w == 0 || h == 0 {
+		return nil, fmt.Errorf("width and height must be non-zero")
+	}
+	if x > srcWidth || w > srcWidth-x || y > srcHeight || h > srcHeight-y {
+		return nil, fmt.Errorf("rectangle %dx%d+%d+%d exceeds source %dx%d", w, h, x, y, srcWidth, srcHeight)
+	}
+	if x%2 != 0 || y%2 != 0 || w%2 != 0 || h%2 != 0 {
+		return nil, fmt.Errorf("YUV420 crop offsets and dimensions must be even")
 	}
 
-	// cropH = X (horizontal offset from left)
-	// cropV = Y (vertical offset from top)
-	// These represent how many pixels are cropped from each side
-	cropH = x
-	cropV = y
-
-	return cropH, cropV
+	return &ffms.CropRect{X: x, Y: y, Width: w, Height: h}, nil
 }
 
 // CheckChunkedDependencies verifies that required tools are available.

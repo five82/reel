@@ -112,14 +112,22 @@ const (
 type CropCalc struct {
 	NewW     uint32 // Cropped width
 	NewH     uint32 // Cropped height
-	YStride  int    // Source Y plane stride
-	UVStride int    // Source UV plane stride
-	YStart   int    // Byte offset to first Y pixel
+	YStride  int    // Source Y plane stride assuming tightly packed input
+	UVStride int    // Source UV plane stride assuming tightly packed input
+	YStart   int    // Byte offset to first Y pixel assuming tightly packed input
 	YLen     int    // Bytes per row of cropped Y
-	UVOff    int    // Byte offset to first UV pixel
+	UVOff    int    // Byte offset to first UV pixel assuming tightly packed input
 	UVLen    int    // Bytes per row of cropped UV
-	CropV    uint32 // Vertical crop amount (top/bottom)
-	CropH    uint32 // Horizontal crop amount (left/right)
+	CropX    uint32 // Left crop offset
+	CropY    uint32 // Top crop offset
+}
+
+// CropRect describes the exact source rectangle to encode.
+type CropRect struct {
+	X      uint32 // Left offset in source pixels
+	Y      uint32 // Top offset in source pixels
+	Width  uint32 // Output width in pixels
+	Height uint32 // Output height in pixels
 }
 
 // NewVidIdx creates a new video index for the given file path.
@@ -257,14 +265,39 @@ func GetVidInf(idx *VidIdx) (*VidInf, error) {
 
 // GetDecodeStrat determines the optimal decoding strategy based on video properties.
 func GetDecodeStrat(idx *VidIdx, inf *VidInf, cropH, cropV uint32) (DecodeStrat, *CropCalc, error) {
-	hasCrop := cropH > 0 || cropV > 0
+	var rect *CropRect
+	if cropH > 0 || cropV > 0 {
+		if inf == nil {
+			return B8Fast, nil, fmt.Errorf("nil video info")
+		}
+		if cropH >= inf.Width || cropH >= inf.Width-cropH || cropV >= inf.Height || cropV >= inf.Height-cropV {
+			return B8Fast, nil, fmt.Errorf("invalid symmetric crop %dx%d for source %dx%d", cropH, cropV, inf.Width, inf.Height)
+		}
+		rect = &CropRect{
+			X:      cropH,
+			Y:      cropV,
+			Width:  inf.Width - 2*cropH,
+			Height: inf.Height - 2*cropV,
+		}
+	}
+	return GetDecodeStratForRect(idx, inf, rect)
+}
 
-	// Calculate cropped dimensions
-	newW := inf.Width - 2*cropH
-	newH := inf.Height - 2*cropV
+// GetDecodeStratForRect determines the optimal decoding strategy for an exact crop rectangle.
+func GetDecodeStratForRect(_ *VidIdx, inf *VidInf, rect *CropRect) (DecodeStrat, *CropCalc, error) {
+	if inf == nil {
+		return B8Fast, nil, fmt.Errorf("nil video info")
+	}
 
-	// Determine if we need stride handling
-	// For simplicity, assume packed formats don't need stride handling
+	hasCrop := rect != nil && (rect.X != 0 || rect.Y != 0 || rect.Width != inf.Width || rect.Height != inf.Height)
+	if rect != nil {
+		if err := validateCropRect(inf, *rect); err != nil {
+			return B8Fast, nil, err
+		}
+	}
+
+	// Determine if we need stride handling.
+	// ExtractFrame always honors frame linesizes, so the fast/stride distinction is informational.
 	needsStride := false
 
 	var strat DecodeStrat
@@ -306,20 +339,33 @@ func GetDecodeStrat(idx *VidIdx, inf *VidInf, cropH, cropV uint32) (DecodeStrat,
 		}
 
 		cropCalc = &CropCalc{
-			NewW:     newW,
-			NewH:     newH,
+			NewW:     rect.Width,
+			NewH:     rect.Height,
 			YStride:  int(inf.Width) * bytesPerPixel,
 			UVStride: int(inf.Width) * bytesPerPixel / 2,
-			YStart:   int(cropV)*int(inf.Width)*bytesPerPixel + int(cropH)*bytesPerPixel,
-			YLen:     int(newW) * bytesPerPixel,
-			UVOff:    int(cropV/2)*int(inf.Width)*bytesPerPixel/2 + int(cropH)*bytesPerPixel/2,
-			UVLen:    int(newW) * bytesPerPixel / 2,
-			CropV:    cropV,
-			CropH:    cropH,
+			YStart:   int(rect.Y)*int(inf.Width)*bytesPerPixel + int(rect.X)*bytesPerPixel,
+			YLen:     int(rect.Width) * bytesPerPixel,
+			UVOff:    int(rect.Y/2)*int(inf.Width)*bytesPerPixel/2 + int(rect.X)*bytesPerPixel/2,
+			UVLen:    int(rect.Width) * bytesPerPixel / 2,
+			CropX:    rect.X,
+			CropY:    rect.Y,
 		}
 	}
 
 	return strat, cropCalc, nil
+}
+
+func validateCropRect(inf *VidInf, rect CropRect) error {
+	if rect.Width == 0 || rect.Height == 0 {
+		return fmt.Errorf("invalid crop rectangle: width and height must be non-zero")
+	}
+	if rect.X > inf.Width || rect.Width > inf.Width-rect.X || rect.Y > inf.Height || rect.Height > inf.Height-rect.Y {
+		return fmt.Errorf("invalid crop rectangle %dx%d+%d+%d for source %dx%d", rect.Width, rect.Height, rect.X, rect.Y, inf.Width, inf.Height)
+	}
+	if rect.X%2 != 0 || rect.Y%2 != 0 || rect.Width%2 != 0 || rect.Height%2 != 0 {
+		return fmt.Errorf("invalid crop rectangle %dx%d+%d+%d: YUV420 crop offsets and dimensions must be even", rect.Width, rect.Height, rect.X, rect.Y)
+	}
+	return nil
 }
 
 // ThrVidSrc creates a threaded video source from an index.
@@ -383,9 +429,9 @@ func ExtractFrame(src *VidSrc, frameIdx int, output []byte, inf *VidInf, strat D
 	}
 
 	// Output is always 10-bit (16 bits per sample)
-	yPlaneSize := int(width) * int(height) * 2       // Y: 2 bytes per pixel
-	uPlaneSize := int(width) * int(height) / 4 * 2   // U: 1/4 pixels, 2 bytes each
-	vPlaneSize := int(width) * int(height) / 4 * 2   // V: 1/4 pixels, 2 bytes each
+	yPlaneSize := int(width) * int(height) * 2     // Y: 2 bytes per pixel
+	uPlaneSize := int(width) * int(height) / 4 * 2 // U: 1/4 pixels, 2 bytes each
+	vPlaneSize := int(width) * int(height) / 4 * 2 // V: 1/4 pixels, 2 bytes each
 
 	expectedSize := yPlaneSize + uPlaneSize + vPlaneSize
 	if len(output) < expectedSize {
@@ -396,36 +442,97 @@ func ExtractFrame(src *VidSrc, frameIdx int, output []byte, inf *VidInf, strat D
 	if frame.Data[0] == nil || frame.Data[1] == nil || frame.Data[2] == nil {
 		return fmt.Errorf("frame %d has nil plane data", frameIdx)
 	}
-	yData := unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[0])), int(frame.Linesize[0])*int(inf.Height))
-	uData := unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[1])), int(frame.Linesize[1])*int(inf.Height/2))
-	vData := unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[2])), int(frame.Linesize[2])*int(inf.Height/2))
+	planes := [3][]byte{
+		unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[0])), int(frame.Linesize[0])*int(inf.Height)),
+		unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[1])), int(frame.Linesize[1])*int(inf.Height/2)),
+		unsafe.Slice((*byte)(unsafe.Pointer(frame.Data[2])), int(frame.Linesize[2])*int(inf.Height/2)),
+	}
+	linesizes := [3]int{int(frame.Linesize[0]), int(frame.Linesize[1]), int(frame.Linesize[2])}
 
-	if inf.Is10Bit {
-		// Source is 10-bit, copy directly
-		srcYStride := int(frame.Linesize[0])
-		srcUVStride := int(frame.Linesize[1])
-		dstYStride := int(width) * 2
-		dstUVStride := int(width/2) * 2
+	return copyFrameTo10Bit(output[:expectedSize], planes, linesizes, inf, cropCalc)
+}
 
-		// Copy Y plane
-		copyPlane10bit(output[:yPlaneSize], yData, int(height), dstYStride, srcYStride)
-		// Copy U plane
-		copyPlane10bit(output[yPlaneSize:yPlaneSize+uPlaneSize], uData, int(height/2), dstUVStride, srcUVStride)
-		// Copy V plane
-		copyPlane10bit(output[yPlaneSize+uPlaneSize:], vData, int(height/2), dstUVStride, srcUVStride)
-	} else {
-		// Source is 8-bit, convert to 10-bit (left shift by 2)
-		srcYStride := int(frame.Linesize[0])
-		srcUVStride := int(frame.Linesize[1])
-
-		// Convert Y plane
-		convert8to10bit(output[:yPlaneSize], yData, int(width), int(height), srcYStride)
-		// Convert U plane
-		convert8to10bit(output[yPlaneSize:yPlaneSize+uPlaneSize], uData, int(width/2), int(height/2), srcUVStride)
-		// Convert V plane
-		convert8to10bit(output[yPlaneSize+uPlaneSize:], vData, int(width/2), int(height/2), srcUVStride)
+func copyFrameTo10Bit(output []byte, planes [3][]byte, linesizes [3]int, inf *VidInf, cropCalc *CropCalc) error {
+	width := inf.Width
+	height := inf.Height
+	cropX := uint32(0)
+	cropY := uint32(0)
+	if cropCalc != nil {
+		width = cropCalc.NewW
+		height = cropCalc.NewH
+		cropX = cropCalc.CropX
+		cropY = cropCalc.CropY
 	}
 
+	yPlaneSize := int(width) * int(height) * 2
+	uPlaneSize := int(width) * int(height) / 4 * 2
+	vPlaneSize := int(width) * int(height) / 4 * 2
+	expectedSize := yPlaneSize + uPlaneSize + vPlaneSize
+	if len(output) < expectedSize {
+		return fmt.Errorf("output buffer too small: need %d, got %d", expectedSize, len(output))
+	}
+
+	if inf.Is10Bit {
+		bytesPerPixel := 2
+		yStart := int(cropY)*linesizes[0] + int(cropX)*bytesPerPixel
+		uStart := int(cropY/2)*linesizes[1] + int(cropX/2)*bytesPerPixel
+		vStart := int(cropY/2)*linesizes[2] + int(cropX/2)*bytesPerPixel
+		yRowLen := int(width) * bytesPerPixel
+		uvRowLen := int(width/2) * bytesPerPixel
+
+		if err := validatePlaneBounds("Y", planes[0], yStart, int(height), yRowLen, linesizes[0]); err != nil {
+			return err
+		}
+		if err := validatePlaneBounds("U", planes[1], uStart, int(height/2), uvRowLen, linesizes[1]); err != nil {
+			return err
+		}
+		if err := validatePlaneBounds("V", planes[2], vStart, int(height/2), uvRowLen, linesizes[2]); err != nil {
+			return err
+		}
+
+		copyPlane10bit(output[:yPlaneSize], planes[0][yStart:], int(height), yRowLen, linesizes[0])
+		copyPlane10bit(output[yPlaneSize:yPlaneSize+uPlaneSize], planes[1][uStart:], int(height/2), uvRowLen, linesizes[1])
+		copyPlane10bit(output[yPlaneSize+uPlaneSize:], planes[2][vStart:], int(height/2), uvRowLen, linesizes[2])
+		return nil
+	}
+
+	// Source is 8-bit, convert to 10-bit (left shift by 2).
+	yStart := int(cropY)*linesizes[0] + int(cropX)
+	uStart := int(cropY/2)*linesizes[1] + int(cropX/2)
+	vStart := int(cropY/2)*linesizes[2] + int(cropX/2)
+	yRowLen := int(width)
+	uvRowLen := int(width / 2)
+
+	if err := validatePlaneBounds("Y", planes[0], yStart, int(height), yRowLen, linesizes[0]); err != nil {
+		return err
+	}
+	if err := validatePlaneBounds("U", planes[1], uStart, int(height/2), uvRowLen, linesizes[1]); err != nil {
+		return err
+	}
+	if err := validatePlaneBounds("V", planes[2], vStart, int(height/2), uvRowLen, linesizes[2]); err != nil {
+		return err
+	}
+
+	convert8to10bit(output[:yPlaneSize], planes[0][yStart:], int(width), int(height), linesizes[0])
+	convert8to10bit(output[yPlaneSize:yPlaneSize+uPlaneSize], planes[1][uStart:], int(width/2), int(height/2), linesizes[1])
+	convert8to10bit(output[yPlaneSize+uPlaneSize:], planes[2][vStart:], int(width/2), int(height/2), linesizes[2])
+	return nil
+}
+
+func validatePlaneBounds(name string, plane []byte, start, rows, rowLen, stride int) error {
+	if start < 0 || rows < 0 || rowLen < 0 || stride < rowLen {
+		return fmt.Errorf("invalid %s plane geometry: start=%d rows=%d rowLen=%d stride=%d", name, start, rows, rowLen, stride)
+	}
+	if rows == 0 {
+		if start > len(plane) {
+			return fmt.Errorf("%s plane crop starts beyond plane data: start=%d len=%d", name, start, len(plane))
+		}
+		return nil
+	}
+	end := start + (rows-1)*stride + rowLen
+	if end > len(plane) {
+		return fmt.Errorf("%s plane crop exceeds plane data: end=%d len=%d", name, end, len(plane))
+	}
 	return nil
 }
 

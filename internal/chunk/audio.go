@@ -63,7 +63,7 @@ func calculateAudioBitrate(channels uint32) uint32 {
 }
 
 // MuxFinal combines the encoded video with audio and other streams.
-func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.AudioStreamInfo) error {
+func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.AudioStreamInfo, displayAspect string) error {
 	videoPath := GetVideoPath(workDir)
 	audioPath := GetAudioPath(workDir)
 
@@ -108,6 +108,10 @@ func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.Audi
 	// Copy metadata and chapters
 	args = append(args, "-map_metadata", "0")
 	args = append(args, "-map_chapters", fmt.Sprintf("%d", subtitleInputIdx))
+
+	if displayAspect != "" {
+		args = append(args, "-aspect:v:0", displayAspect)
+	}
 
 	// Faststart for web playback
 	args = append(args, "-movflags", "+faststart")

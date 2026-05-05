@@ -48,7 +48,7 @@ func EncodeAll(
 	cfg *EncodeConfig,
 	idx *ffms.VidIdx,
 	workDir string,
-	cropH, cropV uint32,
+	cropRect *ffms.CropRect,
 	progressCb ProgressCallback,
 ) (int, error) {
 	// Ensure encode directory exists
@@ -78,7 +78,7 @@ func EncodeAll(
 	}
 
 	// Determine decode strategy
-	strat, cropCalc, err := ffms.GetDecodeStrat(idx, inf, cropH, cropV)
+	strat, cropCalc, err := ffms.GetDecodeStratForRect(idx, inf, cropRect)
 	if err != nil {
 		return 0, fmt.Errorf("failed to determine decode strategy: %w", err)
 	}

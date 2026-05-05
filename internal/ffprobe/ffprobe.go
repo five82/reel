@@ -19,10 +19,12 @@ type MediaInfo struct {
 
 // VideoProperties contains video stream properties.
 type VideoProperties struct {
-	Width        uint32
-	Height       uint32
-	DurationSecs float64
-	HDRInfo      HDRInfo
+	Width                uint32
+	Height               uint32
+	DurationSecs         float64
+	SampleAspectRatioNum uint32
+	SampleAspectRatioDen uint32
+	HDRInfo              HDRInfo
 }
 
 // HDRInfo contains HDR-related information.
@@ -71,19 +73,20 @@ type ffprobeFormat struct {
 }
 
 type ffprobeStream struct {
-	CodecType        string            `json:"codec_type"`
-	CodecName        string            `json:"codec_name"`
-	Profile          string            `json:"profile"`
-	Width            int64             `json:"width"`
-	Height           int64             `json:"height"`
-	Channels         int               `json:"channels"`
-	NbFrames         string            `json:"nb_frames"`
-	PixFmt           string            `json:"pix_fmt"`
-	ColorPrimaries   string            `json:"color_primaries"`
-	ColorTransfer    string            `json:"color_transfer"`
-	ColorSpace       string            `json:"color_space"`
-	BitsPerRawSample string            `json:"bits_per_raw_sample"`
-	Disposition      StreamDisposition `json:"disposition"`
+	CodecType         string            `json:"codec_type"`
+	CodecName         string            `json:"codec_name"`
+	Profile           string            `json:"profile"`
+	Width             int64             `json:"width"`
+	Height            int64             `json:"height"`
+	Channels          int               `json:"channels"`
+	NbFrames          string            `json:"nb_frames"`
+	PixFmt            string            `json:"pix_fmt"`
+	ColorPrimaries    string            `json:"color_primaries"`
+	ColorTransfer     string            `json:"color_transfer"`
+	ColorSpace        string            `json:"color_space"`
+	BitsPerRawSample  string            `json:"bits_per_raw_sample"`
+	SampleAspectRatio string            `json:"sample_aspect_ratio"`
+	Disposition       StreamDisposition `json:"disposition"`
 }
 
 // runFFprobe executes ffprobe and returns the parsed output.
@@ -185,6 +188,8 @@ func GetVideoProperties(inputPath string) (*VideoProperties, error) {
 		}
 	}
 
+	sarNum, sarDen := parseRatio(videoStream.SampleAspectRatio)
+
 	// Detect HDR from color metadata
 	hdrInfo := HDRInfo{
 		ColourPrimaries:         videoStream.ColorPrimaries,
@@ -195,11 +200,29 @@ func GetVideoProperties(inputPath string) (*VideoProperties, error) {
 	}
 
 	return &VideoProperties{
-		Width:        uint32(videoStream.Width),
-		Height:       uint32(videoStream.Height),
-		DurationSecs: durationSecs,
-		HDRInfo:      hdrInfo,
+		Width:                uint32(videoStream.Width),
+		Height:               uint32(videoStream.Height),
+		DurationSecs:         durationSecs,
+		SampleAspectRatioNum: sarNum,
+		SampleAspectRatioDen: sarDen,
+		HDRInfo:              hdrInfo,
 	}, nil
+}
+
+func parseRatio(ratio string) (uint32, uint32) {
+	numStr, denStr, ok := strings.Cut(ratio, ":")
+	if !ok {
+		return 0, 0
+	}
+	num, err := strconv.ParseUint(numStr, 10, 32)
+	if err != nil || num == 0 {
+		return 0, 0
+	}
+	den, err := strconv.ParseUint(denStr, 10, 32)
+	if err != nil || den == 0 {
+		return 0, 0
+	}
+	return uint32(num), uint32(den)
 }
 
 // GetAudioChannels returns the channel count for each audio stream.
