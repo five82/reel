@@ -61,6 +61,7 @@ func EncodeAll(
 	if err != nil {
 		return 0, fmt.Errorf("failed to load resume info: %w", err)
 	}
+	resume = resume.Validate(workDir, chunks)
 	doneSet := resume.DoneSet()
 
 	// Count remaining chunks

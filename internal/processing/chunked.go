@@ -129,6 +129,14 @@ func ProcessChunked(
 		LogicalProcessors:     cfg.ThreadsPerWorker,
 	}
 
+	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, quality)
+	if err != nil {
+		return CropResult{}, err
+	}
+	if err := chunk.EnsureResumeManifest(workDir, manifest); err != nil {
+		return CropResult{}, err
+	}
+
 	// Calculate actual workers (may be capped based on resolution and memory)
 	actualWorkers, wasCapped := encode.CapWorkers(cfg.Workers, vidInf.Width, vidInf.Height)
 
@@ -290,6 +298,41 @@ func gcd(a, b uint64) uint64 {
 		a, b = b, a%b
 	}
 	return a
+}
+
+func buildResumeManifest(
+	inputPath string,
+	vidInf *ffms.VidInf,
+	cfg *config.Config,
+	chunks []chunk.Chunk,
+	cropFilter string,
+	chunkDuration float64,
+	quality uint32,
+) (chunk.ResumeManifest, error) {
+	stat, err := os.Stat(inputPath)
+	if err != nil {
+		return chunk.ResumeManifest{}, fmt.Errorf("failed to stat input for resume manifest: %w", err)
+	}
+	return chunk.ResumeManifest{
+		InputPath:             chunk.CanonicalInputPath(inputPath),
+		InputSize:             stat.Size(),
+		InputModTimeUnixNano:  stat.ModTime().UnixNano(),
+		Width:                 vidInf.Width,
+		Height:                vidInf.Height,
+		FPSNum:                vidInf.FPSNum,
+		FPSDen:                vidInf.FPSDen,
+		Frames:                vidInf.Frames,
+		CropFilter:            cropFilter,
+		Quality:               quality,
+		Preset:                cfg.SVTAV1Preset,
+		Tune:                  cfg.SVTAV1Tune,
+		ACBias:                cfg.SVTAV1ACBias,
+		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
+		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
+		VarianceOctile:        cfg.SVTAV1VarianceOctile,
+		ChunkDurationSecs:     chunkDuration,
+		ChunkFingerprint:      chunk.ChunkFingerprint(chunks),
+	}, nil
 }
 
 func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*ffms.CropRect, error) {

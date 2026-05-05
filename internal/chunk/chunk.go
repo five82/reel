@@ -3,9 +3,13 @@ package chunk
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +43,29 @@ type ChunkComp struct {
 // ResumeInf contains information for resuming an interrupted encode.
 type ResumeInf struct {
 	ChunksDone []ChunkComp
+}
+
+// ResumeManifest records the source and encode settings for safe resume.
+type ResumeManifest struct {
+	Version               int     `json:"version"`
+	InputPath             string  `json:"input_path"`
+	InputSize             int64   `json:"input_size"`
+	InputModTimeUnixNano  int64   `json:"input_mod_time_unix_nano"`
+	Width                 uint32  `json:"width"`
+	Height                uint32  `json:"height"`
+	FPSNum                uint32  `json:"fps_num"`
+	FPSDen                uint32  `json:"fps_den"`
+	Frames                int     `json:"frames"`
+	CropFilter            string  `json:"crop_filter,omitempty"`
+	Quality               uint32  `json:"quality"`
+	Preset                uint8   `json:"preset"`
+	Tune                  uint8   `json:"tune"`
+	ACBias                float32 `json:"ac_bias"`
+	EnableVarianceBoost   bool    `json:"enable_variance_boost"`
+	VarianceBoostStrength uint8   `json:"variance_boost_strength"`
+	VarianceOctile        uint8   `json:"variance_octile"`
+	ChunkDurationSecs     float64 `json:"chunk_duration_secs"`
+	ChunkFingerprint      string  `json:"chunk_fingerprint"`
 }
 
 // LoadScenes loads scene boundaries from a file.
@@ -212,6 +239,38 @@ func AppendDone(chunk ChunkComp, workDir string) error {
 	return nil
 }
 
+// Validate returns resume information only for chunks whose output files still exist and match done.txt.
+func (r *ResumeInf) Validate(workDir string, chunks []Chunk) *ResumeInf {
+	expectedFrames := make(map[int]int, len(chunks))
+	for _, ch := range chunks {
+		expectedFrames[ch.Idx] = ch.Frames()
+	}
+
+	valid := make(map[int]ChunkComp, len(r.ChunksDone))
+	for _, c := range r.ChunksDone {
+		expected, ok := expectedFrames[c.Idx]
+		if !ok || expected != c.Frames || !validChunkFile(workDir, c) {
+			continue
+		}
+		valid[c.Idx] = c
+	}
+
+	chunksDone := make([]ChunkComp, 0, len(valid))
+	for _, c := range valid {
+		chunksDone = append(chunksDone, c)
+	}
+	sort.Slice(chunksDone, func(i, j int) bool { return chunksDone[i].Idx < chunksDone[j].Idx })
+	return &ResumeInf{ChunksDone: chunksDone}
+}
+
+func validChunkFile(workDir string, c ChunkComp) bool {
+	stat, err := os.Stat(IVFPath(workDir, c.Idx))
+	if err != nil || stat.Size() <= 0 {
+		return false
+	}
+	return c.Size == uint64(stat.Size())
+}
+
 // DoneSet returns a set of completed chunk indices for quick lookup.
 func (r *ResumeInf) DoneSet() map[int]bool {
 	done := make(map[int]bool, len(r.ChunksDone))
@@ -250,12 +309,68 @@ func EnsureEncodeDir(workDir string) error {
 	return os.MkdirAll(encodeDir, 0755)
 }
 
-// WorkDirName generates a work directory name from the input file.
+// EnsureResumeManifest saves or validates the resume manifest for a work directory.
+func EnsureResumeManifest(workDir string, manifest ResumeManifest) error {
+	manifest.Version = 1
+	path := filepath.Join(workDir, "resume.json")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeResumeManifest(path, manifest)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read resume manifest: %w", err)
+	}
+
+	var existing ResumeManifest
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return fmt.Errorf("failed to parse resume manifest: %w", err)
+	}
+	if !reflect.DeepEqual(existing, manifest) {
+		return fmt.Errorf("resume metadata does not match current encode settings; remove %s to start over", workDir)
+	}
+	return nil
+}
+
+func writeResumeManifest(path string, manifest ResumeManifest) error {
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode resume manifest: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write resume manifest: %w", err)
+	}
+	return nil
+}
+
+// ChunkFingerprint returns a stable fingerprint for the chunk boundaries.
+func ChunkFingerprint(chunks []Chunk) string {
+	h := sha256.New()
+	for _, ch := range chunks {
+		_, _ = fmt.Fprintf(h, "%d:%d:%d\n", ch.Idx, ch.Start, ch.End)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CanonicalInputPath returns the absolute, symlink-resolved path for an input when possible.
+func CanonicalInputPath(inputPath string) string {
+	abs, err := filepath.Abs(inputPath)
+	if err != nil {
+		abs = inputPath
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// WorkDirName generates a work directory name from the canonical input path.
 func WorkDirName(inputPath string) string {
-	// Use a hash of the input path for uniqueness
-	base := filepath.Base(inputPath)
-	// Remove extension
+	canonical := CanonicalInputPath(inputPath)
+	base := filepath.Base(canonical)
 	ext := filepath.Ext(base)
 	name := base[:len(base)-len(ext)]
-	return fmt.Sprintf(".reel-%s", name)
+	sum := sha256.Sum256([]byte(canonical))
+	return fmt.Sprintf(".reel-%s-%s", name, hex.EncodeToString(sum[:])[:12])
 }
