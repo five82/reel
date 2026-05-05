@@ -2,9 +2,15 @@
 package encode
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -34,6 +40,10 @@ type EncodeConfig struct {
 
 // ProgressCallback is called to report encoding progress.
 type ProgressCallback func(progress worker.Progress)
+
+type chunkProgressCallback func(chunkIdx, frames int)
+
+var svtProgressRe = regexp.MustCompile(`(?i)\bEncoding\s+frame\s+(\d+)\b`)
 
 // EncodeAll runs the parallel encoding pipeline.
 // Uses streaming frame pipeline: each worker decodes and encodes one frame at a time,
@@ -112,12 +122,37 @@ func EncodeAll(
 
 	// Progress tracking
 	var progressMu sync.Mutex
+	activeFrames := make(map[int]int, actualWorkers)
 	progress := worker.Progress{
 		ChunksTotal:    len(chunks),
 		ChunksComplete: len(chunks) - len(remainingChunks),
 		FramesTotal:    totalFrames,
 		FramesComplete: resume.TotalEncodedFrames(),
 		BytesComplete:  resume.TotalEncodedSize(),
+	}
+	snapshotProgress := func() worker.Progress {
+		p := progress
+		for _, frames := range activeFrames {
+			p.FramesComplete += frames
+		}
+		p.FramesComplete = min(p.FramesComplete, p.FramesTotal)
+		return p
+	}
+	chunkProgressCb := func(chunkIdx, frames int) {
+		if progressCb == nil || frames < 0 {
+			return
+		}
+
+		progressMu.Lock()
+		if frames <= activeFrames[chunkIdx] {
+			progressMu.Unlock()
+			return
+		}
+		activeFrames[chunkIdx] = frames
+		p := snapshotProgress()
+		progressMu.Unlock()
+
+		progressCb(p)
 	}
 
 	// Error handling with atomic pointer for thread-safe access
@@ -138,7 +173,7 @@ func EncodeAll(
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
-			streamingWorker(ctx, idx, chunkChan, resultChan, sem, cfg, inf, strat, cropCalc, workDir, width, height, setError, getError)
+			streamingWorker(ctx, idx, chunkChan, resultChan, sem, cfg, inf, strat, cropCalc, workDir, width, height, chunkProgressCb, setError, getError)
 		}()
 	}
 
@@ -155,6 +190,7 @@ func EncodeAll(
 
 			// Update progress
 			progressMu.Lock()
+			delete(activeFrames, result.ChunkIdx)
 			progress.ChunksComplete++
 			progress.FramesComplete += result.Frames
 			progress.BytesComplete += result.Size
@@ -170,7 +206,7 @@ func EncodeAll(
 			// Report progress
 			if progressCb != nil {
 				progressMu.Lock()
-				p := progress
+				p := snapshotProgress()
 				progressMu.Unlock()
 				progressCb(p)
 			}
@@ -238,6 +274,7 @@ func streamingWorker(
 	cropCalc *ffms.CropCalc,
 	workDir string,
 	width, height uint32,
+	progressCb chunkProgressCallback,
 	setError func(error),
 	getError func() error,
 ) {
@@ -273,7 +310,7 @@ func streamingWorker(
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
-		result := encodeChunkStreaming(ctx, src, ch, inf, strat, cropCalc, cfg, workDir, width, height)
+		result := encodeChunkStreaming(ctx, src, ch, inf, strat, cropCalc, cfg, workDir, width, height, progressCb)
 
 		// Release semaphore
 		sem.Release()
@@ -296,6 +333,7 @@ func encodeChunkStreaming(
 	cfg *EncodeConfig,
 	workDir string,
 	width, height uint32,
+	progressCb chunkProgressCallback,
 ) worker.EncodeResult {
 	frameCount := ch.Frames()
 	frameSize := ffms.CalcFrameSize(inf, cropCalc)
@@ -333,6 +371,14 @@ func encodeChunkStreaming(
 		}
 	}
 
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return worker.EncodeResult{
+			ChunkIdx: ch.Idx,
+			Error:    fmt.Errorf("failed to create stderr pipe: %w", err),
+		}
+	}
+
 	// Start encoder
 	if err := cmd.Start(); err != nil {
 		return worker.EncodeResult{
@@ -340,6 +386,7 @@ func encodeChunkStreaming(
 			Error:    fmt.Errorf("failed to start encoder: %w", err),
 		}
 	}
+	stderrDone := monitorSvtProgress(stderr, ch.Idx, frameCount, progressCb)
 
 	// Stream frames one at a time: decode -> write to encoder -> repeat
 	var writeErr error
@@ -348,6 +395,7 @@ func encodeChunkStreaming(
 		if ctx.Err() != nil {
 			_ = stdin.Close()
 			_ = cmd.Wait()
+			<-stderrDone
 			return worker.EncodeResult{
 				ChunkIdx: ch.Idx,
 				Error:    ctx.Err(),
@@ -359,6 +407,7 @@ func encodeChunkStreaming(
 		if err := ffms.ExtractFrame(src, frameIdx, frameBuf, inf, strat, cropCalc); err != nil {
 			_ = stdin.Close()
 			_ = cmd.Wait()
+			<-stderrDone
 			return worker.EncodeResult{
 				ChunkIdx: ch.Idx,
 				Error:    fmt.Errorf("failed to extract frame %d: %w", frameIdx, err),
@@ -376,19 +425,22 @@ func encodeChunkStreaming(
 
 	if writeErr != nil {
 		_ = cmd.Wait()
+		stderrOutput := <-stderrDone
 		return worker.EncodeResult{
 			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("failed to write frame data: %w", writeErr),
+			Error:    fmt.Errorf("failed to write frame data: %w%s", writeErr, formatEncoderOutput(stderrOutput)),
 		}
 	}
 
 	// Wait for encoder to finish
 	if err := cmd.Wait(); err != nil {
+		stderrOutput := <-stderrDone
 		return worker.EncodeResult{
 			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("encoder failed: %w", err),
+			Error:    fmt.Errorf("encoder failed: %w%s", err, formatEncoderOutput(stderrOutput)),
 		}
 	}
+	<-stderrDone
 
 	// Get output file size
 	stat, err := os.Stat(outputPath)
@@ -404,6 +456,71 @@ func encodeChunkStreaming(
 		Frames:   frameCount,
 		Size:     uint64(stat.Size()),
 	}
+}
+
+func monitorSvtProgress(stderr io.Reader, chunkIdx, totalFrames int, progressCb chunkProgressCallback) <-chan string {
+	done := make(chan string, 1)
+	go func() {
+		defer close(done)
+
+		var output strings.Builder
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 1024), 1024*1024)
+		scanner.Split(splitProgressLines)
+		for scanner.Scan() {
+			line := scanner.Text()
+			appendEncoderOutput(&output, line)
+			if frames, ok := parseSvtProgressFrames(line); ok && progressCb != nil {
+				progressCb(chunkIdx, min(frames, totalFrames))
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			appendEncoderOutput(&output, err.Error())
+		}
+		done <- output.String()
+	}()
+	return done
+}
+
+func splitProgressLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		return i + 1, bytes.TrimSpace(data[:i]), nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), bytes.TrimSpace(data), nil
+	}
+	return 0, nil, nil
+}
+
+func parseSvtProgressFrames(line string) (int, bool) {
+	match := svtProgressRe.FindStringSubmatch(line)
+	if match == nil {
+		return 0, false
+	}
+	frames, err := strconv.Atoi(match[1])
+	return frames, err == nil
+}
+
+func appendEncoderOutput(output *strings.Builder, line string) {
+	const maxEncoderOutput = 64 * 1024
+	if line == "" || output.Len() >= maxEncoderOutput {
+		return
+	}
+	if output.Len() > 0 {
+		output.WriteByte('\n')
+	}
+	remaining := maxEncoderOutput - output.Len()
+	if len(line) > remaining {
+		line = line[:remaining]
+	}
+	output.WriteString(line)
+}
+
+func formatEncoderOutput(output string) string {
+	if strings.TrimSpace(output) == "" {
+		return ""
+	}
+	return "\nOutput: " + output
 }
 
 // calculateThreadsPerWorker determines optimal threads per worker based on CPU topology and resolution.
