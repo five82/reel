@@ -6,13 +6,13 @@ import "fmt"
 // Default constants
 const (
 	// DefaultCRFSD is the default CRF quality setting for SD content (<1920 width).
-	DefaultCRFSD uint8 = 25
+	DefaultCRFSD uint8 = 24
 
 	// DefaultCRFHD is the default CRF quality setting for HD content (>=1920, <3840 width).
-	DefaultCRFHD uint8 = 27
+	DefaultCRFHD uint8 = 26
 
 	// DefaultCRFUHD is the default CRF quality setting for UHD content (>=3840 width).
-	DefaultCRFUHD uint8 = 29
+	DefaultCRFUHD uint8 = 26
 
 	// HDWidthThreshold is the minimum width for HD resolution.
 	HDWidthThreshold uint32 = 1920

@@ -9,7 +9,7 @@ import "github.com/five82/reel"
 
 // Create encoder with options
 encoder, err := reel.New(
-    reel.WithCRF(27),
+    reel.WithCRF(26),
     reel.WithWorkers(4),
     reel.WithChunkBuffer(4),
 )

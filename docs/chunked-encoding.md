@@ -371,9 +371,9 @@ ffmpeg \
 | Tune | `--tune` | 0 | 0+ | Encoder tuning mode |
 
 CRF defaults vary by resolution:
-- SD (<1920 width): 25
-- HD (1920-3839 width): 27
-- UHD (≥3840 width): 29
+- SD (<1920 width): 24
+- HD (1920-3839 width): 26
+- UHD (≥3840 width): 26
 
 ### Advanced SVT-AV1 Settings
 

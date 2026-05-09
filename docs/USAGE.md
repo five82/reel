@@ -15,7 +15,7 @@ reel encode -i /videos/ -o /encoded/
 reel encode -i input.mkv -o output/ --crf 24 --preset 6
 
 # Resolution-specific CRF (SD, HD, UHD)
-reel encode -i input.mkv -o output/ --crf 25,27,29
+reel encode -i input.mkv -o output/ --crf 24,26,26
 
 # Verbose output
 reel encode -v -i input.mkv -o output/
@@ -29,8 +29,8 @@ reel encode -v -i input.mkv -o output/
 
 **Quality Settings**
 - `--crf <VALUE>`: CRF quality level (0-63, lower is better quality)
-  - Single value: `--crf 27` (use for all resolutions)
-  - Triple: `--crf 25,27,29` (SD,HD,UHD)
+  - Single value: `--crf 26` (use for all resolutions)
+  - Triple: `--crf 24,26,26` (SD,HD,UHD)
 - `--preset <0-13>`: SVT-AV1 encoder speed/quality (default `6`, lower is slower but higher quality)
 
 **Processing**

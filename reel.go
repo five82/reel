@@ -7,7 +7,7 @@
 // Basic usage:
 //
 //	encoder, err := reel.New(
-//	    reel.WithCRF(27),
+//	    reel.WithCRF(26),
 //	)
 //	if err != nil {
 //	    log.Fatal(err)

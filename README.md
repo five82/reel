@@ -67,8 +67,8 @@ Required:
 
 Quality Settings:
   --crf <VALUE>        CRF quality level (0-63, lower = better quality)
-                         Single value: --crf 27 (use for all resolutions)
-                         Triple: --crf 25,27,29 (SD,HD,UHD)
+                         Single value: --crf 26 (use for all resolutions)
+                         Triple: --crf 24,26,26 (SD,HD,UHD)
   --preset <0-13>      SVT-AV1 preset (default 6, lower = slower/better)
 
 Processing Options:
@@ -91,7 +91,7 @@ Reel can be used as a Go library:
 import "github.com/five82/reel"
 
 encoder, err := reel.New(
-    reel.WithCRF(27),
+    reel.WithCRF(26),
     reel.WithWorkers(4),
 )
 if err != nil {

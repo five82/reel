@@ -99,8 +99,8 @@ Options:
 
 Quality Settings:
   --crf <VALUE>          CRF quality level (0-63, lower=better). Accepts:
-                           Single value: --crf 27 (use for all resolutions)
-                           Triple: --crf 25,27,29 (SD,HD,UHD)
+                           Single value: --crf 26 (use for all resolutions)
+                           Triple: --crf 24,26,26 (SD,HD,UHD)
                          Defaults: SD=%d, HD=%d, UHD=%d
   --preset <0-13>        SVT-AV1 encoder preset. Lower=slower/better. Default: %d
 
