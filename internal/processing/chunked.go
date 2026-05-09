@@ -11,10 +11,10 @@ import (
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/encode"
-	"github.com/five82/reel/internal/ffms"
 	"github.com/five82/reel/internal/ffprobe"
 	"github.com/five82/reel/internal/keyframe"
 	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/video"
 	"github.com/five82/reel/internal/worker"
 )
 
@@ -44,22 +44,16 @@ func ProcessChunked(
 	}()
 
 	// ========================================================================
-	// PHASE 1: Run FFMS2 indexing and luma-based crop detection
+	// PHASE 1: Probe video and run luma-based crop detection
 	// ========================================================================
-	rep.StageProgress(reporter.StageProgress{Stage: "Preparing", Message: "Indexing video and detecting crop"})
+	rep.StageProgress(reporter.StageProgress{Stage: "Preparing", Message: "Analyzing video and detecting crop"})
 
-	idx, err := ffms.NewVidIdx(inputPath, true)
+	vidInf, err := video.Probe(inputPath)
 	if err != nil {
-		return CropResult{}, fmt.Errorf("failed to create video index: %w", err)
-	}
-	defer idx.Close()
-
-	vidInf, err := ffms.GetVidInf(idx)
-	if err != nil {
-		return CropResult{}, fmt.Errorf("failed to get video info: %w", err)
+		return CropResult{}, fmt.Errorf("failed to probe video: %w", err)
 	}
 
-	cropResult := DetectCrop(idx, vidInf, cfg.CropMode == "none")
+	cropResult := DetectCrop(inputPath, vidInf, cfg.CropMode == "none")
 
 	// Report crop detection result
 	rep.CropResult(reporter.CropSummary{
@@ -106,7 +100,7 @@ func ProcessChunked(
 	rep.Verbose(fmt.Sprintf("Average chunk duration: %.1fs (%d frames)", avgChunkDuration, int(avgChunkFrames)))
 
 	// Convert crop filter to an exact source rectangle.
-	var cropRect *ffms.CropRect
+	var cropRect *video.CropRect
 	if cropResult.Required && cropResult.CropFilter != "" {
 		cropRect, err = parseCropFilter(cropResult.CropFilter, videoProps.Width, videoProps.Height)
 		if err != nil {
@@ -204,9 +198,9 @@ func ProcessChunked(
 	_, encodeErr := encode.EncodeAll(
 		ctx,
 		chunks,
+		inputPath,
 		vidInf,
 		encCfg,
-		idx,
 		workDir,
 		cropRect,
 		progressCallback,
@@ -243,7 +237,7 @@ func ProcessChunked(
 }
 
 // displayAspectAfterCrop returns the display aspect ratio to signal after cropping anamorphic sources.
-func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *ffms.VidInf, cropRect *ffms.CropRect) string {
+func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *video.Info, cropRect *video.CropRect) string {
 	width, height, sarNum, sarDen := aspectInputs(props, inf)
 	if sarNum == 0 || sarDen == 0 || sarNum == sarDen {
 		return ""
@@ -263,7 +257,7 @@ func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *ffms.VidInf, cr
 	return fmt.Sprintf("%d:%d", num/g, den/g)
 }
 
-func aspectInputs(props *ffprobe.VideoProperties, inf *ffms.VidInf) (width, height, sarNum, sarDen uint32) {
+func aspectInputs(props *ffprobe.VideoProperties, inf *video.Info) (width, height, sarNum, sarDen uint32) {
 	if props != nil {
 		width = props.Width
 		height = props.Height
@@ -294,7 +288,7 @@ func gcd(a, b uint64) uint64 {
 
 func buildResumeManifest(
 	inputPath string,
-	vidInf *ffms.VidInf,
+	vidInf *video.Info,
 	cfg *config.Config,
 	chunks []chunk.Chunk,
 	cropFilter string,
@@ -327,7 +321,7 @@ func buildResumeManifest(
 	}, nil
 }
 
-func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*ffms.CropRect, error) {
+func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*video.CropRect, error) {
 	var w, h, x, y uint32
 	_, err := fmt.Sscanf(filter, "crop=%d:%d:%d:%d", &w, &h, &x, &y)
 	if err != nil {
@@ -343,7 +337,7 @@ func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*ffms.CropRect,
 		return nil, fmt.Errorf("YUV420 crop offsets and dimensions must be even")
 	}
 
-	return &ffms.CropRect{X: x, Y: y, Width: w, Height: h}, nil
+	return &video.CropRect{X: x, Y: y, Width: w, Height: h}, nil
 }
 
 // CheckChunkedDependencies verifies that required tools are available.

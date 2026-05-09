@@ -161,7 +161,7 @@ func ProcessVideos(
 			SVTAV1Params:       encoder.SvtParamsDisplay(cfg.SVTAV1ACBias, cfg.SVTAV1EnableVarianceBoost, cfg.SVTAV1Tune),
 		})
 
-		// Run chunked encoding with FFMS2 + SvtAv1EncApp
+		// Run chunked encoding with FFmpeg/libav + SvtAv1EncApp
 		cropResult, encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
 		encodeSuccess := encodeError == nil
 

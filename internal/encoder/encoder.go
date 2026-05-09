@@ -6,22 +6,22 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/video"
 )
 
 const svtEncBinary = "SvtAv1EncApp"
 
 // EncConfig contains configuration for encoding a chunk.
 type EncConfig struct {
-	Inf        *ffms.VidInf // Video properties
-	CRF        float32      // Quality (CRF value)
-	Preset     uint8        // SVT-AV1 preset (0-13)
-	Tune       uint8        // SVT-AV1 tune
-	Output     string       // Output IVF path
-	GrainTable *string      // Optional film grain table path
-	Width      uint32       // Frame width (after cropping)
-	Height     uint32       // Frame height (after cropping)
-	Frames     int          // Number of frames to encode
+	Inf        *video.Info // Video properties
+	CRF        float32     // Quality (CRF value)
+	Preset     uint8       // SVT-AV1 preset (0-13)
+	Tune       uint8       // SVT-AV1 tune
+	Output     string      // Output IVF path
+	GrainTable *string     // Optional film grain table path
+	Width      uint32      // Frame width (after cropping)
+	Height     uint32      // Frame height (after cropping)
+	Frames     int         // Number of frames to encode
 
 	// Advanced SVT-AV1 parameters
 	ACBias                float32

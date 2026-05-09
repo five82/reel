@@ -20,7 +20,7 @@ Input Video
     │
     ▼
 ┌─────────────────┐
-│  FFMS2 Index    │ ─── Frame-accurate access, HDR metadata extraction
+│ Video Analysis  │ ─── FFmpeg/libav probing, decode access, HDR metadata extraction
 └────────┬────────┘
          │
          ▼
@@ -61,15 +61,13 @@ Input Video
     Output MKV
 ```
 
-## Stage 1: Video Indexing (FFMS2)
+## Stage 1: Video Analysis (FFmpeg/libav)
 
-Before any processing begins, reel creates an FFMS2 index of the source video. This enables:
+Before encoding begins, reel probes the source video with FFmpeg/libav. This enables:
 
-- **Frame-accurate seeking**: Extract any frame by number without decode overhead
+- **Decode access**: Seek near requested frame positions and decode forward as needed
 - **Metadata extraction**: Resolution, frame rate, HDR parameters
-- **Parallel access**: Multiple workers can decode frames simultaneously
-
-The index is cached as a `.ffindex` file alongside the source, allowing resume without re-indexing.
+- **Parallel access**: Each worker opens its own decoder instance
 
 **Extracted metadata includes:**
 - Resolution (width × height)
@@ -163,7 +161,7 @@ Reel uses a **streaming frame pipeline** where each worker decodes and encodes f
     ┌────┼────┬────┐
     ▼    ▼    ▼    ▼
 ┌──────┐┌──────┐┌──────┐
-│Worker││Worker││Worker│  ◄─── Each worker has own VidSrc
+│Worker││Worker││Worker│  ◄─── Each worker has own decoder
 │  1   ││  2   ││  N   │
 │decode││decode││decode│  ◄─── Decode 1 frame at a time
 │encode││encode││encode│  ◄─── Stream to SVT-AV1 stdin
@@ -181,7 +179,7 @@ Each worker processes chunks using a streaming approach:
 2. Allocate single-frame buffer (~6 MB for 1080p 10-bit)
 3. Start SVT-AV1 encoder process
 4. Loop through frames:
-   - Decode frame into buffer using FFMS2
+   - Decode frame into buffer using FFmpeg/libav
    - Write frame to encoder stdin
    - Reuse same buffer for next frame
 5. Close stdin and wait for encoder to finish
@@ -196,7 +194,7 @@ With the streaming pipeline, memory usage is dramatically reduced:
 
 1. **Per-worker frame buffer**: Each worker allocates a single-frame buffer (~6 MB for 1080p 10-bit)
 2. **Semaphore**: Limits in-flight chunks to `workers + buffer` for orderly processing
-3. **Per-worker VidSrc**: Each worker creates its own FFMS2 video source for thread safety
+3. **Per-worker decoder**: Each worker creates its own FFmpeg/libav decoder for thread safety
 4. **SVT-AV1 overhead**: Memory varies by resolution (see below)
 
 **Memory per worker by resolution**:

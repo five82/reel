@@ -16,8 +16,8 @@ import (
 
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/encoder"
-	"github.com/five82/reel/internal/ffms"
 	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/video"
 	"github.com/five82/reel/internal/worker"
 )
 
@@ -54,11 +54,11 @@ var svtProgressRe = regexp.MustCompile(`(?i)\bEncoding\s+frame\s+(\d+)\b`)
 func EncodeAll(
 	ctx context.Context,
 	chunks []chunk.Chunk,
-	inf *ffms.VidInf,
+	inputPath string,
+	inf *video.Info,
 	cfg *EncodeConfig,
-	idx *ffms.VidIdx,
 	workDir string,
-	cropRect *ffms.CropRect,
+	cropRect *video.CropRect,
 	progressCb ProgressCallback,
 ) (int, error) {
 	// Ensure encode directory exists
@@ -88,19 +88,14 @@ func EncodeAll(
 		return cfg.Workers, nil // All chunks already done
 	}
 
-	// Determine decode strategy
-	strat, cropCalc, err := ffms.GetDecodeStratForRect(idx, inf, cropRect)
-	if err != nil {
-		return 0, fmt.Errorf("failed to determine decode strategy: %w", err)
+	if cropRect != nil {
+		if err := video.ValidateCropRect(inf, *cropRect); err != nil {
+			return 0, fmt.Errorf("invalid crop rectangle: %w", err)
+		}
 	}
 
 	// Calculate effective dimensions
-	width := inf.Width
-	height := inf.Height
-	if cropCalc != nil {
-		width = cropCalc.NewW
-		height = cropCalc.NewH
-	}
+	width, height := video.OutputDimensions(inf, cropRect)
 
 	// Cap workers based on resolution and available memory
 	actualWorkers, _ := CapWorkers(cfg.Workers, width, height)
@@ -167,13 +162,13 @@ func EncodeAll(
 		return nil
 	}
 
-	// Start streaming workers - each creates its own VidSrc for thread safety
+	// Start streaming workers - each creates its own decoder for thread safety
 	var workerWg sync.WaitGroup
 	for i := 0; i < actualWorkers; i++ {
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
-			streamingWorker(ctx, idx, chunkChan, resultChan, sem, cfg, inf, strat, cropCalc, workDir, width, height, chunkProgressCb, setError, getError)
+			streamingWorker(ctx, inputPath, chunkChan, resultChan, sem, cfg, inf, cropRect, workDir, width, height, chunkProgressCb, setError, getError)
 		}()
 	}
 
@@ -261,17 +256,16 @@ func EncodeAll(
 }
 
 // streamingWorker runs in a goroutine and processes chunks using streaming decode/encode.
-// Each worker creates its own VidSrc for thread safety, then streams frames one at a time.
+// Each worker creates its own decoder for thread safety, then streams frames one at a time.
 func streamingWorker(
 	ctx context.Context,
-	idx *ffms.VidIdx,
+	inputPath string,
 	chunkChan <-chan chunk.Chunk,
 	resultChan chan<- worker.EncodeResult,
 	sem *worker.Semaphore,
 	cfg *EncodeConfig,
-	inf *ffms.VidInf,
-	strat ffms.DecodeStrat,
-	cropCalc *ffms.CropCalc,
+	inf *video.Info,
+	cropRect *video.CropRect,
 	workDir string,
 	width, height uint32,
 	progressCb chunkProgressCallback,
@@ -279,7 +273,7 @@ func streamingWorker(
 	getError func() error,
 ) {
 	// Create per-worker video source (single-threaded, thread-safe)
-	src, err := ffms.ThrVidSrc(idx, 1)
+	src, err := video.Open(inputPath, 1)
 	if err != nil {
 		setError(fmt.Errorf("failed to create video source for worker: %w", err))
 		// Drain chunks and release permits
@@ -310,7 +304,7 @@ func streamingWorker(
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
-		result := encodeChunkStreaming(ctx, src, ch, inf, strat, cropCalc, cfg, workDir, width, height, progressCb)
+		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, workDir, width, height, progressCb)
 
 		// Release semaphore
 		sem.Release()
@@ -325,18 +319,17 @@ func streamingWorker(
 // Memory per worker: ~6 MB (single frame) instead of ~5 GB (all frames in chunk).
 func encodeChunkStreaming(
 	ctx context.Context,
-	src *ffms.VidSrc,
+	src *video.Source,
 	ch chunk.Chunk,
-	inf *ffms.VidInf,
-	strat ffms.DecodeStrat,
-	cropCalc *ffms.CropCalc,
+	inf *video.Info,
+	cropRect *video.CropRect,
 	cfg *EncodeConfig,
 	workDir string,
 	width, height uint32,
 	progressCb chunkProgressCallback,
 ) worker.EncodeResult {
 	frameCount := ch.Frames()
-	frameSize := ffms.CalcFrameSize(inf, cropCalc)
+	frameSize := video.FrameSize(inf, cropRect)
 
 	// Single frame buffer, reused for each frame (~6 MB for 1080p 10-bit)
 	frameBuf := make([]byte, frameSize)
@@ -404,7 +397,7 @@ func encodeChunkStreaming(
 
 		// Decode frame into reusable buffer
 		frameIdx := ch.Start + i
-		if err := ffms.ExtractFrame(src, frameIdx, frameBuf, inf, strat, cropCalc); err != nil {
+		if err := src.ReadFrame(frameIdx, frameBuf, inf, cropRect); err != nil {
 			_ = stdin.Close()
 			_ = cmd.Wait()
 			<-stderrDone

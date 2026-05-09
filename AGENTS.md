@@ -13,10 +13,10 @@ Do not modify this header.
 
 ## Project Snapshot
 
-Reel is an **AV1 encoding tool** using FFMS2 + SvtAv1EncApp for parallel chunked encoding. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
+Reel is an **AV1 encoding tool** using FFmpeg/libav + SvtAv1EncApp for parallel chunked encoding. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
 
 - **Scope**: Single-developer hobby project - avoid over-engineering
-- **Environment**: Go 1.26+, FFmpeg (libopus), SvtAv1EncApp, FFMS2, MediaInfo
+- **Environment**: Go 1.26+, FFmpeg/libav dev libraries (libopus, libavformat, libavcodec, libavutil, libswscale), SvtAv1EncApp, MediaInfo
 - **Design**: Library-first for Spindle embedding, with CLI wrapper
 
 ## Related Repos
@@ -52,7 +52,7 @@ internal/
 ├── chunk/               # Chunk management
 ├── keyframe/            # Keyframe extraction
 ├── worker/              # Worker pool for parallel encoding
-├── ffms/                # FFMS2 bindings for frame-accurate indexing
+├── video/               # FFmpeg/libav video probing and frame extraction
 ├── ffmpeg/              # FFmpeg parameter building (audio, filters)
 ├── ffprobe/             # Media analysis
 ├── mediainfo/           # HDR detection

@@ -1,4 +1,4 @@
-package ffms
+package video
 
 import (
 	"encoding/binary"
@@ -6,15 +6,15 @@ import (
 )
 
 func TestCopyFrameTo10BitApplies8BitCropOffsets(t *testing.T) {
-	inf := &VidInf{Width: 6, Height: 4, Is10Bit: false}
+	inf := &Info{Width: 6, Height: 4, Is10Bit: false}
 	crop := &CropCalc{NewW: 4, NewH: 2, CropX: 2, CropY: 2}
 
 	y := make8BitPlane(6, 4, 8, 0)
 	u := make8BitPlane(3, 2, 5, 100)
 	v := make8BitPlane(3, 2, 6, 200)
-	out := make([]byte, CalcPackedSize(crop.NewW, crop.NewH))
+	out := make([]byte, Calc10BitSize(crop.NewW, crop.NewH))
 
-	err := copyFrameTo10Bit(out, [3][]byte{y, u, v}, [3]int{8, 5, 6}, inf, crop)
+	err := copyFrameTo10Bit(out, [3][]byte{y, u, v}, [3]int{8, 5, 6}, inf, crop, false)
 	if err != nil {
 		t.Fatalf("copyFrameTo10Bit returned error: %v", err)
 	}
@@ -34,15 +34,15 @@ func TestCopyFrameTo10BitApplies8BitCropOffsets(t *testing.T) {
 }
 
 func TestCopyFrameTo10BitApplies10BitCropOffsets(t *testing.T) {
-	inf := &VidInf{Width: 6, Height: 4, Is10Bit: true}
+	inf := &Info{Width: 6, Height: 4, Is10Bit: true}
 	crop := &CropCalc{NewW: 4, NewH: 2, CropX: 2, CropY: 2}
 
 	y := make10BitPlane(6, 4, 16, 0)
 	u := make10BitPlane(3, 2, 10, 100)
 	v := make10BitPlane(3, 2, 12, 200)
-	out := make([]byte, CalcPackedSize(crop.NewW, crop.NewH))
+	out := make([]byte, Calc10BitSize(crop.NewW, crop.NewH))
 
-	err := copyFrameTo10Bit(out, [3][]byte{y, u, v}, [3]int{16, 10, 12}, inf, crop)
+	err := copyFrameTo10Bit(out, [3][]byte{y, u, v}, [3]int{16, 10, 12}, inf, crop, true)
 	if err != nil {
 		t.Fatalf("copyFrameTo10Bit returned error: %v", err)
 	}
@@ -56,20 +56,17 @@ func TestCopyFrameTo10BitApplies10BitCropOffsets(t *testing.T) {
 	assertSamples(t, readU16Samples(out), want)
 }
 
-func TestGetDecodeStratForRectRejectsInvalidYUV420Crop(t *testing.T) {
-	inf := &VidInf{Width: 1920, Height: 1080}
-	_, _, err := GetDecodeStratForRect(nil, inf, &CropRect{X: 1, Y: 0, Width: 1918, Height: 1080})
+func TestValidateCropRectRejectsInvalidYUV420Crop(t *testing.T) {
+	inf := &Info{Width: 1920, Height: 1080}
+	err := ValidateCropRect(inf, CropRect{X: 1, Y: 0, Width: 1918, Height: 1080})
 	if err == nil {
 		t.Fatal("expected odd crop offset to be rejected")
 	}
 }
 
-func TestGetDecodeStratForRectSupportsAsymmetricCrop(t *testing.T) {
-	inf := &VidInf{Width: 1920, Height: 1080, Is10Bit: true}
-	_, crop, err := GetDecodeStratForRect(nil, inf, &CropRect{X: 4, Y: 8, Width: 1900, Height: 1060})
-	if err != nil {
-		t.Fatalf("GetDecodeStratForRect returned error: %v", err)
-	}
+func TestCropCalcForRectSupportsAsymmetricCrop(t *testing.T) {
+	inf := &Info{Width: 1920, Height: 1080, Is10Bit: true}
+	crop := cropCalcForRect(inf, &CropRect{X: 4, Y: 8, Width: 1900, Height: 1060})
 	if crop == nil {
 		t.Fatal("expected crop calculation")
 	}

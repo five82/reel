@@ -1,6 +1,6 @@
 # reel
 
-AV1 encoding tool using SvtAv1EncApp and FFMS2 for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
+AV1 encoding tool using SvtAv1EncApp and FFmpeg/libav for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
 
 ## Expectations
 
@@ -25,13 +25,13 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 
 - Go 1.26+
 - SvtAv1EncApp (SVT-AV1 standalone encoder)
-- FFMS2 (for frame-accurate video indexing)
 - FFmpeg with `libopus` (for audio transcoding)
+- FFmpeg development libraries: libavformat, libavcodec, libavutil, libswscale
 - MediaInfo
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install ffmpeg mediainfo libffms2-dev svt-av1
+sudo apt-get install ffmpeg mediainfo libavformat-dev libavcodec-dev libavutil-dev libswscale-dev svt-av1
 
 # Verify FFmpeg has Opus encoder
 ffmpeg -encoders | grep opus
@@ -124,7 +124,7 @@ reel/
     ├── chunk/          # Chunk management
     ├── keyframe/       # Keyframe extraction
     ├── worker/         # Worker pool for parallel encoding
-    ├── ffms/           # FFMS2 bindings for frame indexing
+    ├── video/          # FFmpeg/libav video probing and frame extraction
     ├── ffmpeg/         # FFmpeg parameter building
     ├── ffprobe/        # Media analysis
     ├── mediainfo/      # HDR detection
@@ -146,4 +146,4 @@ golangci-lint run
 
 ## Credit
 
-Thanks to xav for the FFMS2 parallel chunked encoding approach.
+Thanks to xav for the libav-based parallel chunked encoding approach.

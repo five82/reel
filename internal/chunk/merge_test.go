@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/video"
 )
 
 func TestEscapeConcatPathEscapesApostrophes(t *testing.T) {
@@ -47,7 +47,7 @@ func TestMergeOutputConcatenatesIVFAndRewritesFrameCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inf := &ffms.VidInf{Frames: 5}
+	inf := &video.Info{Frames: 5}
 	if err := MergeOutput(workDir, inf, 2); err != nil {
 		t.Fatal(err)
 	}

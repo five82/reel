@@ -3,8 +3,8 @@ package processing
 import (
 	"testing"
 
-	"github.com/five82/reel/internal/ffms"
 	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/video"
 )
 
 func TestParseCropFilterExactRectangle(t *testing.T) {
@@ -36,7 +36,7 @@ func TestDisplayAspectAfterCrop(t *testing.T) {
 		SampleAspectRatioNum: 32,
 		SampleAspectRatioDen: 27,
 	}
-	crop := &ffms.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
+	crop := &video.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
 
 	got := displayAspectAfterCrop(props, nil, crop)
 	if got != "64:27" {
@@ -56,14 +56,14 @@ func TestDisplayAspectAfterCropIgnoresSquarePixels(t *testing.T) {
 	}
 }
 
-func TestDisplayAspectAfterCropFallsBackToFFMSInfo(t *testing.T) {
-	inf := &ffms.VidInf{
+func TestDisplayAspectAfterCropFallsBackToVideoInfo(t *testing.T) {
+	inf := &video.Info{
 		Width:                720,
 		Height:               480,
 		SampleAspectRatioNum: 32,
 		SampleAspectRatioDen: 27,
 	}
-	crop := &ffms.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
+	crop := &video.CropRect{X: 0, Y: 60, Width: 720, Height: 360}
 
 	got := displayAspectAfterCrop(nil, inf, crop)
 	if got != "64:27" {

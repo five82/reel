@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/video"
 )
 
 // writeConcatFile writes a FFmpeg concat file with the given paths.
@@ -44,7 +44,7 @@ func escapeConcatPath(path string) string {
 }
 
 // MergeOutput concatenates all chunk IVF files into a single IVF video file.
-func MergeOutput(workDir string, inf *ffms.VidInf, numChunks int) error {
+func MergeOutput(workDir string, inf *video.Info, numChunks int) error {
 	if numChunks <= 0 {
 		return fmt.Errorf("no chunks to merge")
 	}

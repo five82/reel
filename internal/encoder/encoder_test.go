@@ -4,14 +4,14 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/video"
 )
 
 func TestBuildSvtArgsIncludesRangeAndChromaPosition(t *testing.T) {
 	colorRange := int32(1)
 	chromaPosition := int32(2)
 	cfg := &EncConfig{
-		Inf: &ffms.VidInf{
+		Inf: &video.Info{
 			FPSNum:               24000,
 			FPSDen:               1001,
 			ColorRange:           &colorRange,

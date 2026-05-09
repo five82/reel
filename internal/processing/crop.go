@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/five82/reel/internal/ffms"
+	"github.com/five82/reel/internal/video"
 )
 
 const (
@@ -35,14 +35,14 @@ type detectedCrop struct {
 	Right  uint32
 }
 
-// DetectCrop detects black bars using FFMS2-decoded luma samples.
+// DetectCrop detects black bars using decoded luma samples.
 // It samples the middle 70% of the video, ignores all-black frames, and uses the
 // minimum crop seen across valid samples so mixed-aspect content is not over-cropped.
-func DetectCrop(idx *ffms.VidIdx, inf *ffms.VidInf, disableCrop bool) CropResult {
+func DetectCrop(inputPath string, inf *video.Info, disableCrop bool) CropResult {
 	if disableCrop {
 		return CropResult{Required: false, Message: "Skipped"}
 	}
-	if idx == nil || inf == nil || inf.Frames <= 0 || inf.Width == 0 || inf.Height == 0 {
+	if inputPath == "" || inf == nil || inf.Frames <= 0 || inf.Width == 0 || inf.Height == 0 {
 		return CropResult{Required: false, Message: "No crop detected"}
 	}
 
@@ -52,7 +52,7 @@ func DetectCrop(idx *ffms.VidIdx, inf *ffms.VidInf, disableCrop bool) CropResult
 		return CropResult{Required: false, Message: sampleMsg}
 	}
 
-	src, err := ffms.ThrVidSrc(idx, 1)
+	src, err := video.Open(inputPath, 1)
 	if err != nil {
 		return CropResult{Required: false, Message: sampleMsg}
 	}
@@ -63,7 +63,7 @@ func DetectCrop(idx *ffms.VidIdx, inf *ffms.VidInf, disableCrop bool) CropResult
 	var reference detectedCrop
 	var haveReference, varied bool
 	for _, frameIdx := range frames {
-		frame, err := ffms.ExtractLumaFrame(src, frameIdx, inf)
+		frame, err := src.ReadLumaFrame(frameIdx, inf)
 		if err != nil {
 			continue
 		}
