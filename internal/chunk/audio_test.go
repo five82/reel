@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	nativeaudio "github.com/five82/reel/internal/audio"
 	"github.com/five82/reel/internal/ffprobe"
 )
 
@@ -29,6 +30,24 @@ func TestAudioDispositionValueClearsEmptyDisposition(t *testing.T) {
 	if got := audioDispositionValue(ffprobe.StreamDisposition{}); got != "0" {
 		t.Fatalf("audioDispositionValue() = %q, want %q", got, "0")
 	}
+}
+
+func TestMuxFinalArgsMapsPerStreamOpusFiles(t *testing.T) {
+	streams := []nativeaudio.EncodedStream{
+		{Info: ffprobe.AudioStreamInfo{Language: "eng", Disposition: ffprobe.StreamDisposition{Default: 1}}, Path: "/tmp/audio_00.opus"},
+		{Info: ffprobe.AudioStreamInfo{Language: "jpn", Title: "Commentary"}, Path: "/tmp/audio_01.opus"},
+	}
+
+	args := muxFinalArgs("input.mkv", "video.ivf", "output.mkv", streams, "16:9")
+	assertArgValue(t, args, "-i", "video.ivf")
+	assertArgValue(t, args, "-i", "/tmp/audio_00.opus")
+	assertArgValue(t, args, "-i", "/tmp/audio_01.opus")
+	assertArgValue(t, args, "-map", "1:a:0")
+	assertArgValue(t, args, "-map", "2:a:0")
+	assertArgValue(t, args, "-map", "3:s?")
+	assertArgValue(t, args, "-map_chapters", "3")
+	assertArgValue(t, args, "-aspect:v:0", "16:9")
+	assertArgValue(t, args, "-metadata:s:a:1", "title=Commentary")
 }
 
 func assertArgValue(t *testing.T, args []string, key, want string) {

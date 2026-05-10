@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"strings"
 
+	nativeaudio "github.com/five82/reel/internal/audio"
 	"github.com/five82/reel/internal/ffmpeg"
 	"github.com/five82/reel/internal/ffprobe"
 )
 
 // GetAudioChannels returns audio channel counts for a file.
 func GetAudioChannels(inputPath string) []uint32 {
-	channels, err := ffprobe.GetAudioChannels(inputPath)
+	channels, err := nativeaudio.GetAudioChannels(inputPath)
 	if err != nil {
 		return nil
 	}
@@ -19,7 +20,7 @@ func GetAudioChannels(inputPath string) []uint32 {
 
 // GetAudioStreamInfo returns detailed audio stream information.
 func GetAudioStreamInfo(inputPath string) []ffprobe.AudioStreamInfo {
-	streams, err := ffprobe.GetAudioStreamInfo(inputPath)
+	streams, err := nativeaudio.GetAudioStreamInfo(inputPath)
 	if err != nil {
 		return nil
 	}

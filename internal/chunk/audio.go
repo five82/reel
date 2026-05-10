@@ -2,116 +2,69 @@
 package chunk
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/five82/reel/internal/ffmpeg"
+	nativeaudio "github.com/five82/reel/internal/audio"
 	"github.com/five82/reel/internal/ffprobe"
 )
 
-// ExtractAudio extracts audio streams from the source video.
-// The audio is encoded to Opus with bitrates determined by channel count.
-func ExtractAudio(inputPath, workDir string, audioStreams []ffprobe.AudioStreamInfo) error {
-	if len(audioStreams) == 0 {
-		return nil // No audio to extract
-	}
-
-	audioPath := GetAudioPath(workDir)
-
-	args := []string{
-		"-hide_banner",
-		"-i", inputPath,
-		"-vn", // No video
-		"-map_metadata", "0",
-	}
-
-	// Map each audio stream and set encoding parameters
-	for i, stream := range audioStreams {
-		args = append(args, "-map", fmt.Sprintf("0:a:%d", stream.Index))
-		args = append(args, fmt.Sprintf("-c:a:%d", i), "libopus")
-		bitrate := ffmpeg.CalculateAudioBitrate(stream.Channels)
-		args = append(args, fmt.Sprintf("-b:a:%d", i), fmt.Sprintf("%dk", bitrate))
-		args = append(args, fmt.Sprintf("-filter:a:%d", i), "aformat=channel_layouts=7.1|5.1|stereo|mono")
-		args = append(args, audioMetadataArgs(i, stream)...)
-		args = append(args, audioDispositionArgs(i, stream.Disposition)...)
-	}
-
-	args = append(args, "-y", audioPath)
-
-	cmd := exec.Command("ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("audio extraction failed: %w\nOutput: %s", err, string(output))
-	}
-
-	return nil
+// ExtractAudio encodes source audio streams to Opus using native libav/libopusenc.
+func ExtractAudio(ctx context.Context, inputPath, workDir string, audioStreams []ffprobe.AudioStreamInfo) ([]nativeaudio.EncodedStream, error) {
+	return nativeaudio.EncodeStreams(ctx, inputPath, workDir, audioStreams)
 }
 
-// MuxFinal combines the encoded video with audio and other streams.
-func MuxFinal(inputPath, workDir, outputPath string, audioStreams []ffprobe.AudioStreamInfo, displayAspect string) error {
-	videoPath := GetVideoPath(workDir)
-	audioPath := GetAudioPath(workDir)
-
-	// Check if video exists
-	if _, err := os.Stat(videoPath); err != nil {
-		return fmt.Errorf("video file not found: %w", err)
-	}
-
+func muxFinalArgs(inputPath, videoPath, outputPath string, audioStreams []nativeaudio.EncodedStream, displayAspect string) []string {
 	args := []string{
 		"-hide_banner",
-		"-i", videoPath, // Encoded video
+		"-i", videoPath,
 	}
 
-	// Add audio if it exists
-	hasAudio := false
-	if _, err := os.Stat(audioPath); err == nil && len(audioStreams) > 0 {
-		args = append(args, "-i", audioPath)
-		hasAudio = true
+	for _, stream := range audioStreams {
+		args = append(args, "-i", stream.Path)
 	}
 
-	// Add original input for subtitles and chapters
+	sourceInputIdx := len(audioStreams) + 1
 	args = append(args, "-i", inputPath)
-
-	// Map video
 	args = append(args, "-map", "0:v:0")
-
-	// Map audio if available
-	if hasAudio {
-		args = append(args, "-map", "1:a?")
+	for i := range audioStreams {
+		args = append(args, "-map", fmt.Sprintf("%d:a:0", i+1))
 	}
-
-	// Map subtitles from original
-	subtitleInputIdx := 2
-	if !hasAudio {
-		subtitleInputIdx = 1
-	}
-	args = append(args, "-map", fmt.Sprintf("%d:s?", subtitleInputIdx))
-
-	// Copy all streams
+	args = append(args, "-map", fmt.Sprintf("%d:s?", sourceInputIdx))
 	args = append(args, "-c", "copy")
-
-	// Copy metadata and chapters
-	args = append(args, "-map_metadata", "0")
-	args = append(args, "-map_chapters", fmt.Sprintf("%d", subtitleInputIdx))
+	args = append(args, "-map_metadata", fmt.Sprintf("%d", sourceInputIdx))
+	args = append(args, "-map_chapters", fmt.Sprintf("%d", sourceInputIdx))
 
 	if displayAspect != "" {
 		args = append(args, "-aspect:v:0", displayAspect)
 	}
-	if hasAudio {
-		for i, stream := range audioStreams {
-			args = append(args, audioMetadataArgs(i, stream)...)
-			args = append(args, audioDispositionArgs(i, stream.Disposition)...)
+	for i, stream := range audioStreams {
+		args = append(args, audioMetadataArgs(i, stream.Info)...)
+		args = append(args, audioDispositionArgs(i, stream.Info.Disposition)...)
+	}
+
+	args = append(args, "-movflags", "+faststart")
+	args = append(args, "-y", outputPath)
+	return args
+}
+
+// MuxFinal combines the encoded video with audio and other streams.
+func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.EncodedStream, displayAspect string) error {
+	videoPath := GetVideoPath(workDir)
+	if _, err := os.Stat(videoPath); err != nil {
+		return fmt.Errorf("video file not found: %w", err)
+	}
+	for _, stream := range audioStreams {
+		if _, err := os.Stat(stream.Path); err != nil {
+			return fmt.Errorf("audio file not found: %w", err)
 		}
 	}
 
-	// Faststart for web playback
-	args = append(args, "-movflags", "+faststart")
-
-	args = append(args, "-y", outputPath)
-
+	args := muxFinalArgs(inputPath, videoPath, outputPath, audioStreams, displayAspect)
 	cmd := exec.Command("ffmpeg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

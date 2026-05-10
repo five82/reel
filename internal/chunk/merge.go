@@ -233,8 +233,3 @@ func MergeBatched(workDir string, numChunks int) error {
 func GetVideoPath(workDir string) string {
 	return filepath.Join(workDir, "video.ivf")
 }
-
-// GetAudioPath returns the path to the extracted audio file.
-func GetAudioPath(workDir string) string {
-	return filepath.Join(workDir, "audio.mka")
-}

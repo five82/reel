@@ -80,13 +80,15 @@ Validation catches mismatches before you archive or publish results:
 
 ## Multi-Stream Audio Handling
 
-- Automatically detects every audio stream and transcodes each to Opus
-- Bitrate allocation per channel layout:
-  - Mono: 64 kbps
+- Automatically detects every audio stream with libav and transcodes each to Opus with libopusenc
+- Encodes audio streams in parallel while video chunks encode
+- Preserves the input channel count; surround channels are reordered for Opus mapping, not downmixed
+- Bitrate scales with channel count using `128 * (channelEquivalent / 2)^0.75`:
+  - Mono: 76 kbps
   - Stereo: 128 kbps
-  - 5.1: 256 kbps
-  - 7.1: 384 kbps
-  - Custom layouts: 48 kbps per channel
+  - 5.1: 258 kbps
+  - 7.1: 331 kbps
+  - Other layouts: formula-based by channel count
 
 ## Progress Reporting
 

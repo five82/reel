@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"time"
 
+	nativeaudio "github.com/five82/reel/internal/audio"
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/encode"
@@ -179,16 +180,23 @@ func ProcessChunked(
 	}
 
 	// ========================================================================
-	// PHASE 2: Run video encoding and audio extraction in parallel
+	// PHASE 2: Run video encoding and audio encoding in parallel
 	// ========================================================================
+	encodeCtx, cancelEncode := context.WithCancel(ctx)
+	defer cancelEncode()
+
 	var audioErr error
+	var encodedAudio []nativeaudio.EncodedStream
 	audioDone := make(chan struct{})
 
-	// Start audio extraction in background (only reads source file)
+	// Start audio encoding in background (only reads source file)
 	if len(audioStreams) > 0 {
 		go func() {
 			defer close(audioDone)
-			audioErr = chunk.ExtractAudio(inputPath, workDir, audioStreams)
+			encodedAudio, audioErr = chunk.ExtractAudio(encodeCtx, inputPath, workDir, audioStreams)
+			if audioErr != nil {
+				cancelEncode()
+			}
 		}()
 	} else {
 		close(audioDone)
@@ -196,7 +204,7 @@ func ProcessChunked(
 
 	// Run parallel video encode
 	_, encodeErr := encode.EncodeAll(
-		ctx,
+		encodeCtx,
 		chunks,
 		inputPath,
 		vidInf,
@@ -207,8 +215,12 @@ func ProcessChunked(
 	)
 
 	if encodeErr != nil {
-		// Wait for audio to finish before returning
+		// Wait for audio to finish before returning. If audio failed first, report that
+		// error instead of the context cancellation it triggered in video encoding.
 		<-audioDone
+		if audioErr != nil {
+			return CropResult{}, fmt.Errorf("audio encoding failed: %w", audioErr)
+		}
 		return CropResult{}, fmt.Errorf("chunked encoding failed: %w", encodeErr)
 	}
 
@@ -221,15 +233,15 @@ func ProcessChunked(
 
 	displayAspect := displayAspectAfterCrop(videoProps, vidInf, cropRect)
 
-	// Wait for audio extraction to complete
+	// Wait for audio encoding to complete
 	<-audioDone
 	if audioErr != nil {
-		return CropResult{}, fmt.Errorf("audio extraction failed: %w", audioErr)
+		return CropResult{}, fmt.Errorf("audio encoding failed: %w", audioErr)
 	}
 
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
-	if err := chunk.MuxFinal(inputPath, workDir, outputPath, audioStreams, displayAspect); err != nil {
+	if err := chunk.MuxFinal(inputPath, workDir, outputPath, encodedAudio, displayAspect); err != nil {
 		return CropResult{}, fmt.Errorf("final mux failed: %w", err)
 	}
 
@@ -347,9 +359,9 @@ func CheckChunkedDependencies() error {
 		return fmt.Errorf("SvtAv1EncApp not found in PATH (required for encoding)")
 	}
 
-	// Check for ffmpeg in PATH (used for audio extraction)
+	// Check for ffmpeg in PATH (used for chunk merging and final muxing)
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return fmt.Errorf("ffmpeg not found in PATH (required for audio extraction)")
+		return fmt.Errorf("ffmpeg not found in PATH (required for muxing)")
 	}
 
 	return nil

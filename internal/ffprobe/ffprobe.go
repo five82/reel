@@ -41,7 +41,8 @@ type AudioStreamInfo struct {
 	Channels    uint32
 	CodecName   string
 	Profile     string
-	Index       int
+	Index       int // zero-based audio stream ordinal
+	StreamIndex int // actual container stream index
 	Language    string
 	Title       string
 	IsSpatial   bool // Always false (spatial support removed)
@@ -75,6 +76,7 @@ type ffprobeFormat struct {
 }
 
 type ffprobeStream struct {
+	Index             int               `json:"index"`
 	CodecType         string            `json:"codec_type"`
 	CodecName         string            `json:"codec_name"`
 	Profile           string            `json:"profile"`
@@ -269,6 +271,7 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 			CodecName:   stream.CodecName,
 			Profile:     stream.Profile,
 			Index:       audioIndex,
+			StreamIndex: stream.Index,
 			Language:    tagValue(stream.Tags, "language"),
 			Title:       tagValue(stream.Tags, "title"),
 			IsSpatial:   false, // Spatial audio support removed

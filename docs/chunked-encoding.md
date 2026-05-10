@@ -49,7 +49,7 @@ Input Video
          │
          ▼
 ┌─────────────────┐
-│ Audio Encoding  │ ─── Extract and re-encode to Opus
+│ Audio Encoding  │ ─── Decode with libav and encode to Opus with libopusenc
 └────────┬────────┘
          │
          ▼
@@ -298,7 +298,7 @@ This avoids FFmpeg limitations with very large file lists.
 
 ## Stage 6: Audio Encoding
 
-Audio is extracted from the source and re-encoded to Opus.
+Audio streams are decoded from the source with libav/libswresample and encoded to Opus with libopusenc. Each source audio stream is encoded in parallel to a separate `.opus` file. Reel preserves the input channel count; surround layouts may be reordered for Opus mapping but are not downmixed.
 
 ### Bitrate Calculation
 
@@ -306,21 +306,21 @@ Bitrate scales with channel count:
 
 | Channels | Layout | Bitrate |
 |----------|--------|---------|
-| 1 | Mono | 64 kbps |
+| 1 | Mono | 76 kbps |
 | 2 | Stereo | 128 kbps |
-| 6 | 5.1 | 256 kbps |
-| 8 | 7.1 | 384 kbps |
-| Other | - | 48 kbps/channel |
+| 6 | 5.1 | 258 kbps |
+| 8 | 7.1 | 331 kbps |
+| Other | - | `128 * (channelEquivalent / 2)^0.75` |
 
-### Command
+### Native pipeline
 
 ```
-ffmpeg -i source \
-  -vn \
-  -c:a libopus \
-  -b:a {bitrate} \
-  -ac {channels} \
-  audio.mka
+source audio stream N
+  -> libavcodec decode
+  -> libswresample convert to 48 kHz packed float
+  -> optional surround channel reorder for Opus mapping
+  -> libopusenc encode
+  -> audio_NN.opus
 ```
 
 ## Stage 7: Final Muxing
@@ -330,7 +330,7 @@ The final step combines all components into the output MKV.
 ### Inputs
 
 1. **video.mkv**: Encoded AV1 video
-2. **audio.mka**: Re-encoded Opus audio (if source has audio)
+2. **audio_NN.opus**: Per-stream Opus audio files (if source has audio)
 3. **source**: Original file for subtitles and chapters
 
 ### Command
@@ -338,14 +338,16 @@ The final step combines all components into the output MKV.
 ```
 ffmpeg \
   -i video.mkv \
-  -i audio.mka \
+  -i audio_00.opus \
+  -i audio_01.opus \
   -i source \
   -map 0:v:0 \
-  -map 1:a? \
-  -map 2:s? \
+  -map 1:a:0 \
+  -map 2:a:0 \
+  -map 3:s? \
   -c copy \
-  -map_metadata 0 \
-  -map_chapters 2 \
+  -map_metadata 3 \
+  -map_chapters 3 \
   -movflags +faststart \
   output.mkv
 ```
@@ -405,7 +407,8 @@ work_dir/
 │   └── ...
 ├── done.txt          # Completed chunks (for resume)
 ├── video.mkv         # Concatenated video
-├── audio.mka         # Encoded audio
+├── audio_00.opus     # Encoded audio stream 0
+├── audio_01.opus     # Encoded audio stream 1 (if present)
 └── concat.txt        # FFmpeg concat file (temporary)
 ```
 
