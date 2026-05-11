@@ -1,8 +1,8 @@
 package encoder
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../../.local/include/svt-av1 -I/usr/local/include/svt-av1 -I/usr/include/svt-av1
-#cgo LDFLAGS: -L${SRCDIR}/../../../../.local/lib -L/usr/local/lib -Wl,-rpath,$ORIGIN/../../.local/lib -lSvtAv1Enc
+#cgo linux LDFLAGS: -Wl,-rpath,$ORIGIN/../../.local/lib
+#cgo pkg-config: SvtAv1Enc
 
 #include <EbSvtAv1Enc.h>
 #include <malloc.h>

@@ -41,6 +41,12 @@ golangci-lint run                     # Lint
 ./check-ci.sh                         # Full CI (recommended before handoff)
 ```
 
+## Native Library Linking
+
+- On the primary development setup, prefer the newer SVT-AV1 libraries in `~/.local/` for encoding; Debian's SVT-AV1 is much older and slower. Debian's SVT-AV1 should still work when `~/.local/` SVT libraries are not present.
+- Do not let Reel's FFmpeg/libav decode path link against `~/.local/` FFmpeg libraries. Crop detection uses libav sampling, and the `~/.local/` FFmpeg build has caused severe crop-detection performance regressions.
+- When changing cgo/pkg-config/linker settings, verify that SVT resolves from `~/.local/` while `libavformat`, `libavcodec`, `libavutil`, `libswscale`, and `libswresample` resolve from the system libraries.
+
 ## CLI Output Style
 
 1. Four sections in human mode: Hardware -> Video -> Encoding -> Validation -> Results.
