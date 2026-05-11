@@ -29,6 +29,23 @@ static void reel_disable_svt_logs(void) {
 #endif
 }
 
+static EbErrorType reel_svt_init_handle(EbComponentType** handle, EbSvtAv1EncConfiguration* config) {
+#if SVT_AV1_CHECK_VERSION(4, 0, 0)
+    return svt_av1_enc_init_handle(handle, config);
+#else
+    return svt_av1_enc_init_handle(handle, NULL, config);
+#endif
+}
+
+static void reel_set_level_of_parallelism(EbSvtAv1EncConfiguration* config, uint32_t value) {
+#if SVT_AV1_CHECK_VERSION(2, 0, 0)
+    config->level_of_parallelism = value;
+#else
+    (void)config;
+    (void)value;
+#endif
+}
+
 static void reel_malloc_trim(void) {
     malloc_trim(0);
 }
@@ -58,7 +75,7 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 	var handle *C.EbComponentType
 	var config C.EbSvtAv1EncConfiguration
 
-	ret := C.svt_av1_enc_init_handle(&handle, &config)
+	ret := C.reel_svt_init_handle(&handle, &config)
 	if ret != C.EB_ErrorNone {
 		return nil, fmt.Errorf("svt_av1_enc_init_handle failed: %d", int32(ret))
 	}
@@ -228,7 +245,7 @@ func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 	parseSvtParam(config, "preset", fmt.Sprintf("%d", cfg.Preset))
 	parseSvtParam(config, "tune", fmt.Sprintf("%d", cfg.Tune))
 	if cfg.LevelOfParallelism > 0 {
-		config.level_of_parallelism = C.uint32_t(cfg.LevelOfParallelism)
+		C.reel_set_level_of_parallelism(config, C.uint32_t(cfg.LevelOfParallelism))
 	}
 
 	if cfg.Inf.ColorPrimaries != nil {
