@@ -12,11 +12,13 @@ import (
 
 const (
 	memoryMonitorInterval = 5 * time.Second
+	abundantRampIntervals = 2 // 10 seconds
 	stableRampIntervals   = 6 // 30 seconds
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
 	memoryStableAvailableFraction   = 0.35
+	memoryAbundantAvailableFraction = 0.50
 
 	swapStableGrowthBytes   = 16 << 20
 	swapPressureGrowthBytes = 64 << 20
@@ -67,7 +69,7 @@ func initialAdaptiveWorkers(maxWorkers int, width, height uint32) int {
 	case width >= 3840 || height >= 2160:
 		return 1
 	case width >= 1920 || height >= 1080:
-		return min(maxWorkers, 3)
+		return min(maxWorkers, max(3, maxWorkers/4))
 	default:
 		return min(maxWorkers, 4)
 	}
@@ -162,9 +164,12 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 			continue
 		}
 
-		if availableFraction > memoryStableAvailableFraction && swapGrowthTotal <= swapStableGrowthBytes {
-			l.maybeIncreaseTarget()
-		} else {
+		switch {
+		case availableFraction > memoryAbundantAvailableFraction && swapGrowthTotal == 0:
+			l.maybeIncreaseTarget(abundantRampIntervals)
+		case availableFraction > memoryStableAvailableFraction && swapGrowthTotal <= swapStableGrowthBytes:
+			l.maybeIncreaseTarget(stableRampIntervals)
+		default:
 			l.resetStability()
 		}
 	}
@@ -217,7 +222,7 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	}
 }
 
-func (l *adaptiveLimiter) maybeIncreaseTarget() {
+func (l *adaptiveLimiter) maybeIncreaseTarget(requiredStableTicks int) {
 	l.mu.Lock()
 	if l.target >= l.max {
 		l.stableTicks = 0
@@ -226,7 +231,7 @@ func (l *adaptiveLimiter) maybeIncreaseTarget() {
 	}
 
 	l.stableTicks++
-	if l.stableTicks < stableRampIntervals {
+	if l.stableTicks < requiredStableTicks {
 		l.mu.Unlock()
 		return
 	}
