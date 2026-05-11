@@ -64,19 +64,8 @@ cleanup_mod_diff
 trap - EXIT
 print_success "go.mod is tidy"
 
-SVT_PKG_CONFIG_DIR=""
 if [ -f "$HOME/.local/lib/libSvtAv1Enc.so" ] && [ -d "$HOME/.local/include/svt-av1" ]; then
-    SVT_PKG_CONFIG_DIR=$(mktemp -d)
-    cat > "$SVT_PKG_CONFIG_DIR/SvtAv1Enc.pc" <<EOF
-Name: SvtAv1Enc
-Description: SVT-AV1 encoder library
-Version: local
-Libs: -L$HOME/.local/lib -lSvtAv1Enc
-Cflags: -I$HOME/.local/include/svt-av1 -DEB_DLL -DRTC_BUILD=0
-EOF
-    export PKG_CONFIG_PATH="$SVT_PKG_CONFIG_DIR${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    trap 'rm -rf "$SVT_PKG_CONFIG_DIR"' EXIT
     go clean -cache
     print_success "Using local SVT-AV1"
 fi

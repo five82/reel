@@ -114,6 +114,9 @@ func (r *TerminalReporter) EncodingConfig(summary EncodingConfigSummary) {
 	fmt.Println()
 	_, _ = r.cyan.Println("ENCODING")
 	r.printLabel("Encoder:", summary.Encoder)
+	if summary.EncoderVersion != "" {
+		r.printLabel("SVT version:", summary.EncoderVersion)
+	}
 	r.printLabel("Preset:", summary.Preset)
 	r.printLabel("Tune:", summary.Tune)
 	r.printLabel("Quality:", summary.Quality)

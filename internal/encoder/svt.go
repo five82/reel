@@ -1,7 +1,8 @@
 package encoder
 
 /*
-#cgo pkg-config: SvtAv1Enc
+#cgo CFLAGS: -I${SRCDIR}/../../../../.local/include/svt-av1 -I/usr/local/include/svt-av1 -I/usr/include/svt-av1
+#cgo LDFLAGS: -L${SRCDIR}/../../../../.local/lib -L/usr/local/lib -Wl,-rpath,$ORIGIN/../../.local/lib -lSvtAv1Enc
 
 #include <EbSvtAv1Enc.h>
 #include <malloc.h>
@@ -58,6 +59,15 @@ import (
 
 	"github.com/five82/reel/internal/video"
 )
+
+// SVTVersion returns the version string reported by the linked SVT-AV1 library.
+func SVTVersion() string {
+	version := C.svt_av1_get_version()
+	if version == nil {
+		return "unknown"
+	}
+	return C.GoString(version)
+}
 
 // svtEncoder wraps a single SVT-AV1 library encoder instance.
 type svtEncoder struct {

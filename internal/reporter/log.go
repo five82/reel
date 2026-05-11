@@ -65,6 +65,9 @@ func (r *LogReporter) CropResult(summary CropSummary) {
 func (r *LogReporter) EncodingConfig(summary EncodingConfigSummary) {
 	r.log("INFO", "=== ENCODING CONFIG ===")
 	r.log("INFO", "Encoder: %s", summary.Encoder)
+	if summary.EncoderVersion != "" {
+		r.log("INFO", "SVT version: %s", summary.EncoderVersion)
+	}
 	r.log("INFO", "Preset: %s", summary.Preset)
 	r.log("INFO", "Tune: %s", summary.Tune)
 	r.log("INFO", "Quality: %s", summary.Quality)

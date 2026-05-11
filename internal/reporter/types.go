@@ -29,6 +29,7 @@ type CropSummary struct {
 // EncodingConfigSummary contains encoding configuration.
 type EncodingConfigSummary struct {
 	Encoder            string
+	EncoderVersion     string
 	Preset             string
 	Tune               string
 	Quality            string

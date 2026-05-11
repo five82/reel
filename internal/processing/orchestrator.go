@@ -153,6 +153,7 @@ func ProcessVideos(
 		// Emit encoding config
 		rep.EncodingConfig(reporter.EncodingConfigSummary{
 			Encoder:            "SVT-AV1",
+			EncoderVersion:     encoder.SVTVersion(),
 			Preset:             fmt.Sprintf("%d", encodeParams.Preset),
 			Tune:               fmt.Sprintf("%d", encodeParams.Tune),
 			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality),
