@@ -32,7 +32,7 @@ GitHub: [reel](https://github.com/five82/reel) | [spindle](https://github.com/fi
 ## Build, Test, Lint
 
 ```bash
-go build -o reel ./cmd/reel       # Build CLI
+go build -trimpath -o reel ./cmd/reel  # Build CLI without local paths
 go test ./...                         # Test
 go test -race ./...                   # Race detector
 golangci-lint run                     # Lint

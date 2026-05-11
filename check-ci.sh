@@ -67,19 +67,18 @@ print_success "go.mod is tidy"
 SVT_PKG_CONFIG_DIR=""
 if [ -f "$HOME/.local/lib/libSvtAv1Enc.so" ] && [ -d "$HOME/.local/include/svt-av1" ]; then
     SVT_PKG_CONFIG_DIR=$(mktemp -d)
-    mkdir -p "$SVT_PKG_CONFIG_DIR/lib"
-    ln -sf "$HOME"/.local/lib/libSvtAv1Enc.so* "$SVT_PKG_CONFIG_DIR/lib/"
     cat > "$SVT_PKG_CONFIG_DIR/SvtAv1Enc.pc" <<EOF
 Name: SvtAv1Enc
 Description: SVT-AV1 encoder library
 Version: local
-Libs: -L$SVT_PKG_CONFIG_DIR/lib -lSvtAv1Enc -Wl,-rpath,$SVT_PKG_CONFIG_DIR/lib
+Libs: -L$HOME/.local/lib -lSvtAv1Enc
 Cflags: -I$HOME/.local/include/svt-av1 -DEB_DLL -DRTC_BUILD=0
 EOF
     export PKG_CONFIG_PATH="$SVT_PKG_CONFIG_DIR${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     trap 'rm -rf "$SVT_PKG_CONFIG_DIR"' EXIT
     go clean -cache
-    print_success "Using local SVT-AV1 without changing FFmpeg pkg-config or runtime library resolution"
+    print_success "Using local SVT-AV1"
 fi
 
 print_step "Running go test ./..."
@@ -98,8 +97,8 @@ else
     exit 1
 fi
 
-print_step "Running go build ./..."
-if go build ./...; then
+print_step "Running go build -trimpath ./..."
+if go build -trimpath ./...; then
     print_success "Build passed"
 else
     print_error "Build failed"

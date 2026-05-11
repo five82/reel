@@ -44,7 +44,7 @@ ldconfig -p | grep SvtAv1Enc
 ## Install
 
 ```bash
-go install github.com/five82/reel/cmd/reel@latest
+go install -trimpath github.com/five82/reel/cmd/reel@latest
 ```
 
 Or build from source:
@@ -52,7 +52,7 @@ Or build from source:
 ```bash
 git clone https://github.com/five82/reel
 cd reel
-go build -o reel ./cmd/reel
+go build -trimpath -o reel ./cmd/reel
 ```
 
 ## Usage
@@ -138,7 +138,7 @@ reel/
 ## Development
 
 ```bash
-go build ./...
+go build -trimpath ./...
 go test ./...
 golangci-lint run
 ./check-ci.sh          # Full CI check
