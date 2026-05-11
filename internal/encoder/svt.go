@@ -1,7 +1,6 @@
 package encoder
 
 /*
-#cgo linux LDFLAGS: -Wl,-rpath,$ORIGIN/../../.local/lib
 #cgo pkg-config: SvtAv1Enc
 
 #include <EbSvtAv1Enc.h>
