@@ -16,8 +16,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install FFMS2
-        run: sudo apt-get update && sudo apt-get install -y libffms2-dev
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libffms2-dev libsvtav1enc-dev
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -48,8 +48,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install FFMS2
-        run: sudo apt-get update && sudo apt-get install -y libffms2-dev
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libffms2-dev libsvtav1enc-dev
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -72,8 +72,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install FFMS2
-        run: sudo apt-get update && sudo apt-get install -y libffms2-dev
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libffms2-dev libsvtav1enc-dev
 
       - name: Set up Go
         uses: actions/setup-go@v6

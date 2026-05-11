@@ -1,15 +1,16 @@
 package encoder
 
 /*
-#cgo CFLAGS: -I/home/ken/.local/include
-#cgo LDFLAGS: /home/ken/.local/lib/libSvtAv1Enc.so -Wl,-rpath,/home/ken/.local/lib
+#cgo CFLAGS: -I/home/ken/.local/include/svt-av1 -I/usr/include/svt-av1
+#cgo LDFLAGS: -L/home/ken/.local/lib -lSvtAv1Enc -Wl,-rpath,/home/ken/.local/lib
 
-#include <svt-av1/EbSvtAv1Enc.h>
+#include <EbSvtAv1Enc.h>
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
+#if SVT_AV1_CHECK_VERSION(4, 0, 0)
 static void noop_log_callback(void* context, SvtAv1LogLevel level, const char* tag, const char* fmt, va_list args) {
     (void)context;
     (void)level;
@@ -20,6 +21,13 @@ static void noop_log_callback(void* context, SvtAv1LogLevel level, const char* t
 
 static SvtAv1LogCallback get_noop_log_callback(void) {
     return noop_log_callback;
+}
+#endif
+
+static void reel_disable_svt_logs(void) {
+#if SVT_AV1_CHECK_VERSION(4, 0, 0)
+    svt_av1_set_log_callback(get_noop_log_callback(), NULL);
+#endif
 }
 
 static void reel_malloc_trim(void) {
@@ -46,7 +54,7 @@ type svtEncoder struct {
 
 // newSvtEncoder creates and initializes an SVT-AV1 encoder.
 func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
-	C.svt_av1_set_log_callback(C.get_noop_log_callback(), nil)
+	C.reel_disable_svt_logs()
 
 	var handle *C.EbComponentType
 	var config C.EbSvtAv1EncConfiguration
