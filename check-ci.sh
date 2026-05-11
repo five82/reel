@@ -64,6 +64,24 @@ cleanup_mod_diff
 trap - EXIT
 print_success "go.mod is tidy"
 
+SVT_PKG_CONFIG_DIR=""
+if [ -f "$HOME/.local/lib/libSvtAv1Enc.so" ] && [ -d "$HOME/.local/include/svt-av1" ]; then
+    SVT_PKG_CONFIG_DIR=$(mktemp -d)
+    mkdir -p "$SVT_PKG_CONFIG_DIR/lib"
+    ln -sf "$HOME"/.local/lib/libSvtAv1Enc.so* "$SVT_PKG_CONFIG_DIR/lib/"
+    cat > "$SVT_PKG_CONFIG_DIR/SvtAv1Enc.pc" <<EOF
+Name: SvtAv1Enc
+Description: SVT-AV1 encoder library
+Version: local
+Libs: -L$SVT_PKG_CONFIG_DIR/lib -lSvtAv1Enc -Wl,-rpath,$SVT_PKG_CONFIG_DIR/lib
+Cflags: -I$HOME/.local/include/svt-av1 -DEB_DLL -DRTC_BUILD=0
+EOF
+    export PKG_CONFIG_PATH="$SVT_PKG_CONFIG_DIR${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    trap 'rm -rf "$SVT_PKG_CONFIG_DIR"' EXIT
+    go clean -cache
+    print_success "Using local SVT-AV1 without changing FFmpeg pkg-config or runtime library resolution"
+fi
+
 print_step "Running go test ./..."
 if go test ./...; then
     print_success "Tests passed"

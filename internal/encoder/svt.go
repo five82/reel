@@ -1,8 +1,7 @@
 package encoder
 
 /*
-#cgo CFLAGS: -I/home/ken/.local/include/svt-av1 -I/usr/include/svt-av1
-#cgo LDFLAGS: -L/home/ken/.local/lib -lSvtAv1Enc -Wl,-rpath,/home/ken/.local/lib
+#cgo pkg-config: SvtAv1Enc
 
 #include <EbSvtAv1Enc.h>
 #include <malloc.h>
