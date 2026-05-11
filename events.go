@@ -40,10 +40,11 @@ func (e BaseEvent) Timestamp() int64 { return e.Time }
 // EncodingProgressEvent represents encoding progress updates.
 type EncodingProgressEvent struct {
 	BaseEvent
-	Percent    float32 `json:"percent"`
-	Speed      float32 `json:"speed"`
-	FPS        float32 `json:"fps"`
-	ETASeconds int64   `json:"eta_seconds"`
+	Percent     float32 `json:"percent"`
+	Speed       float32 `json:"speed"`
+	RecentSpeed float32 `json:"recent_speed"`
+	FPS         float32 `json:"fps"`
+	ETASeconds  int64   `json:"eta_seconds"`
 }
 
 // ValidationCompleteEvent represents validation completion.

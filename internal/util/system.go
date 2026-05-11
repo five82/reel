@@ -29,50 +29,66 @@ func GetSystemInfo() SystemInfo {
 	}
 }
 
+// MemoryStats contains selected values from /proc/meminfo.
+type MemoryStats struct {
+	MemTotal     uint64
+	MemAvailable uint64
+	SwapTotal    uint64
+	SwapFree     uint64
+}
+
+// SwapUsed returns currently used swap in bytes.
+func (m MemoryStats) SwapUsed() uint64 {
+	if m.SwapTotal <= m.SwapFree {
+		return 0
+	}
+	return m.SwapTotal - m.SwapFree
+}
+
+// ReadMemoryStats reads memory and swap information from /proc/meminfo.
+func ReadMemoryStats() (MemoryStats, bool) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return MemoryStats{}, false
+	}
+	defer func() { _ = f.Close() }()
+
+	var stats MemoryStats
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		kb, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		bytes := kb * 1024
+		switch fields[0] {
+		case "MemTotal:":
+			stats.MemTotal = bytes
+		case "MemAvailable:":
+			stats.MemAvailable = bytes
+		case "SwapTotal:":
+			stats.SwapTotal = bytes
+		case "SwapFree:":
+			stats.SwapFree = bytes
+		}
+	}
+
+	return stats, stats.MemAvailable > 0
+}
+
 // AvailableMemoryBytes returns the available memory in bytes.
 // On Linux, this reads MemAvailable from /proc/meminfo.
 // Returns 0 if memory cannot be determined.
 func AvailableMemoryBytes() uint64 {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
+	stats, ok := ReadMemoryStats()
+	if !ok {
 		return 0
 	}
-	defer func() { _ = f.Close() }()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "MemAvailable:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				kb, err := strconv.ParseUint(fields[1], 10, 64)
-				if err == nil {
-					return kb * 1024 // Convert KB to bytes
-				}
-			}
-		}
-	}
-	return 0
-}
-
-// MaxPermitsForMemory calculates the maximum safe number of in-flight chunks
-// based on available memory and estimated chunk size.
-// chunkMemBytes is the estimated memory per in-flight chunk (YUV data).
-// memFraction is the fraction of available memory to use (e.g., 0.7 for 70%).
-// Returns at least 1.
-func MaxPermitsForMemory(chunkMemBytes uint64, memFraction float64) int {
-	available := AvailableMemoryBytes()
-	if available == 0 {
-		return 1 // Can't determine memory, be conservative
-	}
-
-	usable := uint64(float64(available) * memFraction)
-	if usable < chunkMemBytes {
-		return 1
-	}
-
-	permits := int(usable / chunkMemBytes)
-	return max(permits, 1)
+	return stats.MemAvailable
 }
 
 // LogicalCores returns the number of logical CPU cores (includes hyperthreads).

@@ -2,10 +2,12 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/five82/reel/internal/config"
+	encodepipe "github.com/five82/reel/internal/encode"
 	"github.com/five82/reel/internal/encoder"
 	"github.com/five82/reel/internal/ffmpeg"
 	"github.com/five82/reel/internal/ffprobe"
@@ -161,11 +163,26 @@ func ProcessVideos(
 			SVTAV1Params:       encoder.SvtParamsDisplay(cfg.SVTAV1ACBias, cfg.SVTAV1EnableVarianceBoost, cfg.SVTAV1Tune),
 		})
 
-		// Run chunked encoding with FFmpeg/libav + SvtAv1EncApp
+		// Run chunked encoding with FFmpeg/libav + SVT-AV1 library
 		cropResult, encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
 		encodeSuccess := encodeError == nil
 
 		if !encodeSuccess {
+			// Check if the user canceled the operation (Ctrl+C / SIGTERM)
+			if ctx.Err() == context.Canceled {
+				rep.OperationComplete(fmt.Sprintf("Encoding canceled: %s", inputFilename))
+				rep.OperationComplete("Run the same command to resume from the last completed chunk")
+				break
+			}
+			if errors.Is(encodeError, encodepipe.ErrMemoryPressure) {
+				rep.Error(reporter.ReporterError{
+					Title:      "Memory Pressure",
+					Message:    fmt.Sprintf("Stopped encoding %s because Reel could not keep memory usage safely below RAM", inputFilename),
+					Context:    fmt.Sprintf("File: %s", inputPath),
+					Suggestion: "Run the same command to resume from completed chunks; Reel will restart conservatively and adapt again",
+				})
+				break
+			}
 			rep.Error(reporter.ReporterError{
 				Title:      "Encoding Error",
 				Message:    fmt.Sprintf("Failed to encode %s: %v", inputFilename, encodeError),

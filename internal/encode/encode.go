@@ -2,34 +2,26 @@
 package encode
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/encoder"
-	"github.com/five82/reel/internal/util"
 	"github.com/five82/reel/internal/video"
 	"github.com/five82/reel/internal/worker"
 )
 
 // EncodeConfig contains configuration for the parallel encode pipeline.
 type EncodeConfig struct {
-	Workers           int     // Number of parallel encoder workers
-	ChunkBuffer       int     // Extra chunks to buffer in memory
-	CRF               float32 // Quality (CRF value)
-	Preset            uint8   // SVT-AV1 preset
-	Tune              uint8   // SVT-AV1 tune
-	GrainTable        *string // Optional film grain table path
-	LogicalProcessors int     // Threads per worker (--lp flag), calculated if 0
+	CRF                float32 // Quality (CRF value)
+	Preset             uint8   // SVT-AV1 preset
+	Tune               uint8   // SVT-AV1 tune
+	GrainTable         *string // Optional film grain table path
+	LevelOfParallelism uint32  // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
+	StatusCallback     func(message string)
 
 	// Advanced SVT-AV1 parameters
 	ACBias                float32
@@ -43,14 +35,11 @@ type ProgressCallback func(progress worker.Progress)
 
 type chunkProgressCallback func(chunkIdx, frames int)
 
-var svtProgressRe = regexp.MustCompile(`(?i)\bEncoding\s+frame\s+(\d+)\b`)
-
 // EncodeAll runs the parallel encoding pipeline.
 // Uses streaming frame pipeline: each worker decodes and encodes one frame at a time,
 // avoiding the need to hold all frames in memory at once.
 //
-// Returns (actualWorkers, error) where actualWorkers is the number of workers used
-// (may be less than cfg.Workers if capped due to memory constraints).
+// Returns (maxWorkers, error) where maxWorkers is the adaptive concurrency ceiling.
 func EncodeAll(
 	ctx context.Context,
 	chunks []chunk.Chunk,
@@ -85,7 +74,7 @@ func EncodeAll(
 	}
 
 	if len(remainingChunks) == 0 {
-		return cfg.Workers, nil // All chunks already done
+		return MaxAdaptiveWorkers(), nil // All chunks already done
 	}
 
 	if cropRect != nil {
@@ -97,27 +86,28 @@ func EncodeAll(
 	// Calculate effective dimensions
 	width, height := video.OutputDimensions(inf, cropRect)
 
-	// Cap workers based on resolution and available memory
-	actualWorkers, _ := CapWorkers(cfg.Workers, width, height)
-
-	// Calculate optimal threads per worker if not explicitly set
-	if cfg.LogicalProcessors == 0 {
-		cfg.LogicalProcessors = calculateThreadsPerWorker(actualWorkers, width)
+	// Let the adaptive limiter ramp active encoders up/down based on real memory
+	// pressure. Static memory estimates are intentionally not used as a hard cap:
+	// they are too content/SVT-version dependent and can leave the machine underused.
+	maxWorkers := MaxAdaptiveWorkers()
+	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height)
+	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, cfg.StatusCallback)
+	if cfg.LevelOfParallelism == 0 {
+		cfg.LevelOfParallelism = levelOfParallelismForWorkers(maxWorkers)
 	}
 
-	// Calculate permits for actual worker count
-	permits := CalculatePermits(actualWorkers, cfg.ChunkBuffer)
-	sem := worker.NewSemaphore(permits)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// Chunk channel - workers receive chunk metadata (not decoded frames)
-	chunkChan := make(chan chunk.Chunk, permits)
+	chunkChan := make(chan chunk.Chunk, maxWorkers)
 
 	// Results channel
 	resultChan := make(chan worker.EncodeResult, len(remainingChunks))
 
 	// Progress tracking
 	var progressMu sync.Mutex
-	activeFrames := make(map[int]int, actualWorkers)
+	activeFrames := make(map[int]int, maxWorkers)
 	progress := worker.Progress{
 		ChunksTotal:    len(chunks),
 		ChunksComplete: len(chunks) - len(remainingChunks),
@@ -131,6 +121,7 @@ func EncodeAll(
 			p.FramesComplete += frames
 		}
 		p.FramesComplete = min(p.FramesComplete, p.FramesTotal)
+		p.ActiveWorkers, p.TargetWorkers, p.MaxWorkers = limiter.stats()
 		return p
 	}
 	chunkProgressCb := func(chunkIdx, frames int) {
@@ -164,11 +155,11 @@ func EncodeAll(
 
 	// Start streaming workers - each creates its own decoder for thread safety
 	var workerWg sync.WaitGroup
-	for i := 0; i < actualWorkers; i++ {
+	for i := 0; i < maxWorkers; i++ {
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
-			streamingWorker(ctx, inputPath, chunkChan, resultChan, sem, cfg, inf, cropRect, workDir, width, height, chunkProgressCb, setError, getError)
+			streamingWorker(ctx, inputPath, chunkChan, resultChan, limiter, cfg, inf, cropRect, workDir, width, height, chunkProgressCb, setError, getError)
 		}()
 	}
 
@@ -208,28 +199,21 @@ func EncodeAll(
 		}
 	}()
 
+	go limiter.monitor(ctx, cancel, setError)
+	go func() {
+		<-ctx.Done()
+		limiter.wake()
+	}()
+
 	// Chunk dispatcher goroutine
 	go func() {
 		defer close(chunkChan)
 
 		for _, ch := range remainingChunks {
-			// Check for cancellation
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Check for error (atomic read)
 			if getError() != nil {
 				return
 			}
-
-			// Acquire semaphore with context cancellation support
-			select {
-			case <-sem.Chan():
-				// Permit acquired
-			case <-ctx.Done():
+			if err := limiter.acquire(ctx); err != nil {
 				return
 			}
 
@@ -238,8 +222,7 @@ func EncodeAll(
 			case chunkChan <- ch:
 				// Successfully sent
 			case <-ctx.Done():
-				// Context cancelled while waiting to send
-				sem.Release()
+				limiter.release()
 				return
 			}
 		}
@@ -252,7 +235,7 @@ func EncodeAll(
 	// Wait for result collector
 	collectorWg.Wait()
 
-	return actualWorkers, getError()
+	return maxWorkers, getError()
 }
 
 // streamingWorker runs in a goroutine and processes chunks using streaming decode/encode.
@@ -262,7 +245,7 @@ func streamingWorker(
 	inputPath string,
 	chunkChan <-chan chunk.Chunk,
 	resultChan chan<- worker.EncodeResult,
-	sem *worker.Semaphore,
+	limiter *adaptiveLimiter,
 	cfg *EncodeConfig,
 	inf *video.Info,
 	cropRect *video.CropRect,
@@ -272,23 +255,18 @@ func streamingWorker(
 	setError func(error),
 	getError func() error,
 ) {
-	// Create per-worker video source (single-threaded, thread-safe)
-	src, err := video.Open(inputPath, 1)
-	if err != nil {
-		setError(fmt.Errorf("failed to create video source for worker: %w", err))
-		// Drain chunks and release permits
-		for range chunkChan {
-			sem.Release()
+	var src *video.Source
+	defer func() {
+		if src != nil {
+			src.Close()
 		}
-		return
-	}
-	defer src.Close()
+	}()
 
 	for ch := range chunkChan {
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
-			sem.Release()
+			limiter.release()
 			resultChan <- worker.EncodeResult{
 				ChunkIdx: ch.Idx,
 				Error:    ctx.Err(),
@@ -299,15 +277,28 @@ func streamingWorker(
 
 		// Check for error from other workers
 		if getError() != nil {
-			sem.Release()
+			limiter.release()
 			continue
+		}
+
+		if src == nil {
+			var err error
+			src, err = video.Open(inputPath, 1)
+			if err != nil {
+				limiter.release()
+				resultChan <- worker.EncodeResult{
+					ChunkIdx: ch.Idx,
+					Error:    fmt.Errorf("failed to create video source for worker: %w", err),
+				}
+				return
+			}
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
 		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, workDir, width, height, progressCb)
 
-		// Release semaphore
-		sem.Release()
+		// Release adaptive worker slot
+		limiter.release()
 
 		// Send result
 		resultChan <- result
@@ -329,11 +320,6 @@ func encodeChunkStreaming(
 	progressCb chunkProgressCallback,
 ) worker.EncodeResult {
 	frameCount := ch.Frames()
-	frameSize := video.FrameSize(inf, cropRect)
-
-	// Single frame buffer, reused for each frame (~6 MB for 1080p 10-bit)
-	frameBuf := make([]byte, frameSize)
-
 	outputPath := chunk.IVFPath(workDir, ch.Idx)
 
 	encCfg := &encoder.EncConfig{
@@ -350,92 +336,40 @@ func encodeChunkStreaming(
 		EnableVarianceBoost:   cfg.EnableVarianceBoost,
 		VarianceBoostStrength: cfg.VarianceBoostStrength,
 		VarianceOctile:        cfg.VarianceOctile,
-		LogicalProcessors:     cfg.LogicalProcessors,
+		LevelOfParallelism:    cfg.LevelOfParallelism,
 	}
 
-	cmd := encoder.MakeSvtCmd(encCfg)
+	frameIdx := 0
+	readFrame := func(buf []byte) error {
+		if frameIdx >= frameCount {
+			return fmt.Errorf("readFrame called after all frames consumed")
+		}
+		idx := ch.Start + frameIdx
+		if err := src.ReadFrame(idx, buf, inf, cropRect); err != nil {
+			return err
+		}
+		frameIdx++
+		return nil
+	}
 
-	// Setup stdin pipe
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
+	var lastReported int
+	progressWrapper := func(encoded int) {
+		if progressCb == nil {
+			return
+		}
+		if encoded > lastReported {
+			lastReported = encoded
+			progressCb(ch.Idx, min(encoded, frameCount))
+		}
+	}
+
+	if err := encoder.EncodeChunkToIVF(ctx, encCfg, readFrame, progressWrapper); err != nil {
 		return worker.EncodeResult{
 			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("failed to create stdin pipe: %w", err),
+			Error:    err,
 		}
 	}
 
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return worker.EncodeResult{
-			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("failed to create stderr pipe: %w", err),
-		}
-	}
-
-	// Start encoder
-	if err := cmd.Start(); err != nil {
-		return worker.EncodeResult{
-			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("failed to start encoder: %w", err),
-		}
-	}
-	stderrDone := monitorSvtProgress(stderr, ch.Idx, frameCount, progressCb)
-
-	// Stream frames one at a time: decode -> write to encoder -> repeat
-	var writeErr error
-	for i := 0; i < frameCount; i++ {
-		// Check for cancellation
-		if ctx.Err() != nil {
-			_ = stdin.Close()
-			_ = cmd.Wait()
-			<-stderrDone
-			return worker.EncodeResult{
-				ChunkIdx: ch.Idx,
-				Error:    ctx.Err(),
-			}
-		}
-
-		// Decode frame into reusable buffer
-		frameIdx := ch.Start + i
-		if err := src.ReadFrame(frameIdx, frameBuf, inf, cropRect); err != nil {
-			_ = stdin.Close()
-			_ = cmd.Wait()
-			<-stderrDone
-			return worker.EncodeResult{
-				ChunkIdx: ch.Idx,
-				Error:    fmt.Errorf("failed to extract frame %d: %w", frameIdx, err),
-			}
-		}
-
-		// Write frame to encoder stdin
-		_, writeErr = stdin.Write(frameBuf)
-		if writeErr != nil {
-			break
-		}
-	}
-
-	_ = stdin.Close()
-
-	if writeErr != nil {
-		_ = cmd.Wait()
-		stderrOutput := <-stderrDone
-		return worker.EncodeResult{
-			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("failed to write frame data: %w%s", writeErr, formatEncoderOutput(stderrOutput)),
-		}
-	}
-
-	// Wait for encoder to finish
-	if err := cmd.Wait(); err != nil {
-		stderrOutput := <-stderrDone
-		return worker.EncodeResult{
-			ChunkIdx: ch.Idx,
-			Error:    fmt.Errorf("encoder failed: %w%s", err, formatEncoderOutput(stderrOutput)),
-		}
-	}
-	<-stderrDone
-
-	// Get output file size
 	stat, err := os.Stat(outputPath)
 	if err != nil {
 		return worker.EncodeResult{
@@ -449,103 +383,4 @@ func encodeChunkStreaming(
 		Frames:   frameCount,
 		Size:     uint64(stat.Size()),
 	}
-}
-
-func monitorSvtProgress(stderr io.Reader, chunkIdx, totalFrames int, progressCb chunkProgressCallback) <-chan string {
-	done := make(chan string, 1)
-	go func() {
-		defer close(done)
-
-		var output strings.Builder
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
-		scanner.Split(splitProgressLines)
-		for scanner.Scan() {
-			line := scanner.Text()
-			appendEncoderOutput(&output, line)
-			if frames, ok := parseSvtProgressFrames(line); ok && progressCb != nil {
-				progressCb(chunkIdx, min(frames, totalFrames))
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			appendEncoderOutput(&output, err.Error())
-		}
-		done <- output.String()
-	}()
-	return done
-}
-
-func splitProgressLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
-		return i + 1, bytes.TrimSpace(data[:i]), nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), bytes.TrimSpace(data), nil
-	}
-	return 0, nil, nil
-}
-
-func parseSvtProgressFrames(line string) (int, bool) {
-	match := svtProgressRe.FindStringSubmatch(line)
-	if match == nil {
-		return 0, false
-	}
-	frames, err := strconv.Atoi(match[1])
-	return frames, err == nil
-}
-
-func appendEncoderOutput(output *strings.Builder, line string) {
-	const maxEncoderOutput = 64 * 1024
-	if line == "" || output.Len() >= maxEncoderOutput {
-		return
-	}
-	if output.Len() > 0 {
-		output.WriteByte('\n')
-	}
-	remaining := maxEncoderOutput - output.Len()
-	if len(line) > remaining {
-		line = line[:remaining]
-	}
-	output.WriteString(line)
-}
-
-func formatEncoderOutput(output string) string {
-	if strings.TrimSpace(output) == "" {
-		return ""
-	}
-	return "\nOutput: " + output
-}
-
-// calculateThreadsPerWorker determines optimal threads per worker based on CPU topology and resolution.
-// Uses physical cores as the base and adds an SMT bonus when hyperthreading is available.
-// Resolution affects max threads: larger frames parallelize better in SVT-AV1.
-func calculateThreadsPerWorker(workers int, width uint32) int {
-	if workers <= 0 {
-		return 1
-	}
-
-	physical := util.PhysicalCores()
-	logical := util.LogicalCores()
-	hasSMT := logical > physical
-
-	// Resolution-based max threads (SVT-AV1 scaling limits)
-	var maxThreads int
-	switch {
-	case width >= 3840: // 4K - larger frames parallelize better
-		maxThreads = 16
-	case width >= 1920: // 1080p
-		maxThreads = 10
-	default: // SD/720p
-		maxThreads = 6
-	}
-
-	// Base calculation on physical cores
-	threadsPerWorker := physical / workers
-
-	// Add SMT bonus (hyperthreads provide ~20% additional throughput)
-	if hasSMT && threadsPerWorker < maxThreads {
-		threadsPerWorker++
-	}
-
-	return max(1, min(threadsPerWorker, maxThreads))
 }

@@ -1,6 +1,6 @@
 # reel
 
-AV1 encoding tool using SvtAv1EncApp and FFmpeg/libav for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
+AV1 encoding tool using the SVT-AV1 encoder library and FFmpeg/libav for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
 
 ## Expectations
 
@@ -24,7 +24,7 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 ## Requirements
 
 - Go 1.26+
-- SvtAv1EncApp (SVT-AV1 standalone encoder)
+- libSvtAv1Enc (SVT-AV1 encoder shared library)
 - FFmpeg executable (for chunk merging and final muxing)
 - libopusenc shared library (for Opus audio encoding)
 - FFmpeg development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
@@ -32,10 +32,13 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install ffmpeg mediainfo libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 svt-av1
+sudo apt-get install ffmpeg mediainfo libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
 
 # Verify libopusenc is available
 ldconfig -p | grep opusenc
+
+# Verify libSvtAv1Enc is available
+ldconfig -p | grep SvtAv1Enc
 ```
 
 ## Install
@@ -74,9 +77,6 @@ Quality Settings:
 
 Processing Options:
   --disable-autocrop   Disable black bar detection
-  --workers <N>        Parallel encoder workers (default: auto)
-  --buffer <N>         Chunks to buffer in memory (default: auto)
-  --threads <N>        Threads per worker (SVT-AV1 --lp flag, default: auto)
 
 Output Options:
   -l, --log-dir        Log directory (defaults to ~/.local/state/reel/logs)
@@ -93,7 +93,6 @@ import "github.com/five82/reel"
 
 encoder, err := reel.New(
     reel.WithCRF(26),
-    reel.WithWorkers(4),
 )
 if err != nil {
     log.Fatal(err)

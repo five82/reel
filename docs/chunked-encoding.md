@@ -177,12 +177,12 @@ Each worker processes chunks using a streaming approach:
 
 1. Receive chunk metadata (index, frame range)
 2. Allocate single-frame buffer (~6 MB for 1080p 10-bit)
-3. Start SVT-AV1 encoder process
+3. Start an SVT-AV1 library encoder instance
 4. Loop through frames:
    - Decode frame into buffer using FFmpeg/libav
-   - Write frame to encoder stdin
+   - Send frame to SVT-AV1
    - Reuse same buffer for next frame
-5. Close stdin and wait for encoder to finish
+5. Drain packets and close the encoder
 
 This approach uses **~99% less memory** than buffering all frames:
 - Old: ~5 GB per chunk (900 frames × 6 MB)
@@ -192,61 +192,27 @@ This approach uses **~99% less memory** than buffering all frames:
 
 With the streaming pipeline, memory usage is dramatically reduced:
 
-1. **Per-worker frame buffer**: Each worker allocates a single-frame buffer (~6 MB for 1080p 10-bit)
-2. **Semaphore**: Limits in-flight chunks to `workers + buffer` for orderly processing
-3. **Per-worker decoder**: Each worker creates its own FFmpeg/libav decoder for thread safety
-4. **SVT-AV1 overhead**: Memory varies by resolution (see below)
+1. **Per-worker frame buffer**: Each active worker allocates a single-frame buffer (~6 MB for 1080p 10-bit)
+2. **Adaptive limiter**: Starts with conservative concurrency and ramps up/down based on real RAM/swap pressure
+3. **Per-worker decoder**: Each active worker creates its own FFmpeg/libav decoder for thread safety
+4. **SVT-AV1 overhead**: SVT internal memory varies significantly by resolution, preset, content, and SVT version
 
-**Memory per worker by resolution**:
-
-| Resolution | Memory per Worker |
-|------------|-------------------|
-| SD/720p | ~512 MB |
-| 1080p | ~2 GB |
-| 4K | ~5 GB |
+Reel intentionally avoids fixed per-worker memory estimates. They proved too inaccurate for the SVT-AV1 library API.
 
 ### Settings
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `Workers` | auto | Parallel encoder instances |
-| `ChunkBuffer` | 4 | Prefetch buffer to keep workers fed |
+Adaptive encoding uses the host logical CPU count as its hardware-derived ceiling. It starts below that ceiling and ramps while monitoring `MemAvailable` and swap growth from `/proc/meminfo`.
 
-Auto-detection requests up to 24 workers, then caps based on available memory and resolution. For example, with 32 GB RAM encoding 4K content (~5 GB per worker), approximately 4-5 workers would be used.
+### SVT-AV1 Configuration
 
-### SVT-AV1 Invocation
-
-Each worker runs SVT-AV1 with YUV piped to stdin (wrapped with `nice -n 19`):
-
-```
-nice -n 19 SvtAv1EncApp \
-  -i stdin \
-  --input-depth 10 \
-  --color-format 1 \
-  --profile 0 \
-  --passes 1 \
-  --width {width} \
-  --height {height} \
-  --fps-num {num} \
-  --fps-denom {denom} \
-  --frames {count} \
-  --keyint {fps × 10} \
-  --rc 0 \
-  --scd 1 \
-  --crf {value} \
-  --preset {preset} \
-  --tune {tune} \
-  --lp {threads} \
-  [HDR parameters] \
-  -b output.ivf
-```
+Each active worker owns one SVT-AV1 library encoder instance and writes an IVF chunk.
 
 Key parameters:
-- `--keyint`: Keyframe interval of 10 seconds (e.g., 240 frames for 24fps)
-- `--scd 1`: Scene change detection enabled for natural keyframe placement
-- `--passes 1`: Single-pass encoding
-- `--rc 0`: CRF (constant quality) mode
-- `--lp`: Threads per worker (auto-calculated based on CPU topology)
+- `keyint`: Keyframe interval of 10 seconds (e.g., 240 frames for 24fps)
+- `scd=0`: Scene-change keyframe insertion disabled; chunks naturally start at keyframes
+- `passes=1`: Single-pass encoding
+- `rc=0`: CRF (constant quality) mode
+- `level_of_parallelism`: Set internally based on the adaptive worker ceiling so each encoder does not auto-size as if it owns the whole machine
 
 ### Resume Support
 
@@ -388,14 +354,7 @@ CRF defaults vary by resolution:
 
 | Setting | CLI Flag | Default | Description |
 |---------|----------|---------|-------------|
-| Crop Mode | `--no-crop` | auto | Disable auto-cropping |
-
-### Parallel Encoding Settings
-
-| Setting | CLI Flag | Default | Description |
-|---------|----------|---------|-------------|
-| Workers | `--workers` | auto | Parallel encoders (capped by memory) |
-| Buffer | `--buffer` | 4 | Chunk prefetch buffer |
+| Crop Mode | `--disable-autocrop` | auto | Disable auto-cropping |
 
 ## Work Directory Structure
 
@@ -416,17 +375,7 @@ work_dir/
 
 ### Worker Count
 
-More workers increase parallelism but require more memory:
-- Memory per worker depends on resolution: ~512 MB (SD), ~2 GB (1080p), ~5 GB (4K)
-- Streaming design eliminates per-chunk YUV buffer overhead
-- Auto-detection caps workers based on 70% of available memory
-
-### Buffer Size
-
-The buffer setting controls how many chunks can be dispatched ahead:
-- Default: 4 chunks
-- Increase for smoother worker utilization on systems with fast I/O
-- Has minimal memory impact (only chunk metadata is buffered, not frames)
+More workers increase parallelism but require more memory. Reel starts conservatively and adjusts active workers dynamically based on real memory pressure. Swap growth is treated as a performance warning and causes Reel to reduce concurrency.
 
 ### Chunk Duration
 
@@ -439,17 +388,11 @@ Resolution-based chunk durations balance efficiency and parallelism:
 
 ### Out of Memory
 
-Memory usage depends on resolution (~512 MB for SD, ~2 GB for 1080p, ~5 GB for 4K per worker). If running out of memory:
-```bash
-reel --workers 1 input.mkv
-```
+Reel should reduce adaptive concurrency before swap pressure becomes severe. If memory pressure still cancels the encode, re-run the same command to resume from completed chunks.
 
 ### Slow Encoding
 
-If encoding seems slower than expected, you may be CPU-bound. Each worker runs an SVT-AV1 process:
-```bash
-reel --workers 2 input.mkv  # Try fewer workers on slower systems
-```
+If encoding seems slower than expected, watch the progress bar's worker count. Reel may be holding concurrency down to stay inside RAM and avoid swap thrash.
 
 ### Resume After Crash
 
@@ -457,4 +400,4 @@ Simply re-run the same command. Completed chunks in `done.txt` will be skipped.
 
 ### Quality Issues at Chunk Boundaries
 
-With fixed-length chunks, boundaries may occasionally fall mid-scene. SVT-AV1's scene change detection (`--scd 1`) and regular keyframe interval (`--keyint` at 10 seconds) help maintain quality across chunk boundaries. Visible artifacts at boundaries are rare but possible with very fast motion at chunk edges.
+With fixed-length chunks, boundaries may occasionally fall mid-scene. Regular keyframe interval (`keyint` at 10 seconds) helps maintain seekability across chunk boundaries. Visible artifacts at boundaries are rare but possible with very fast motion at chunk edges.

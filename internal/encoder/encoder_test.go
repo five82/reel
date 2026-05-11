@@ -1,39 +1,41 @@
 package encoder
 
 import (
-	"slices"
 	"testing"
-
-	"github.com/five82/reel/internal/video"
 )
 
-func TestBuildSvtArgsIncludesRangeAndChromaPosition(t *testing.T) {
-	colorRange := int32(1)
-	chromaPosition := int32(2)
-	cfg := &EncConfig{
-		Inf: &video.Info{
-			FPSNum:               24000,
-			FPSDen:               1001,
-			ColorRange:           &colorRange,
-			ChromaSamplePosition: &chromaPosition,
-		},
-		Width:  1920,
-		Height: 1080,
-		Frames: 24,
+func TestChromaSamplePosition(t *testing.T) {
+	tests := []struct {
+		input int32
+		want  string
+	}{
+		{1, "vertical"},
+		{2, "colocated"},
+		{0, "unknown"},
+		{99, "unknown"},
 	}
-
-	args := buildSvtArgs(cfg)
-	assertArgValue(t, args, "--color-range", "1")
-	assertArgValue(t, args, "--chroma-sample-position", "colocated")
+	for _, tt := range tests {
+		if got := chromaSamplePosition(tt.input); got != tt.want {
+			t.Errorf("chromaSamplePosition(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
 }
 
-func assertArgValue(t *testing.T, args []string, key, want string) {
-	t.Helper()
-	idx := slices.Index(args, key)
-	if idx == -1 || idx+1 >= len(args) {
-		t.Fatalf("%s not found in args: %v", key, args)
+func TestSvtParamsDisplay(t *testing.T) {
+	got := SvtParamsDisplay(0.5, true, 0)
+	wantParts := []string{"ac-bias=0.5", "enable-variance-boost=1", "tune=0", "keyint=10s", "scd=0", "scm=0"}
+	for _, part := range wantParts {
+		if !contains(got, part) {
+			t.Errorf("SvtParamsDisplay() = %q, missing %q", got, part)
+		}
 	}
-	if got := args[idx+1]; got != want {
-		t.Fatalf("%s = %q, want %q", key, got, want)
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
 	}
+	return false
 }

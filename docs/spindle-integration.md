@@ -10,8 +10,6 @@ import "github.com/five82/reel"
 // Create encoder with options
 encoder, err := reel.New(
     reel.WithCRF(26),
-    reel.WithWorkers(4),
-    reel.WithChunkBuffer(4),
 )
 if err != nil {
     log.Fatal(err)
@@ -38,8 +36,6 @@ reel.WithCRFByResolution(sd, hd, uhd uint8)    // Resolution-specific CRF values
 
 // Processing options
 reel.WithDisableAutocrop()                     // Skip automatic crop detection
-reel.WithWorkers(n int)                        // Number of parallel encoder workers
-reel.WithChunkBuffer(n int)                    // Extra chunks to buffer in memory
 ```
 
 ## Encoding Methods

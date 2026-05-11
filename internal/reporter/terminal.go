@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/five82/reel/internal/util"
@@ -13,18 +14,19 @@ import (
 
 // TerminalReporter outputs human-friendly text to the terminal.
 type TerminalReporter struct {
-	mu         sync.Mutex
-	progress   *progressbar.ProgressBar
-	maxPercent float32
-	lastStage  string
-	verbose    bool
-	cyan       *color.Color
-	green      *color.Color
-	yellow     *color.Color
-	red        *color.Color
-	magenta    *color.Color
-	bold       *color.Color
-	dim        *color.Color
+	mu                  sync.Mutex
+	progress            *progressbar.ProgressBar
+	maxPercent          float32
+	lastStage           string
+	lastVerboseProgress time.Time
+	verbose             bool
+	cyan                *color.Color
+	green               *color.Color
+	yellow              *color.Color
+	red                 *color.Color
+	magenta             *color.Color
+	bold                *color.Color
+	dim                 *color.Color
 }
 
 // NewTerminalReporter creates a new terminal reporter with verbose mode disabled.
@@ -131,6 +133,12 @@ func (r *TerminalReporter) EncodingStarted(totalFrames uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.verbose {
+		r.lastVerboseProgress = time.Time{}
+		fmt.Printf("  %s Encoding started (%s frames)\n", r.dim.Sprint("›"), compactCount(totalFrames))
+		return
+	}
+
 	r.progress = progressbar.NewOptions64(
 		100,
 		progressbar.OptionSetDescription(""),
@@ -138,6 +146,7 @@ func (r *TerminalReporter) EncodingStarted(totalFrames uint64) {
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionSetPredictTime(false),
+		progressbar.OptionThrottle(time.Second),
 		progressbar.OptionShowDescriptionAtLineEnd(),
 		progressbar.OptionSetElapsedTime(false),
 		progressbar.OptionClearOnFinish(),
@@ -154,6 +163,11 @@ func (r *TerminalReporter) EncodingStarted(totalFrames uint64) {
 func (r *TerminalReporter) EncodingProgress(progress ProgressSnapshot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if r.verbose {
+		r.printVerboseEncodingProgress(progress)
+		return
+	}
 
 	if r.progress == nil {
 		return
@@ -174,16 +188,68 @@ func (r *TerminalReporter) EncodingProgress(progress ProgressSnapshot) {
 
 	var desc string
 	if progress.ChunksTotal > 0 {
-		// Chunked encoding: show chunk progress
-		desc = fmt.Sprintf("chunks %d/%d, speed %.1fx, eta %s",
+		// Chunked encoding: show chunk progress with frame counts
+		workerText := ""
+		if progress.MaxWorkers > 0 {
+			if progress.ActiveWorkers != progress.TargetWorkers {
+				workerText = fmt.Sprintf(", workers %d→%d/%d", progress.ActiveWorkers, progress.TargetWorkers, progress.MaxWorkers)
+			} else {
+				workerText = fmt.Sprintf(", workers %d/%d", progress.ActiveWorkers, progress.MaxWorkers)
+			}
+		}
+		desc = fmt.Sprintf("chunks %d/%d (%s/%s)%s, speed %.1fx avg / %.1fx recent, eta %s",
 			progress.ChunksComplete, progress.ChunksTotal,
-			progress.Speed, util.FormatDurationFromSecs(int64(progress.ETA.Seconds())))
+			compactCount(progress.CurrentFrame), compactCount(progress.TotalFrames), workerText,
+			progress.Speed, progress.RecentSpeed, util.FormatDurationFromSecs(int64(progress.ETA.Seconds())))
 	} else {
 		// Traditional encoding: show fps
 		desc = fmt.Sprintf("speed %.1fx, fps %.1f, eta %s",
 			progress.Speed, progress.FPS, util.FormatDurationFromSecs(int64(progress.ETA.Seconds())))
 	}
 	r.progress.Describe(desc)
+}
+
+func (r *TerminalReporter) printVerboseEncodingProgress(progress ProgressSnapshot) {
+	now := time.Now()
+	if !r.lastVerboseProgress.IsZero() && now.Sub(r.lastVerboseProgress) < 5*time.Second {
+		return
+	}
+	r.lastVerboseProgress = now
+
+	workerText := ""
+	if progress.MaxWorkers > 0 {
+		if progress.ActiveWorkers != progress.TargetWorkers {
+			workerText = fmt.Sprintf(", workers %d→%d/%d", progress.ActiveWorkers, progress.TargetWorkers, progress.MaxWorkers)
+		} else {
+			workerText = fmt.Sprintf(", workers %d/%d", progress.ActiveWorkers, progress.MaxWorkers)
+		}
+	}
+
+	memoryText := ""
+	if stats, ok := util.ReadMemoryStats(); ok && stats.MemTotal > 0 {
+		used := stats.MemTotal - stats.MemAvailable
+		memoryText = fmt.Sprintf(", mem %s/%s avail %s", util.FormatBytes(used), util.FormatBytes(stats.MemTotal), util.FormatBytes(stats.MemAvailable))
+		if stats.SwapTotal > 0 {
+			memoryText += fmt.Sprintf(", swap %s/%s", util.FormatBytes(stats.SwapUsed()), util.FormatBytes(stats.SwapTotal))
+		}
+	}
+
+	fmt.Printf("  %s %.0f%% chunks %d/%d (%s/%s)%s, speed %.1fx avg / %.1fx recent, eta %s%s\n",
+		r.dim.Sprint("›"), progress.Percent,
+		progress.ChunksComplete, progress.ChunksTotal,
+		compactCount(progress.CurrentFrame), compactCount(progress.TotalFrames), workerText,
+		progress.Speed, progress.RecentSpeed, util.FormatDurationFromSecs(int64(progress.ETA.Seconds())), memoryText)
+}
+
+// compactCount formats a large number compactly (e.g., 45678 -> "45.7k").
+func compactCount(n uint64) string {
+	if n < 10_000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1_000_000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
 }
 
 func (r *TerminalReporter) ValidationComplete(summary ValidationSummary) {

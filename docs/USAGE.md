@@ -34,9 +34,6 @@ reel encode -v -i input.mkv -o output/
 - `--preset <0-13>`: SVT-AV1 encoder speed/quality (default `6`, lower is slower but higher quality)
 
 **Processing**
-- `--workers <N>`: Number of parallel encoder workers (auto-detected by default)
-- `--buffer <N>`: Extra chunks to buffer in memory (auto-matched to workers)
-- `--threads <N>`: Threads per worker (SVT-AV1 --lp flag, auto-detected by default)
 - `--disable-autocrop`: Skip black-bar detection and cropping
 
 **Output**
@@ -49,14 +46,8 @@ reel encode -v -i input.mkv -o output/
 Reel splits videos into fixed-length chunks and encodes them in parallel:
 
 ```bash
-# Auto-detected parallelism (1 worker per 8 CPU cores, max 4)
+# Adaptive parallelism: starts conservatively and ramps based on RAM/swap pressure
 reel encode -i input.mkv -o output/
-
-# Manual worker count
-reel encode -i input.mkv -o output/ --workers 8 --buffer 8
-
-# Adjust threads per worker
-reel encode -i input.mkv -o output/ --workers 2 --threads 4
 ```
 
 See [docs/chunked-encoding.md](chunked-encoding.md) for details on how chunked encoding works.

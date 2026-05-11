@@ -92,9 +92,21 @@ func (r *LogReporter) EncodingProgress(progress ProgressSnapshot) {
 	if bucket > r.lastProgressBucket && bucket <= 20 {
 		r.lastProgressBucket = bucket
 		r.mu.Unlock()
-		r.log("INFO", "Progress: %.0f%% (speed %.1fx, fps %.1f, eta %s)",
-			progress.Percent, progress.Speed, progress.FPS,
-			util.FormatDurationFromSecs(int64(progress.ETA.Seconds())))
+		workerText := ""
+		if progress.MaxWorkers > 0 {
+			workerText = fmt.Sprintf(", workers %d/%d active/target, max %d", progress.ActiveWorkers, progress.TargetWorkers, progress.MaxWorkers)
+		}
+		memoryText := ""
+		if stats, ok := util.ReadMemoryStats(); ok && stats.MemTotal > 0 {
+			used := stats.MemTotal - stats.MemAvailable
+			memoryText = fmt.Sprintf(", mem %s/%s avail %s", util.FormatBytes(used), util.FormatBytes(stats.MemTotal), util.FormatBytes(stats.MemAvailable))
+			if stats.SwapTotal > 0 {
+				memoryText += fmt.Sprintf(", swap %s/%s", util.FormatBytes(stats.SwapUsed()), util.FormatBytes(stats.SwapTotal))
+			}
+		}
+		r.log("INFO", "Progress: %.0f%% (speed %.1fx avg / %.1fx recent, fps %.1f, eta %s%s%s)",
+			progress.Percent, progress.Speed, progress.RecentSpeed, progress.FPS,
+			util.FormatDurationFromSecs(int64(progress.ETA.Seconds())), workerText, memoryText)
 	} else {
 		r.mu.Unlock()
 	}

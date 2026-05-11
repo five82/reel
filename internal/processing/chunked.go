@@ -3,9 +3,11 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	nativeaudio "github.com/five82/reel/internal/audio"
@@ -112,8 +114,6 @@ func ProcessChunked(
 
 	// Setup encode config
 	encCfg := &encode.EncodeConfig{
-		Workers:               cfg.Workers,
-		ChunkBuffer:           cfg.ChunkBuffer,
 		CRF:                   float32(quality),
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
@@ -121,7 +121,11 @@ func ProcessChunked(
 		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
-		LogicalProcessors:     cfg.ThreadsPerWorker,
+	}
+	if cfg.Verbose {
+		encCfg.StatusCallback = func(message string) {
+			rep.Verbose(message)
+		}
 	}
 
 	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, quality)
@@ -131,36 +135,74 @@ func ProcessChunked(
 	if err := chunk.EnsureResumeManifest(workDir, manifest); err != nil {
 		return CropResult{}, err
 	}
-
-	// Calculate actual workers (may be capped based on resolution and memory)
-	actualWorkers, wasCapped := encode.CapWorkers(cfg.Workers, vidInf.Width, vidInf.Height)
-
-	// Show both requested and actual worker counts
-	var workerMsg string
-	if wasCapped {
-		workerMsg = fmt.Sprintf("Starting chunked encoding with %d/%d workers (memory limited)", actualWorkers, cfg.Workers)
-	} else {
-		workerMsg = fmt.Sprintf("Starting chunked encoding with %d workers", actualWorkers)
+	resumeInfo, err := chunk.GetResume(workDir)
+	if err != nil {
+		return CropResult{}, fmt.Errorf("failed to load resume info: %w", err)
 	}
-	rep.StageProgress(reporter.StageProgress{Stage: "Encoding", Message: workerMsg})
+	resumedFrames := resumeInfo.Validate(workDir, chunks).TotalEncodedFrames()
+
+	// Adaptive encoding starts conservatively and ramps toward the requested worker
+	// count while monitoring real RAM/swap pressure.
+	maxWorkers := encode.MaxAdaptiveWorkers()
+	rep.StageProgress(reporter.StageProgress{
+		Stage:   "Encoding",
+		Message: fmt.Sprintf("Starting adaptive chunked encoding with up to %d workers", maxWorkers),
+	})
 
 	rep.EncodingStarted(uint64(vidInf.Frames))
 
 	startTime := time.Now()
+	type speedSample struct {
+		at     time.Time
+		frames int
+	}
+	var speedMu sync.Mutex
+	var speedSamples []speedSample
+	const recentSpeedWindow = 60 * time.Second
 
 	progressCallback := func(progress worker.Progress) {
-		// Calculate speed and ETA
+		// Calculate average speed, recent rolling speed, and ETA.
 		elapsed := time.Since(startTime)
 		var speed float32
+		var recentSpeed float32
 		var eta time.Duration
 
-		if elapsed.Seconds() > 0 && progress.FramesComplete > 0 {
-			// Video seconds encoded
-			videoSeconds := float64(progress.FramesComplete) / fps
-			// Speed = video seconds per real second
+		runFramesComplete := progress.FramesComplete - resumedFrames
+		if runFramesComplete < 0 {
+			runFramesComplete = 0
+		}
+		if elapsed.Seconds() > 0 && runFramesComplete > 0 {
+			// Speed is based only on frames encoded in this run. Resume frames count
+			// toward percent complete, but not toward current encode speed/ETA.
+			videoSeconds := float64(runFramesComplete) / fps
 			speed = float32(videoSeconds / elapsed.Seconds())
 
-			// ETA based on remaining frames
+			speedMu.Lock()
+			now := time.Now()
+			speedSamples = append(speedSamples, speedSample{at: now, frames: runFramesComplete})
+			cutoff := now.Add(-recentSpeedWindow)
+			first := 0
+			for first < len(speedSamples)-1 && speedSamples[first].at.Before(cutoff) {
+				first++
+			}
+			if first > 0 {
+				speedSamples = speedSamples[first:]
+			}
+			if len(speedSamples) >= 2 {
+				oldest := speedSamples[0]
+				newest := speedSamples[len(speedSamples)-1]
+				framesDelta := newest.frames - oldest.frames
+				secondsDelta := newest.at.Sub(oldest.at).Seconds()
+				if framesDelta > 0 && secondsDelta > 0 {
+					recentSpeed = float32((float64(framesDelta) / fps) / secondsDelta)
+				}
+			}
+			speedMu.Unlock()
+
+			if recentSpeed == 0 {
+				recentSpeed = speed
+			}
+
 			if speed > 0 {
 				remainingFrames := progress.FramesTotal - progress.FramesComplete
 				remainingVideoSeconds := float64(remainingFrames) / fps
@@ -173,9 +215,13 @@ func ProcessChunked(
 			TotalFrames:    uint64(progress.FramesTotal),
 			Percent:        float32(progress.Percent()),
 			Speed:          speed,
+			RecentSpeed:    recentSpeed,
 			ETA:            eta,
 			ChunksComplete: progress.ChunksComplete,
 			ChunksTotal:    progress.ChunksTotal,
+			ActiveWorkers:  progress.ActiveWorkers,
+			TargetWorkers:  progress.TargetWorkers,
+			MaxWorkers:     progress.MaxWorkers,
 		})
 	}
 
@@ -215,9 +261,17 @@ func ProcessChunked(
 	)
 
 	if encodeErr != nil {
-		// Wait for audio to finish before returning. If audio failed first, report that
-		// error instead of the context cancellation it triggered in video encoding.
+		// Stop audio when video fails so cancellation/memory pressure returns promptly.
+		cancelEncode()
 		<-audioDone
+		// If the context was canceled (e.g., user pressed Ctrl+C), return that directly
+		// so the caller can handle it gracefully instead of reporting it as an encoding error.
+		if ctx.Err() != nil {
+			return CropResult{}, ctx.Err()
+		}
+		if errors.Is(encodeErr, encode.ErrMemoryPressure) {
+			return CropResult{}, fmt.Errorf("chunked encoding failed: %w", encodeErr)
+		}
 		if audioErr != nil {
 			return CropResult{}, fmt.Errorf("audio encoding failed: %w", audioErr)
 		}
@@ -236,6 +290,10 @@ func ProcessChunked(
 	// Wait for audio encoding to complete
 	<-audioDone
 	if audioErr != nil {
+		// If the context was canceled, report cancellation instead of audio error
+		if ctx.Err() != nil {
+			return CropResult{}, ctx.Err()
+		}
 		return CropResult{}, fmt.Errorf("audio encoding failed: %w", audioErr)
 	}
 
@@ -354,11 +412,6 @@ func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*video.CropRect
 
 // CheckChunkedDependencies verifies that required tools are available.
 func CheckChunkedDependencies() error {
-	// Check for SvtAv1EncApp in PATH
-	if _, err := exec.LookPath("SvtAv1EncApp"); err != nil {
-		return fmt.Errorf("SvtAv1EncApp not found in PATH (required for encoding)")
-	}
-
 	// Check for ffmpeg in PATH (used for chunk merging and final muxing)
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return fmt.Errorf("ffmpeg not found in PATH (required for muxing)")

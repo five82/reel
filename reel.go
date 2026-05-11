@@ -101,22 +101,6 @@ func WithDisableAutocrop() Option {
 	}
 }
 
-// WithWorkers sets the number of parallel encoder workers.
-// Default is 1. Higher values enable parallel chunk encoding.
-func WithWorkers(workers int) Option {
-	return func(c *config.Config) {
-		c.Workers = workers
-	}
-}
-
-// WithChunkBuffer sets the number of extra chunks to buffer in memory.
-// Default is 0. Higher values can improve throughput but use more memory.
-func WithChunkBuffer(buffer int) Option {
-	return func(c *config.Config) {
-		c.ChunkBuffer = buffer
-	}
-}
-
 // EncodeWithReporter encodes a single video file using a custom Reporter.
 // This provides direct access to all encoding events, unlike Encode which
 // uses the EventHandler abstraction.
@@ -267,11 +251,12 @@ func (r *eventReporter) EncodingStarted(uint64)                        {}
 
 func (r *eventReporter) EncodingProgress(p reporter.ProgressSnapshot) {
 	_ = r.handler(EncodingProgressEvent{
-		BaseEvent:  BaseEvent{EventType: EventTypeEncodingProgress, Time: NewTimestamp()},
-		Percent:    p.Percent,
-		Speed:      p.Speed,
-		FPS:        p.FPS,
-		ETASeconds: int64(p.ETA.Seconds()),
+		BaseEvent:   BaseEvent{EventType: EventTypeEncodingProgress, Time: NewTimestamp()},
+		Percent:     p.Percent,
+		Speed:       p.Speed,
+		RecentSpeed: p.RecentSpeed,
+		FPS:         p.FPS,
+		ETASeconds:  int64(p.ETA.Seconds()),
 	})
 }
 

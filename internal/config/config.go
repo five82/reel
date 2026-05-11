@@ -53,22 +53,7 @@ const (
 	DefaultChunkDurationHD  float64 = 30.0 // 1080p: balanced
 	DefaultChunkDurationUHD float64 = 45.0 // 4K: slower encode, needs longer warmup
 
-	// DefaultThreadsPerWorker of 0 means auto-calculate based on CPU topology.
-	// Auto mode detects physical cores and SMT, then calculates optimal threads
-	// based on resolution. Override with --threads flag if needed.
-	DefaultThreadsPerWorker int = 0
 )
-
-// AutoParallelConfig returns optimal workers and buffer settings.
-// Workers default high; CapWorkers reduces based on resolution and memory.
-// Buffer: fixed prefetch amount to keep workers fed.
-func AutoParallelConfig() (workers, buffer int) {
-	// Default to maximum possible; CapWorkers will reduce based on
-	// actual resolution and available memory at encode time
-	workers = 24 // Will be capped down for higher resolutions
-	buffer = 4   // Prefetch buffer to keep workers fed
-	return workers, buffer
-}
 
 // Config holds all configuration for video processing.
 type Config struct {
@@ -95,11 +80,6 @@ type Config struct {
 	CropMode           string // "auto" or "none"
 	EncodeCooldownSecs uint64 // Cooldown between batch encodes
 
-	// Parallel encoding options
-	Workers          int // Number of parallel encoder workers
-	ChunkBuffer      int // Extra chunks to buffer in memory
-	ThreadsPerWorker int // Threads per encoder worker (SVT-AV1 --lp flag)
-
 	// Chunk duration settings by resolution (seconds)
 	ChunkDurationSD  float64 // Chunk duration for SD content (<1920 width)
 	ChunkDurationHD  float64 // Chunk duration for HD content (>=1920, <3840 width)
@@ -111,8 +91,6 @@ type Config struct {
 
 // NewConfig creates a new Config with default values.
 func NewConfig(inputDir, outputDir, logDir string) *Config {
-	workers, buffer := AutoParallelConfig()
-
 	return &Config{
 		InputDir:                    inputDir,
 		OutputDir:                   outputDir,
@@ -123,17 +101,14 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 		SVTAV1EnableVarianceBoost:   DefaultSVTAV1EnableVarianceBoost,
 		SVTAV1VarianceBoostStrength: DefaultSVTAV1VarianceBoostStrength,
 		SVTAV1VarianceOctile:        DefaultSVTAV1VarianceOctile,
-		CRFSD:              DefaultCRFSD,
-		CRFHD:              DefaultCRFHD,
-		CRFUHD:             DefaultCRFUHD,
-		CropMode:           DefaultCropMode,
-		EncodeCooldownSecs: DefaultEncodeCooldownSecs,
-		Workers:          workers,
-		ChunkBuffer:      buffer,
-		ThreadsPerWorker: DefaultThreadsPerWorker,
-		ChunkDurationSD:  DefaultChunkDurationSD,
-		ChunkDurationHD:  DefaultChunkDurationHD,
-		ChunkDurationUHD: DefaultChunkDurationUHD,
+		CRFSD:                       DefaultCRFSD,
+		CRFHD:                       DefaultCRFHD,
+		CRFUHD:                      DefaultCRFUHD,
+		CropMode:                    DefaultCropMode,
+		EncodeCooldownSecs:          DefaultEncodeCooldownSecs,
+		ChunkDurationSD:             DefaultChunkDurationSD,
+		ChunkDurationHD:             DefaultChunkDurationHD,
+		ChunkDurationUHD:            DefaultChunkDurationUHD,
 	}
 }
 
@@ -151,14 +126,6 @@ func (c *Config) Validate() error {
 	}
 	if c.CRFUHD > 63 {
 		return fmt.Errorf("crf-uhd must be 0-63, got %d", c.CRFUHD)
-	}
-
-	if c.Workers < 1 {
-		return fmt.Errorf("workers must be at least 1, got %d", c.Workers)
-	}
-
-	if c.ChunkBuffer < 0 {
-		return fmt.Errorf("chunk_buffer must be non-negative, got %d", c.ChunkBuffer)
 	}
 
 	// Validate chunk durations

@@ -45,11 +45,15 @@ type ProgressSnapshot struct {
 	TotalFrames    uint64
 	Percent        float32
 	Speed          float32
+	RecentSpeed    float32
 	FPS            float32
 	ETA            time.Duration
 	Bitrate        string
 	ChunksComplete int
 	ChunksTotal    int
+	ActiveWorkers  int
+	TargetWorkers  int
+	MaxWorkers     int
 }
 
 // ValidationSummary contains validation results.

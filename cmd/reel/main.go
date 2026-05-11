@@ -34,6 +34,10 @@ func main() {
 	switch os.Args[1] {
 	case "encode":
 		if err := runEncode(os.Args[2:]); err != nil {
+			if err == context.Canceled {
+				fmt.Fprintln(os.Stderr, "Canceled")
+				os.Exit(130) // Standard exit code for SIGINT
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -73,15 +77,9 @@ type encodeArgs struct {
 	preset          uint
 	disableAutocrop bool
 	noLog           bool
-	workers         int
-	chunkBuffer     int
-	threads         int
 }
 
 func runEncode(args []string) error {
-	// Get auto-detected defaults for parallel encoding
-	defaultWorkers, defaultBuffer := config.AutoParallelConfig()
-
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Encode video files to AV1 format.
@@ -106,15 +104,10 @@ Quality Settings:
 
 Processing Options:
   --disable-autocrop     Disable automatic black bar crop detection
-  --workers <N>          Number of parallel encoder workers. Default: %d (auto)
-  --buffer <N>           Extra chunks to buffer in memory. Default: %d (auto)
-  --threads <N>          Threads per worker (SVT-AV1 --lp flag). Default: auto
-                           Auto mode detects physical cores and SMT, then calculates
-                           optimal threads based on resolution. Override if needed.
 
 Output Options:
   --no-log               Disable Reel log file creation
-`, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset, defaultWorkers, defaultBuffer)
+`, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset)
 	}
 
 	var ea encodeArgs
@@ -137,10 +130,6 @@ Output Options:
 
 	// Processing options
 	fs.BoolVar(&ea.disableAutocrop, "disable-autocrop", false, "Disable automatic crop detection")
-	fs.IntVar(&ea.workers, "workers", defaultWorkers, "Number of parallel encoder workers")
-	fs.IntVar(&ea.chunkBuffer, "buffer", defaultBuffer, "Extra chunks to buffer in memory")
-	fs.IntVar(&ea.threads, "threads", config.DefaultThreadsPerWorker, "Threads per worker")
-
 	// Output options
 	fs.BoolVar(&ea.noLog, "no-log", false, "Disable log file creation")
 
@@ -236,10 +225,6 @@ func executeEncode(ea encodeArgs) error {
 	if ea.disableAutocrop {
 		cfg.CropMode = "none"
 	}
-	cfg.Workers = ea.workers
-	cfg.ChunkBuffer = ea.chunkBuffer
-	cfg.ThreadsPerWorker = ea.threads
-
 	// Debug options
 	cfg.Verbose = ea.verbose
 
@@ -254,7 +239,7 @@ func executeEncode(ea encodeArgs) error {
 		logger.Info("CRF quality: SD=%d, HD=%d, UHD=%d", cfg.CRFSD, cfg.CRFHD, cfg.CRFUHD)
 		logger.Info("SVT-AV1 preset: %d", cfg.SVTAV1Preset)
 		logger.Info("Crop mode: %s", cfg.CropMode)
-		logger.Info("Parallel encoding: workers=%d, buffer=%d, threads/worker=%d", cfg.Workers, cfg.ChunkBuffer, cfg.ThreadsPerWorker)
+		logger.Info("Adaptive encoding enabled")
 	}
 
 	// Create reporters
