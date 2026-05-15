@@ -75,6 +75,22 @@ func TestCropCalcForRectSupportsAsymmetricCrop(t *testing.T) {
 	}
 }
 
+func TestFrameCountFromDurations(t *testing.T) {
+	streamFrames := framesFromStreamDuration(8044036, 1, 1000, 24000, 1001)
+	if streamFrames != 192864 {
+		t.Fatalf("framesFromStreamDuration() = %d, want 192864", streamFrames)
+	}
+
+	formatFrames := framesFromAVDuration(8044036000, 24000, 1001)
+	if formatFrames != 192864 {
+		t.Fatalf("framesFromAVDuration() = %d, want 192864", formatFrames)
+	}
+
+	if got := framesFromAVDuration(0, 24000, 1001); got != 0 {
+		t.Fatalf("framesFromAVDuration() with unknown duration = %d, want 0", got)
+	}
+}
+
 func TestSVTMetadataMapping(t *testing.T) {
 	assertInt32Ptr(t, svtColorRange(1), 0)
 	assertInt32Ptr(t, svtColorRange(2), 1)

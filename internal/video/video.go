@@ -65,6 +65,8 @@ import (
 	"unsafe"
 )
 
+const avTimeBase = 1000000
+
 var initOnce sync.Once
 
 func initLibav() {
@@ -492,13 +494,35 @@ func (s *Source) frameCount(stream *C.AVStream, fps C.AVRational) int {
 	if stream.nb_frames > 0 {
 		return int(stream.nb_frames)
 	}
-	if stream.duration > 0 && fps.num > 0 && fps.den > 0 && stream.time_base.den > 0 {
-		frames := int64(stream.duration) * int64(stream.time_base.num) * int64(fps.num) / (int64(stream.time_base.den) * int64(fps.den))
-		if frames > 0 {
+	if frames := framesFromStreamDuration(
+		int64(stream.duration),
+		int64(stream.time_base.num),
+		int64(stream.time_base.den),
+		int64(fps.num),
+		int64(fps.den),
+	); frames > 0 {
+		return int(frames)
+	}
+	if s != nil && s.fmtCtx != nil {
+		if frames := framesFromAVDuration(int64(s.fmtCtx.duration), int64(fps.num), int64(fps.den)); frames > 0 {
 			return int(frames)
 		}
 	}
 	return s.countVideoPackets()
+}
+
+func framesFromStreamDuration(duration, timeBaseNum, timeBaseDen, fpsNum, fpsDen int64) int64 {
+	if duration <= 0 || timeBaseNum <= 0 || timeBaseDen <= 0 || fpsNum <= 0 || fpsDen <= 0 {
+		return 0
+	}
+	return duration * timeBaseNum * fpsNum / (timeBaseDen * fpsDen)
+}
+
+func framesFromAVDuration(duration, fpsNum, fpsDen int64) int64 {
+	if duration <= 0 || fpsNum <= 0 || fpsDen <= 0 {
+		return 0
+	}
+	return duration * fpsNum / (avTimeBase * fpsDen)
 }
 
 func (s *Source) countVideoPackets() int {
