@@ -7,6 +7,7 @@ package video
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
 #include <libavutil/mastering_display_metadata.h>
@@ -54,6 +55,64 @@ static int reel_pix_fmt_depth(int fmt) {
 static int reel_sws_scale(struct SwsContext *ctx, const AVFrame *src, AVFrame *dst) {
 	return sws_scale(ctx, (const uint8_t * const*)src->data, src->linesize, 0, src->height, dst->data, dst->linesize);
 }
+
+static enum AVPixelFormat reel_get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+	for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+		if (*p == AV_PIX_FMT_CUDA) {
+			return *p;
+		}
+	}
+	return pix_fmts[0];
+}
+
+static int reel_configure_hw_decoder(AVCodecContext *ctx, const AVCodec *codec, enum AVHWDeviceType type, AVBufferRef **device_ctx) {
+	if (ctx == NULL || codec == NULL || device_ctx == NULL) {
+		return AVERROR(EINVAL);
+	}
+
+	enum AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
+	for (int i = 0;; i++) {
+		const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+		if (config == NULL) {
+			break;
+		}
+		if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && config->device_type == type) {
+			pix_fmt = config->pix_fmt;
+			break;
+		}
+	}
+	if (pix_fmt == AV_PIX_FMT_NONE || pix_fmt != AV_PIX_FMT_CUDA) {
+		return AVERROR(ENOSYS);
+	}
+
+	int ret = av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
+	if (ret < 0) {
+		return ret;
+	}
+
+	AVBufferRef *ref = av_buffer_ref(*device_ctx);
+	if (ref == NULL) {
+		av_buffer_unref(device_ctx);
+		return AVERROR(ENOMEM);
+	}
+
+	ctx->get_format = reel_get_hw_format;
+	ctx->hw_device_ctx = ref;
+	return 0;
+}
+
+static int reel_configure_cuda_decoder(AVCodecContext *ctx, const AVCodec *codec, AVBufferRef **device_ctx) {
+	return reel_configure_hw_decoder(ctx, codec, AV_HWDEVICE_TYPE_CUDA, device_ctx);
+}
+
+static int reel_transfer_hw_frame(AVFrame *dst, const AVFrame *src) {
+	av_frame_unref(dst);
+	int ret = av_hwframe_transfer_data(dst, src, 0);
+	if (ret < 0) {
+		return ret;
+	}
+	return av_frame_copy_props(dst, src);
+}
 */
 import "C"
 
@@ -66,6 +125,16 @@ import (
 )
 
 const avTimeBase = 1000000
+
+// DecodeMode selects the video decode backend.
+type DecodeMode string
+
+const (
+	// DecodeSoftware uses normal CPU decoding.
+	DecodeSoftware DecodeMode = "software"
+	// DecodeCUDA uses FFmpeg's CUDA hardware decode path and downloads frames to CPU memory.
+	DecodeCUDA DecodeMode = "cuda"
+)
 
 var initOnce sync.Once
 
@@ -97,13 +166,16 @@ type Info struct {
 
 // Source is an owned video decoder. It is not safe for concurrent use.
 type Source struct {
-	fmtCtx    *C.AVFormatContext
-	codecCtx  *C.AVCodecContext
-	pkt       *C.AVPacket
-	frame     *C.AVFrame
-	convFrame *C.AVFrame
-	swsCtx    *C.struct_SwsContext
-	swsFormat int
+	fmtCtx      *C.AVFormatContext
+	codecCtx    *C.AVCodecContext
+	pkt         *C.AVPacket
+	frame       *C.AVFrame
+	swFrame     *C.AVFrame
+	convFrame   *C.AVFrame
+	swsCtx      *C.struct_SwsContext
+	swsFormat   int
+	hwDeviceCtx *C.AVBufferRef
+	hwDecode    bool
 
 	streamIdx int
 	nextFrame int
@@ -190,7 +262,20 @@ func Probe(path string) (*Info, error) {
 
 // Open opens a video decoder for path.
 func Open(path string, threads int) (*Source, error) {
+	return OpenWithDecodeMode(path, threads, DecodeSoftware)
+}
+
+// OpenWithDecodeMode opens a video decoder for path using the requested decode backend.
+func OpenWithDecodeMode(path string, threads int, mode DecodeMode) (*Source, error) {
 	initLibav()
+
+	switch mode {
+	case "", DecodeSoftware:
+		mode = DecodeSoftware
+	case DecodeCUDA:
+	default:
+		return nil, fmt.Errorf("decoder: unknown decode mode %q", mode)
+	}
 
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
@@ -215,6 +300,14 @@ func Open(path string, threads int) (*Source, error) {
 	stream := C.reel_stream_at(fmtCtx, streamIdx)
 	par := stream.codecpar
 	codec := C.avcodec_find_decoder(par.codec_id)
+	if mode == DecodeCUDA && par.codec_id == C.AV_CODEC_ID_AV1 {
+		name := C.CString("av1")
+		native := C.avcodec_find_decoder_by_name(name)
+		C.free(unsafe.Pointer(name))
+		if native != nil {
+			codec = native
+		}
+	}
 	if codec == nil {
 		C.avformat_close_input(&fmtCtx)
 		return nil, fmt.Errorf("decoder: unsupported codec")
@@ -233,7 +326,32 @@ func Open(path string, threads int) (*Source, error) {
 	if threads > 0 {
 		codecCtx.thread_count = C.int(threads)
 	}
+
+	var hwDeviceCtx *C.AVBufferRef
+	var swFrame *C.AVFrame
+	hwDecode := mode == DecodeCUDA
+	if hwDecode {
+		if ret := C.reel_configure_cuda_decoder(codecCtx, codec, &hwDeviceCtx); ret < 0 {
+			C.avcodec_free_context(&codecCtx)
+			C.avformat_close_input(&fmtCtx)
+			return nil, fmt.Errorf("decoder: cuda setup failed: %s", avError(ret))
+		}
+		swFrame = C.av_frame_alloc()
+		if swFrame == nil {
+			C.av_buffer_unref(&hwDeviceCtx)
+			C.avcodec_free_context(&codecCtx)
+			C.avformat_close_input(&fmtCtx)
+			return nil, fmt.Errorf("decoder: software frame allocation failed")
+		}
+	}
+
 	if ret := C.avcodec_open2(codecCtx, codec, nil); ret < 0 {
+		if swFrame != nil {
+			C.av_frame_free(&swFrame)
+		}
+		if hwDeviceCtx != nil {
+			C.av_buffer_unref(&hwDeviceCtx)
+		}
 		C.avcodec_free_context(&codecCtx)
 		C.avformat_close_input(&fmtCtx)
 		return nil, fmt.Errorf("decoder: codec open failed: %s", avError(ret))
@@ -247,6 +365,12 @@ func Open(path string, threads int) (*Source, error) {
 		}
 		if frame != nil {
 			C.av_frame_free(&frame)
+		}
+		if swFrame != nil {
+			C.av_frame_free(&swFrame)
+		}
+		if hwDeviceCtx != nil {
+			C.av_buffer_unref(&hwDeviceCtx)
 		}
 		C.avcodec_free_context(&codecCtx)
 		C.avformat_close_input(&fmtCtx)
@@ -267,14 +391,17 @@ func Open(path string, threads int) (*Source, error) {
 	}
 
 	return &Source{
-		fmtCtx:    fmtCtx,
-		codecCtx:  codecCtx,
-		pkt:       pkt,
-		frame:     frame,
-		streamIdx: int(streamIdx),
-		startTime: startTime,
-		tsMul:     tsMul,
-		tsDiv:     tsDiv,
+		fmtCtx:      fmtCtx,
+		codecCtx:    codecCtx,
+		pkt:         pkt,
+		frame:       frame,
+		swFrame:     swFrame,
+		hwDeviceCtx: hwDeviceCtx,
+		hwDecode:    hwDecode,
+		streamIdx:   int(streamIdx),
+		startTime:   startTime,
+		tsMul:       tsMul,
+		tsDiv:       tsDiv,
 	}, nil
 }
 
@@ -290,11 +417,17 @@ func (s *Source) Close() {
 	if s.convFrame != nil {
 		C.av_frame_free(&s.convFrame)
 	}
+	if s.swFrame != nil {
+		C.av_frame_free(&s.swFrame)
+	}
 	if s.frame != nil {
 		C.av_frame_free(&s.frame)
 	}
 	if s.pkt != nil {
 		C.av_packet_free(&s.pkt)
+	}
+	if s.hwDeviceCtx != nil {
+		C.av_buffer_unref(&s.hwDeviceCtx)
 	}
 	if s.codecCtx != nil {
 		C.avcodec_free_context(&s.codecCtx)
@@ -402,8 +535,15 @@ func (s *Source) decodeOne() (*C.AVFrame, int, error) {
 		ret := C.avcodec_receive_frame(s.codecCtx, s.frame)
 		if ret == 0 {
 			idx := s.frameIndex(s.frame)
+			frame := s.frame
+			if s.hwDecode {
+				if ret := C.reel_transfer_hw_frame(s.swFrame, s.frame); ret < 0 {
+					return nil, 0, fmt.Errorf("transfer hardware frame failed: %s", avError(ret))
+				}
+				frame = s.swFrame
+			}
 			s.nextFrame = idx + 1
-			return s.frame, idx, nil
+			return frame, idx, nil
 		}
 		if ret == C.reel_averror_eof() {
 			s.eof = true

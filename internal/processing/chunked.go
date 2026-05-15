@@ -117,11 +117,13 @@ func ProcessChunked(
 		CRF:                   float32(quality),
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
+		DecodeMode:            video.DecodeMode(cfg.DecodeMode),
 		ACBias:                cfg.SVTAV1ACBias,
 		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
 	}
+	rep.Verbose(fmt.Sprintf("Video decode mode: %s", cfg.DecodeMode))
 	if cfg.Verbose {
 		encCfg.StatusCallback = func(message string) {
 			rep.Verbose(message)
@@ -379,6 +381,7 @@ func buildResumeManifest(
 		FPSDen:                vidInf.FPSDen,
 		Frames:                vidInf.Frames,
 		CropFilter:            cropFilter,
+		DecodeMode:            cfg.DecodeMode,
 		Quality:               quality,
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,

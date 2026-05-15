@@ -16,11 +16,12 @@ import (
 
 // EncodeConfig contains configuration for the parallel encode pipeline.
 type EncodeConfig struct {
-	CRF                float32 // Quality (CRF value)
-	Preset             uint8   // SVT-AV1 preset
-	Tune               uint8   // SVT-AV1 tune
-	GrainTable         *string // Optional film grain table path
-	LevelOfParallelism uint32  // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
+	CRF                float32          // Quality (CRF value)
+	Preset             uint8            // SVT-AV1 preset
+	Tune               uint8            // SVT-AV1 tune
+	GrainTable         *string          // Optional film grain table path
+	LevelOfParallelism uint32           // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
+	DecodeMode         video.DecodeMode // Video decode backend
 	StatusCallback     func(message string)
 
 	// Advanced SVT-AV1 parameters
@@ -283,7 +284,7 @@ func streamingWorker(
 
 		if src == nil {
 			var err error
-			src, err = video.Open(inputPath, 1)
+			src, err = video.OpenWithDecodeMode(inputPath, 1, cfg.DecodeMode)
 			if err != nil {
 				limiter.release()
 				resultChan <- worker.EncodeResult{

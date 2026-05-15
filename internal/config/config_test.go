@@ -30,6 +30,9 @@ func TestNewConfig(t *testing.T) {
 	if cfg.CRFUHD != DefaultCRFUHD {
 		t.Errorf("expected CRFUHD=%d, got %d", DefaultCRFUHD, cfg.CRFUHD)
 	}
+	if cfg.DecodeMode != DefaultDecodeMode {
+		t.Errorf("expected DecodeMode=%s, got %s", DefaultDecodeMode, cfg.DecodeMode)
+	}
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -78,6 +81,16 @@ func TestConfigValidate(t *testing.T) {
 			modify:  func(c *Config) { c.ChunkDurationHD = 121 },
 			wantErr: true,
 		},
+		{
+			name:    "cuda decode is valid",
+			modify:  func(c *Config) { c.DecodeMode = DecodeModeCUDA },
+			wantErr: false,
+		},
+		{
+			name:    "unknown decode mode is invalid",
+			modify:  func(c *Config) { c.DecodeMode = "vdpau" },
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -102,14 +115,14 @@ func TestCRFForWidth(t *testing.T) {
 		width    uint32
 		expected uint8
 	}{
-		{width: 720, expected: 25},   // SD
-		{width: 1280, expected: 25},  // SD (720p)
-		{width: 1919, expected: 25},  // Just below HD threshold
-		{width: 1920, expected: 27},  // HD threshold
-		{width: 2560, expected: 27},  // 1440p
-		{width: 3839, expected: 27},  // Just below UHD threshold
-		{width: 3840, expected: 29},  // UHD threshold
-		{width: 7680, expected: 29},  // 8K
+		{width: 720, expected: 25},  // SD
+		{width: 1280, expected: 25}, // SD (720p)
+		{width: 1919, expected: 25}, // Just below HD threshold
+		{width: 1920, expected: 27}, // HD threshold
+		{width: 2560, expected: 27}, // 1440p
+		{width: 3839, expected: 27}, // Just below UHD threshold
+		{width: 3840, expected: 29}, // UHD threshold
+		{width: 7680, expected: 29}, // 8K
 	}
 
 	for _, tt := range tests {
@@ -132,14 +145,14 @@ func TestChunkDurationForWidth(t *testing.T) {
 		width    uint32
 		expected float64
 	}{
-		{width: 720, expected: 20.0},   // SD
-		{width: 1280, expected: 20.0},  // SD (720p)
-		{width: 1919, expected: 20.0},  // Just below HD threshold
-		{width: 1920, expected: 30.0},  // HD threshold
-		{width: 2560, expected: 30.0},  // 1440p
-		{width: 3839, expected: 30.0},  // Just below UHD threshold
-		{width: 3840, expected: 45.0},  // UHD threshold
-		{width: 7680, expected: 45.0},  // 8K
+		{width: 720, expected: 20.0},  // SD
+		{width: 1280, expected: 20.0}, // SD (720p)
+		{width: 1919, expected: 20.0}, // Just below HD threshold
+		{width: 1920, expected: 30.0}, // HD threshold
+		{width: 2560, expected: 30.0}, // 1440p
+		{width: 3839, expected: 30.0}, // Just below UHD threshold
+		{width: 3840, expected: 45.0}, // UHD threshold
+		{width: 7680, expected: 45.0}, // 8K
 	}
 
 	for _, tt := range tests {
@@ -151,4 +164,3 @@ func TestChunkDurationForWidth(t *testing.T) {
 		})
 	}
 }
-

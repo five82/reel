@@ -355,6 +355,7 @@ CRF defaults vary by resolution:
 | Setting | CLI Flag | Default | Description |
 |---------|----------|---------|-------------|
 | Crop Mode | `--disable-autocrop` | auto | Disable auto-cropping |
+| Decode Backend | `--decode` | cuda | Use `software` to force CPU decode |
 
 ## Work Directory Structure
 

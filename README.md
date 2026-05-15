@@ -75,6 +75,7 @@ Quality Settings:
 
 Processing Options:
   --disable-autocrop   Disable black bar detection
+  --decode <MODE>      Decode backend: cuda or software (default cuda)
 
 Output Options:
   -l, --log-dir        Log directory (defaults to ~/.local/state/reel/logs)
