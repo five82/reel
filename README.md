@@ -42,13 +42,13 @@ ldconfig -p | grep SvtAv1Enc
 ## Install
 
 ```bash
-go install -trimpath github.com/five82/reel/cmd/reel@latest
+go install -trimpath codeberg.org/five82/reel/cmd/reel@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/five82/reel
+git clone https://codeberg.org/five82/reel
 cd reel
 go build -trimpath -o reel ./cmd/reel
 ```
@@ -87,7 +87,7 @@ Output Options:
 Reel can be used as a Go library:
 
 ```go
-import "github.com/five82/reel"
+import "codeberg.org/five82/reel"
 
 encoder, err := reel.New(
     reel.WithCRF(26),

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"codeberg.org/five82/reel/internal/util"
 	"github.com/fatih/color"
-	"github.com/five82/reel/internal/util"
 	"github.com/schollz/progressbar/v3"
 )
 

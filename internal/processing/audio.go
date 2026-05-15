@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/audio"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 // GetAudioChannels returns audio channel counts for a file.

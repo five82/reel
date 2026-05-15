@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/five82/reel/internal/video"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 // writeConcatFile writes a FFmpeg concat file with the given paths.

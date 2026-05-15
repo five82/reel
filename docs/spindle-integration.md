@@ -5,7 +5,7 @@ Reel is designed to be embedded by Spindle during the `ENCODING` stage. This doc
 ## Library API
 
 ```go
-import "github.com/five82/reel"
+import "codeberg.org/five82/reel"
 
 // Create encoder with options
 encoder, err := reel.New(

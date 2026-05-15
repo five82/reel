@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/five82/reel/internal/util"
+	"codeberg.org/five82/reel/internal/util"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	nativeaudio "github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/media"
+	nativeaudio "codeberg.org/five82/reel/internal/audio"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 // ExtractAudio encodes source audio streams to Opus using native libav/libopusenc.

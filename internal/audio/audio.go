@@ -166,7 +166,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 const outputSampleRate = 48000

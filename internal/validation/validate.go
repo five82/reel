@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 const (

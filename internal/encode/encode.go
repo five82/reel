@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/five82/reel/internal/chunk"
-	"github.com/five82/reel/internal/encoder"
-	"github.com/five82/reel/internal/video"
-	"github.com/five82/reel/internal/worker"
+	"codeberg.org/five82/reel/internal/chunk"
+	"codeberg.org/five82/reel/internal/encoder"
+	"codeberg.org/five82/reel/internal/video"
+	"codeberg.org/five82/reel/internal/worker"
 )
 
 // EncodeConfig contains configuration for the parallel encode pipeline.

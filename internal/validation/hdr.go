@@ -2,7 +2,7 @@
 package validation
 
 import (
-	"github.com/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 // HDRValidationResult contains the result of HDR validation.

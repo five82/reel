@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/five82/reel/internal/video"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 func TestEscapeConcatPathEscapesApostrophes(t *testing.T) {

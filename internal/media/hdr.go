@@ -1,6 +1,6 @@
 package media
 
-import "github.com/five82/reel/internal/video"
+import "codeberg.org/five82/reel/internal/video"
 
 // IsAvailable reports whether native media probing is available.
 func IsAvailable() bool {

@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	nativeaudio "github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/media"
+	nativeaudio "codeberg.org/five82/reel/internal/audio"
+	"codeberg.org/five82/reel/internal/media"
 )
 
 func TestAudioMetadataArgs(t *testing.T) {

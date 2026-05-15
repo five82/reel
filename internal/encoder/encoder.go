@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/five82/reel/internal/video"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 // EncConfig contains configuration for encoding a chunk.
