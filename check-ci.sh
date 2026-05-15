@@ -1,6 +1,6 @@
 #!/bin/bash
 # Local CI check for reel.
-# Mirrors the GitHub Actions workflow.
+# Mirrors the Forgejo Actions workflow.
 
 set -euo pipefail
 
