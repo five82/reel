@@ -73,7 +73,10 @@ else
 fi
 
 print_step "Running go test -race ./..."
-if go test -race ./...; then
+GO_ARCH=$(go env GOARCH)
+if [ "$GO_ARCH" = "arm64" ]; then
+    print_success "Skipping race detection on arm64; ThreadSanitizer is not supported on this runner."
+elif go test -race ./...; then
     print_success "Race detection passed"
 else
     print_error "Race condition detected"
