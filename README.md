@@ -28,11 +28,10 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 - FFmpeg executable (for chunk merging and final muxing)
 - libopusenc shared library (for Opus audio encoding)
 - FFmpeg development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
-- MediaInfo
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install ffmpeg mediainfo libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
+sudo apt-get install ffmpeg libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
 
 # Verify libopusenc is available
 ldconfig -p | grep opusenc
@@ -125,9 +124,7 @@ reel/
     ├── keyframe/       # Keyframe extraction
     ├── worker/         # Worker pool for parallel encoding
     ├── video/          # FFmpeg/libav video probing and frame extraction
-    ├── ffmpeg/         # FFmpeg parameter building
-    ├── ffprobe/        # Media analysis
-    ├── mediainfo/      # HDR detection
+    ├── media/          # Native libav media analysis and HDR detection
     ├── processing/     # Orchestration, crop detection, audio
     ├── validation/     # Post-encode validation
     ├── reporter/       # Progress reporting (terminal, composite)

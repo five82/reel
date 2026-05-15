@@ -9,9 +9,7 @@ import (
 	"github.com/five82/reel/internal/config"
 	encodepipe "github.com/five82/reel/internal/encode"
 	"github.com/five82/reel/internal/encoder"
-	"github.com/five82/reel/internal/ffmpeg"
-	"github.com/five82/reel/internal/ffprobe"
-	"github.com/five82/reel/internal/mediainfo"
+	"github.com/five82/reel/internal/media"
 	"github.com/five82/reel/internal/reporter"
 	"github.com/five82/reel/internal/util"
 	"github.com/five82/reel/internal/validation"
@@ -95,7 +93,7 @@ func ProcessVideos(
 		}
 
 		// Analyze video properties
-		videoProps, err := ffprobe.GetVideoProperties(inputPath)
+		videoProps, err := media.GetVideoProperties(inputPath)
 		if err != nil {
 			rep.Error(reporter.ReporterError{
 				Title:      "Analysis Error",
@@ -106,18 +104,16 @@ func ProcessVideos(
 			continue
 		}
 
-		// Use mediainfo for HDR detection
-		mediaInfoData, err := mediainfo.GetMediaInfo(inputPath)
+		hdrInfo, err := media.GetHDRInfo(inputPath)
 		if err != nil {
 			rep.Error(reporter.ReporterError{
 				Title:      "Analysis Error",
-				Message:    fmt.Sprintf("Could not get mediainfo for %s: %v", inputFilename, err),
+				Message:    fmt.Sprintf("Could not analyze HDR metadata for %s: %v", inputFilename, err),
 				Context:    fmt.Sprintf("File: %s", inputPath),
-				Suggestion: "Check if mediainfo is installed",
+				Suggestion: "Check if the file is a valid video format",
 			})
 			continue
 		}
-		hdrInfo := mediainfo.DetectHDR(mediaInfoData)
 
 		// Determine quality settings
 		quality, _ := determineQualitySettings(videoProps, cfg)
@@ -327,7 +323,7 @@ func ProcessVideos(
 }
 
 // determineQualitySettings returns the CRF quality setting based on video resolution.
-func determineQualitySettings(props *ffprobe.VideoProperties, cfg *config.Config) (uint32, string) {
+func determineQualitySettings(props *media.VideoProperties, cfg *config.Config) (uint32, string) {
 	crf := cfg.CRFForWidth(props.Width)
 	return uint32(crf), ""
 }
@@ -351,12 +347,20 @@ func formatQualityDescription(width uint32, crf uint32) string {
 	return fmt.Sprintf("CRF %d (%s)", crf, tier)
 }
 
+type encodeParams struct {
+	Quality            uint32
+	Preset             uint8
+	Tune               uint8
+	PixelFormat        string
+	MatrixCoefficients string
+}
+
 func setupEncodeParams(
 	cfg *config.Config,
 	quality uint32,
-	hdrInfo mediainfo.HDRInfo,
-) *ffmpeg.EncodeParams {
-	params := &ffmpeg.EncodeParams{
+	hdrInfo *media.HDRInfo,
+) *encodeParams {
+	params := &encodeParams{
 		Quality:     quality,
 		Preset:      cfg.SVTAV1Preset,
 		Tune:        cfg.SVTAV1Tune,

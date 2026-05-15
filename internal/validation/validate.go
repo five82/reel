@@ -5,8 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/five82/reel/internal/ffprobe"
-	"github.com/five82/reel/internal/mediainfo"
+	"github.com/five82/reel/internal/media"
 )
 
 const (
@@ -37,17 +36,12 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 	}
 
 	// Get output video properties
-	outputProps, err := ffprobe.GetVideoProperties(outputPath)
+	outputProps, err := media.GetVideoProperties(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get output video properties: %w", err)
 	}
 
 	// Validate video codec (should be AV1)
-	mediaInfo, err := ffprobe.GetMediaInfo(outputPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get media info: %w", err)
-	}
-
 	result.IsAV1, result.CodecName = validateVideoCodec(outputPath)
 	result.Is10Bit, result.BitDepth, result.PixelFormat = validateBitDepth(outputPath)
 
@@ -73,7 +67,7 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 		result.DurationMessage = "Duration validation skipped"
 	}
 
-	// Validate HDR status if expected - use comprehensive MediaInfo-based validation
+	// Validate HDR status if expected using native media probing.
 	if opts.ExpectedHDR != nil {
 		hdrResult := ValidateHDRStatusWithPath(outputPath, opts.ExpectedHDR)
 		result.IsHDRCorrect = hdrResult.IsValid
@@ -89,7 +83,7 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 	}
 
 	// Validate audio
-	audioStreams, err := ffprobe.GetAudioStreamInfo(outputPath)
+	audioStreams, err := media.GetAudioStreamInfo(outputPath)
 	if err != nil {
 		result.AudioMessage = "Failed to get audio info"
 	} else {
@@ -99,7 +93,7 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 	}
 
 	// Validate A/V sync
-	if opts.ExpectedDuration != nil && mediaInfo != nil {
+	if opts.ExpectedDuration != nil {
 		result.IsSyncPreserved, result.SyncDriftMs, result.SyncMessage = validateSync(
 			outputProps.DurationSecs, *opts.ExpectedDuration,
 		)
@@ -112,19 +106,9 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 
 // validateVideoCodec checks that the output is AV1.
 func validateVideoCodec(outputPath string) (bool, string) {
-	probe, err := ffprobe.GetMediaInfo(outputPath)
+	codecName, err := media.GetVideoCodecName(outputPath)
 	if err != nil {
 		return false, ""
-	}
-
-	// Find video stream codec
-	codecName := ""
-	if probe.Width > 0 {
-		// Use ffprobe with show_streams to get codec
-		streams, err := getVideoCodec(outputPath)
-		if err == nil {
-			codecName = streams
-		}
 	}
 
 	isAV1 := strings.Contains(strings.ToLower(codecName), "av1") ||
@@ -133,25 +117,9 @@ func validateVideoCodec(outputPath string) (bool, string) {
 	return isAV1, codecName
 }
 
-// getVideoCodec gets the video codec name using ffprobe.
-func getVideoCodec(outputPath string) (string, error) {
-	return ffprobe.GetVideoCodecName(outputPath)
-}
-
 // validateBitDepth checks that the output is 10-bit.
 func validateBitDepth(outputPath string) (bool, *uint8, string) {
-	// Try to get bit depth from MediaInfo first
-	info, err := mediainfo.GetMediaInfo(outputPath)
-	if err == nil {
-		hdr := mediainfo.DetectHDR(info)
-		if hdr.BitDepth != nil {
-			is10Bit := *hdr.BitDepth >= 10
-			return is10Bit, hdr.BitDepth, ""
-		}
-	}
-
-	// Fallback to ffprobe
-	props, err := ffprobe.GetVideoProperties(outputPath)
+	props, err := media.GetVideoProperties(outputPath)
 	if err != nil {
 		return false, nil, ""
 	}
@@ -187,7 +155,7 @@ func validateDuration(actual, expected float64) (bool, string) {
 }
 
 // validateAudio checks audio codec and track count.
-func validateAudio(streams []ffprobe.AudioStreamInfo, expectedTracks *int) (bool, bool, []string, string) {
+func validateAudio(streams []media.AudioStreamInfo, expectedTracks *int) (bool, bool, []string, string) {
 	isOpus := true
 	var codecs []string
 

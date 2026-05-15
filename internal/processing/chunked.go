@@ -14,8 +14,8 @@ import (
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/encode"
-	"github.com/five82/reel/internal/ffprobe"
 	"github.com/five82/reel/internal/keyframe"
+	"github.com/five82/reel/internal/media"
 	"github.com/five82/reel/internal/reporter"
 	"github.com/five82/reel/internal/video"
 	"github.com/five82/reel/internal/worker"
@@ -27,8 +27,8 @@ func ProcessChunked(
 	ctx context.Context,
 	cfg *config.Config,
 	inputPath, outputPath string,
-	videoProps *ffprobe.VideoProperties,
-	audioStreams []ffprobe.AudioStreamInfo,
+	videoProps *media.VideoProperties,
+	audioStreams []media.AudioStreamInfo,
 	quality uint32,
 	rep reporter.Reporter,
 ) (CropResult, error) {
@@ -307,7 +307,7 @@ func ProcessChunked(
 }
 
 // displayAspectAfterCrop returns the display aspect ratio to signal after cropping anamorphic sources.
-func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *video.Info, cropRect *video.CropRect) string {
+func displayAspectAfterCrop(props *media.VideoProperties, inf *video.Info, cropRect *video.CropRect) string {
 	width, height, sarNum, sarDen := aspectInputs(props, inf)
 	if sarNum == 0 || sarDen == 0 || sarNum == sarDen {
 		return ""
@@ -327,7 +327,7 @@ func displayAspectAfterCrop(props *ffprobe.VideoProperties, inf *video.Info, cro
 	return fmt.Sprintf("%d:%d", num/g, den/g)
 }
 
-func aspectInputs(props *ffprobe.VideoProperties, inf *video.Info) (width, height, sarNum, sarDen uint32) {
+func aspectInputs(props *media.VideoProperties, inf *video.Info) (width, height, sarNum, sarDen uint32) {
 	if props != nil {
 		width = props.Width
 		height = props.Height

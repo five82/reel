@@ -54,7 +54,7 @@ See [docs/chunked-encoding.md](chunked-encoding.md) for details on how chunked e
 
 ## HDR Support
 
-Reel automatically detects and preserves HDR content using MediaInfo for color space analysis:
+Reel automatically detects and preserves HDR content using native libav probing for color space analysis:
 - Detects HDR based on color primaries (BT.2020, BT.2100)
 - Recognizes HDR transfer characteristics (PQ, HLG)
 - Adapts processing parameters and metadata handling for HDR sources
@@ -66,7 +66,7 @@ Validation catches mismatches before you archive or publish results:
 - **Audio codec**: Confirms all audio streams are transcoded to Opus with the expected track count
 - **Dimensions**: Validates crop detection and output dimensions
 - **Duration**: Compares input and output durations (±1 second tolerance)
-- **HDR / Color space**: Uses MediaInfo to verify HDR flags and colorimetry
+- **HDR / Color space**: Uses native libav probing to verify HDR flags and colorimetry
 - **Audio sync**: Verifies audio drift is within 100ms tolerance
 
 ## Multi-Stream Audio Handling

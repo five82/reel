@@ -1,7 +1,7 @@
 // Package reel provides a Go library for AV1 video encoding with SVT-AV1.
 //
-// Reel is an opinionated FFmpeg wrapper that handles the complexity of
-// AV1 encoding with sensible defaults, automatic crop detection, HDR metadata
+// Reel is an opinionated AV1 encoder that handles the complexity of
+// video encoding with sensible defaults, automatic crop detection, HDR metadata
 // preservation, and post-encode validation.
 //
 // Basic usage:

@@ -9,7 +9,6 @@ package audio
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
-#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
@@ -111,10 +110,6 @@ AVStream* reel_audio_stream_at(AVFormatContext *ctx, int idx) {
 	return ctx->streams[idx];
 }
 
-static int reel_audio_stream_index(AVStream *stream) {
-	return stream->index;
-}
-
 int reel_audio_find_stream_pos(AVFormatContext *ctx, int stream_index) {
 	for (unsigned int i = 0; i < ctx->nb_streams; i++) {
 		if (ctx->streams[i]->index == stream_index) {
@@ -129,18 +124,6 @@ void reel_audio_discard_except(AVFormatContext *ctx, int stream_pos) {
 		AVStream *stream = ctx->streams[i];
 		stream->discard = ((int)i == stream_pos) ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
 	}
-}
-
-static const char* reel_audio_metadata(AVStream *stream, const char *key) {
-	AVDictionaryEntry *entry = av_dict_get(stream->metadata, key, NULL, AV_DICT_IGNORE_SUFFIX);
-	if (entry == NULL) {
-		return NULL;
-	}
-	return entry->value;
-}
-
-static const char* reel_audio_codec_name(const AVCodecParameters *par) {
-	return avcodec_get_name(par->codec_id);
 }
 
 int reel_audio_channels(const AVCodecParameters *par) {
@@ -178,16 +161,44 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
-	"unsafe"
 
-	"github.com/five82/reel/internal/ffmpeg"
-	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/media"
 )
 
 const outputSampleRate = 48000
+
+// CalculateBitrate returns the Opus audio bitrate in kbps based on channel count.
+func CalculateBitrate(channels uint32) uint32 {
+	if channels == 0 {
+		return 0
+	}
+	return uint32(128 * math.Pow(channelEquivalent(channels)/2, 0.75))
+}
+
+func channelEquivalent(channels uint32) float64 {
+	switch channels {
+	case 1, 2:
+		return float64(channels)
+	case 3:
+		return 2.1
+	case 4:
+		return 3.1
+	case 5:
+		return 4.1
+	case 6:
+		return 5.1
+	case 7:
+		return 6.1
+	case 8:
+		return 7.1
+	default:
+		return float64(channels)
+	}
+}
 
 var initOnce sync.Once
 
@@ -199,70 +210,12 @@ func initLibav() {
 
 // EncodedStream is a native Opus output for one source audio stream.
 type EncodedStream struct {
-	Info ffprobe.AudioStreamInfo
+	Info media.AudioStreamInfo
 	Path string
 }
 
-// GetAudioChannels returns channel counts for every decodable audio stream.
-func GetAudioChannels(inputPath string) ([]uint32, error) {
-	streams, err := GetAudioStreamInfo(inputPath)
-	if err != nil {
-		return nil, err
-	}
-	channels := make([]uint32, len(streams))
-	for i, stream := range streams {
-		channels[i] = stream.Channels
-	}
-	return channels, nil
-}
-
-// GetAudioStreamInfo returns detailed audio stream information from libav.
-func GetAudioStreamInfo(inputPath string) ([]ffprobe.AudioStreamInfo, error) {
-	initLibav()
-
-	cPath := C.CString(inputPath)
-	defer C.free(unsafe.Pointer(cPath))
-
-	var fmtCtx *C.AVFormatContext
-	if ret := C.avformat_open_input(&fmtCtx, cPath, nil, nil); ret < 0 {
-		return nil, fmt.Errorf("audio probe: open failed: %s", avError(ret))
-	}
-	defer C.avformat_close_input(&fmtCtx)
-
-	if ret := C.avformat_find_stream_info(fmtCtx, nil); ret < 0 {
-		return nil, fmt.Errorf("audio probe: stream info failed: %s", avError(ret))
-	}
-
-	streams := make([]ffprobe.AudioStreamInfo, 0)
-	for i := 0; i < int(fmtCtx.nb_streams); i++ {
-		stream := C.reel_audio_stream_at(fmtCtx, C.int(i))
-		par := stream.codecpar
-		if par.codec_type != C.AVMEDIA_TYPE_AUDIO {
-			continue
-		}
-
-		channels := int(C.reel_audio_channels(par))
-		if channels <= 0 {
-			continue
-		}
-
-		streams = append(streams, ffprobe.AudioStreamInfo{
-			Channels:    uint32(channels),
-			CodecName:   cString(C.reel_audio_codec_name(par)),
-			Index:       len(streams),
-			StreamIndex: int(C.reel_audio_stream_index(stream)),
-			Language:    metadata(stream, "language"),
-			Title:       metadata(stream, "title"),
-			IsSpatial:   false,
-			Disposition: streamDisposition(int(stream.disposition)),
-		})
-	}
-
-	return streams, nil
-}
-
 // EncodeStreams encodes all given streams to Opus in parallel.
-func EncodeStreams(ctx context.Context, inputPath, workDir string, streams []ffprobe.AudioStreamInfo) ([]EncodedStream, error) {
+func EncodeStreams(ctx context.Context, inputPath, workDir string, streams []media.AudioStreamInfo) ([]EncodedStream, error) {
 	if len(streams) == 0 {
 		return nil, nil
 	}
@@ -302,7 +255,7 @@ func AudioPath(workDir string, outputIndex int) string {
 	return filepath.Join(workDir, fmt.Sprintf("audio_%02d.opus", outputIndex))
 }
 
-func encodeOne(ctx context.Context, inputPath, outputPath string, stream ffprobe.AudioStreamInfo) error {
+func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.AudioStreamInfo) error {
 	if stream.Channels == 0 {
 		return fmt.Errorf("audio stream has no channels")
 	}
@@ -316,7 +269,7 @@ func encodeOne(ctx context.Context, inputPath, outputPath string, stream ffprobe
 	}
 	defer dec.close()
 
-	enc, err := newOpusEncoder(outputPath, stream.Channels, ffmpeg.CalculateAudioBitrate(stream.Channels))
+	enc, err := newOpusEncoder(outputPath, stream.Channels, CalculateBitrate(stream.Channels))
 	if err != nil {
 		return err
 	}
@@ -329,42 +282,6 @@ func encodeOne(ctx context.Context, inputPath, outputPath string, stream ffprobe
 		}
 		return enc.writeFloat(pcm, channels)
 	})
-}
-
-func metadata(stream *C.AVStream, key string) string {
-	cKey := C.CString(key)
-	defer C.free(unsafe.Pointer(cKey))
-	return cString(C.reel_audio_metadata(stream, cKey))
-}
-
-func cString(s *C.char) string {
-	if s == nil {
-		return ""
-	}
-	return C.GoString(s)
-}
-
-func streamDisposition(disposition int) ffprobe.StreamDisposition {
-	enabled := func(flag C.int) int {
-		if disposition&int(flag) != 0 {
-			return 1
-		}
-		return 0
-	}
-	return ffprobe.StreamDisposition{
-		Default:         enabled(C.AV_DISPOSITION_DEFAULT),
-		Dub:             enabled(C.AV_DISPOSITION_DUB),
-		Original:        enabled(C.AV_DISPOSITION_ORIGINAL),
-		Comment:         enabled(C.AV_DISPOSITION_COMMENT),
-		Lyrics:          enabled(C.AV_DISPOSITION_LYRICS),
-		Karaoke:         enabled(C.AV_DISPOSITION_KARAOKE),
-		Forced:          enabled(C.AV_DISPOSITION_FORCED),
-		HearingImpaired: enabled(C.AV_DISPOSITION_HEARING_IMPAIRED),
-		VisualImpaired:  enabled(C.AV_DISPOSITION_VISUAL_IMPAIRED),
-		CleanEffects:    enabled(C.AV_DISPOSITION_CLEAN_EFFECTS),
-		AttachedPic:     enabled(C.AV_DISPOSITION_ATTACHED_PIC),
-		TimedThumbnails: enabled(C.AV_DISPOSITION_TIMED_THUMBNAILS),
-	}
 }
 
 func reorderSurround(buf []float32, channels int) {

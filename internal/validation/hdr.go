@@ -2,41 +2,37 @@
 package validation
 
 import (
-	"github.com/five82/reel/internal/mediainfo"
+	"github.com/five82/reel/internal/media"
 )
 
 // HDRValidationResult contains the result of HDR validation.
 type HDRValidationResult struct {
-	IsValid       bool
-	ActualHDR     *bool
-	Message       string
-	MediaInfoUsed bool
+	IsValid   bool
+	ActualHDR *bool
+	Message   string
+	ProbeUsed bool
 }
 
-// ValidateHDRStatusWithPath validates HDR status using MediaInfo.
-// This provides comprehensive HDR detection by checking MediaInfo availability first.
+// ValidateHDRStatusWithPath validates HDR status using native media probing.
 func ValidateHDRStatusWithPath(outputPath string, expectedHDR *bool) HDRValidationResult {
-	return validateHDRStatusWithAvailabilityCheck(outputPath, expectedHDR, mediainfo.IsAvailable())
+	return validateHDRStatusWithAvailabilityCheck(outputPath, expectedHDR, media.IsAvailable())
 }
 
 // validateHDRStatusWithAvailabilityCheck is the internal validation function.
-// This allows for easier testing without depending on actual system MediaInfo installation.
-func validateHDRStatusWithAvailabilityCheck(outputPath string, expectedHDR *bool, mediainfoAvailable bool) HDRValidationResult {
-	// Check if MediaInfo is available first
-	if !mediainfoAvailable {
+// This allows for easier testing of unavailable probing behavior.
+func validateHDRStatusWithAvailabilityCheck(outputPath string, expectedHDR *bool, probeAvailable bool) HDRValidationResult {
+	if !probeAvailable {
 		return HDRValidationResult{
-			IsValid:       true, // Pass validation when MediaInfo not available
-			ActualHDR:     nil,
-			Message:       "MediaInfo not installed - HDR validation skipped",
-			MediaInfoUsed: false,
+			IsValid:   true, // Pass validation when probing is unavailable.
+			ActualHDR: nil,
+			Message:   "Native media probe unavailable - HDR validation skipped",
+			ProbeUsed: false,
 		}
 	}
 
-	// Use MediaInfo for HDR detection
 	var actualHDR *bool
-	info, err := mediainfo.GetMediaInfo(outputPath)
+	hdrInfo, err := media.GetHDRInfo(outputPath)
 	if err == nil {
-		hdrInfo := mediainfo.DetectHDR(info)
 		actualHDR = &hdrInfo.IsHDR
 	}
 
@@ -45,7 +41,7 @@ func validateHDRStatusWithAvailabilityCheck(outputPath string, expectedHDR *bool
 
 // validateHDRResult performs the common HDR validation logic.
 func validateHDRResult(expectedHDR, actualHDR *bool) HDRValidationResult {
-	result := HDRValidationResult{MediaInfoUsed: true}
+	result := HDRValidationResult{ProbeUsed: true}
 
 	switch {
 	case expectedHDR != nil && actualHDR != nil:
@@ -102,18 +98,11 @@ func validateHDRResult(expectedHDR, actualHDR *bool) HDRValidationResult {
 	return result
 }
 
-// GetDetailedHDRInfo returns detailed HDR metadata from MediaInfo.
+// GetDetailedHDRInfo returns detailed HDR metadata from native media probing.
 // This is useful for debugging and detailed reporting.
-func GetDetailedHDRInfo(path string) (*mediainfo.HDRInfo, error) {
-	if !mediainfo.IsAvailable() {
+func GetDetailedHDRInfo(path string) (*media.HDRInfo, error) {
+	if !media.IsAvailable() {
 		return nil, nil
 	}
-
-	info, err := mediainfo.GetMediaInfo(path)
-	if err != nil {
-		return nil, err
-	}
-
-	hdrInfo := mediainfo.DetectHDR(info)
-	return &hdrInfo, nil
+	return media.GetHDRInfo(path)
 }

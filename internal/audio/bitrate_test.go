@@ -1,8 +1,8 @@
-package ffmpeg
+package audio
 
 import "testing"
 
-func TestCalculateAudioBitrate(t *testing.T) {
+func TestCalculateBitrate(t *testing.T) {
 	tests := []struct {
 		channels uint32
 		want     uint32
@@ -20,8 +20,8 @@ func TestCalculateAudioBitrate(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := CalculateAudioBitrate(tt.channels); got != tt.want {
-			t.Fatalf("CalculateAudioBitrate(%d) = %d, want %d", tt.channels, got, tt.want)
+		if got := CalculateBitrate(tt.channels); got != tt.want {
+			t.Fatalf("CalculateBitrate(%d) = %d, want %d", tt.channels, got, tt.want)
 		}
 	}
 }

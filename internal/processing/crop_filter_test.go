@@ -3,7 +3,7 @@ package processing
 import (
 	"testing"
 
-	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/media"
 	"github.com/five82/reel/internal/video"
 )
 
@@ -30,7 +30,7 @@ func TestParseCropFilterRejectsOddYUV420Geometry(t *testing.T) {
 }
 
 func TestDisplayAspectAfterCrop(t *testing.T) {
-	props := &ffprobe.VideoProperties{
+	props := &media.VideoProperties{
 		Width:                720,
 		Height:               480,
 		SampleAspectRatioNum: 32,
@@ -45,7 +45,7 @@ func TestDisplayAspectAfterCrop(t *testing.T) {
 }
 
 func TestDisplayAspectAfterCropIgnoresSquarePixels(t *testing.T) {
-	props := &ffprobe.VideoProperties{
+	props := &media.VideoProperties{
 		Width:                1920,
 		Height:               1080,
 		SampleAspectRatioNum: 1,

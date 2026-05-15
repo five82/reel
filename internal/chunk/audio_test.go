@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	nativeaudio "github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/media"
 )
 
 func TestAudioMetadataArgs(t *testing.T) {
-	stream := ffprobe.AudioStreamInfo{Language: "jpn", Title: "Commentary"}
+	stream := media.AudioStreamInfo{Language: "jpn", Title: "Commentary"}
 
 	args := audioMetadataArgs(1, stream)
 	assertArgValue(t, args, "-metadata:s:a:1", "language=jpn")
@@ -17,7 +17,7 @@ func TestAudioMetadataArgs(t *testing.T) {
 }
 
 func TestAudioDispositionValue(t *testing.T) {
-	disposition := ffprobe.StreamDisposition{Default: 1, Forced: 1, HearingImpaired: 1}
+	disposition := media.StreamDisposition{Default: 1, Forced: 1, HearingImpaired: 1}
 
 	got := audioDispositionValue(disposition)
 	want := "default+forced+hearing_impaired"
@@ -27,15 +27,15 @@ func TestAudioDispositionValue(t *testing.T) {
 }
 
 func TestAudioDispositionValueClearsEmptyDisposition(t *testing.T) {
-	if got := audioDispositionValue(ffprobe.StreamDisposition{}); got != "0" {
+	if got := audioDispositionValue(media.StreamDisposition{}); got != "0" {
 		t.Fatalf("audioDispositionValue() = %q, want %q", got, "0")
 	}
 }
 
 func TestMuxFinalArgsMapsPerStreamOpusFiles(t *testing.T) {
 	streams := []nativeaudio.EncodedStream{
-		{Info: ffprobe.AudioStreamInfo{Language: "eng", Disposition: ffprobe.StreamDisposition{Default: 1}}, Path: "/tmp/audio_00.opus"},
-		{Info: ffprobe.AudioStreamInfo{Language: "jpn", Title: "Commentary"}, Path: "/tmp/audio_01.opus"},
+		{Info: media.AudioStreamInfo{Language: "eng", Disposition: media.StreamDisposition{Default: 1}}, Path: "/tmp/audio_00.opus"},
+		{Info: media.AudioStreamInfo{Language: "jpn", Title: "Commentary"}, Path: "/tmp/audio_01.opus"},
 	}
 
 	args := muxFinalArgs("input.mkv", "video.ivf", "output.mkv", streams, "16:9")

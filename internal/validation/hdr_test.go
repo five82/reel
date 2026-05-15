@@ -107,24 +107,23 @@ func TestValidateHDRResult(t *testing.T) {
 	}
 }
 
-func TestValidateHDRStatusWithAvailabilityCheck_MediaInfoNotAvailable(t *testing.T) {
-	// Test when MediaInfo is not available
+func TestValidateHDRStatusWithAvailabilityCheck_ProbeNotAvailable(t *testing.T) {
 	result := validateHDRStatusWithAvailabilityCheck("/nonexistent/file.mkv", nil, false)
 
 	if !result.IsValid {
-		t.Error("Should pass validation when MediaInfo is not available")
+		t.Error("Should pass validation when media probing is unavailable")
 	}
 
 	if result.ActualHDR != nil {
-		t.Error("ActualHDR should be nil when MediaInfo is not available")
+		t.Error("ActualHDR should be nil when media probing is unavailable")
 	}
 
-	expectedMsg := "MediaInfo not installed - HDR validation skipped"
+	expectedMsg := "Native media probe unavailable - HDR validation skipped"
 	if result.Message != expectedMsg {
 		t.Errorf("Message = %v, want %v", result.Message, expectedMsg)
 	}
 
-	if result.MediaInfoUsed {
-		t.Error("MediaInfoUsed should be false when MediaInfo is not available")
+	if result.ProbeUsed {
+		t.Error("ProbeUsed should be false when media probing is unavailable")
 	}
 }

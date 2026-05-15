@@ -10,11 +10,11 @@ import (
 	"strings"
 
 	nativeaudio "github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/media"
 )
 
 // ExtractAudio encodes source audio streams to Opus using native libav/libopusenc.
-func ExtractAudio(ctx context.Context, inputPath, workDir string, audioStreams []ffprobe.AudioStreamInfo) ([]nativeaudio.EncodedStream, error) {
+func ExtractAudio(ctx context.Context, inputPath, workDir string, audioStreams []media.AudioStreamInfo) ([]nativeaudio.EncodedStream, error) {
 	return nativeaudio.EncodeStreams(ctx, inputPath, workDir, audioStreams)
 }
 
@@ -74,7 +74,7 @@ func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.
 	return nil
 }
 
-func audioMetadataArgs(outputIndex int, stream ffprobe.AudioStreamInfo) []string {
+func audioMetadataArgs(outputIndex int, stream media.AudioStreamInfo) []string {
 	var args []string
 	if stream.Language != "" {
 		args = append(args, fmt.Sprintf("-metadata:s:a:%d", outputIndex), "language="+stream.Language)
@@ -85,11 +85,11 @@ func audioMetadataArgs(outputIndex int, stream ffprobe.AudioStreamInfo) []string
 	return args
 }
 
-func audioDispositionArgs(outputIndex int, disposition ffprobe.StreamDisposition) []string {
+func audioDispositionArgs(outputIndex int, disposition media.StreamDisposition) []string {
 	return []string{fmt.Sprintf("-disposition:a:%d", outputIndex), audioDispositionValue(disposition)}
 }
 
-func audioDispositionValue(d ffprobe.StreamDisposition) string {
+func audioDispositionValue(d media.StreamDisposition) string {
 	flags := audioDispositionFlags(d)
 	if len(flags) == 0 {
 		return "0"
@@ -97,7 +97,7 @@ func audioDispositionValue(d ffprobe.StreamDisposition) string {
 	return strings.Join(flags, "+")
 }
 
-func audioDispositionFlags(d ffprobe.StreamDisposition) []string {
+func audioDispositionFlags(d media.StreamDisposition) []string {
 	var flags []string
 	addFlag := func(enabled int, name string) {
 		if enabled != 0 {

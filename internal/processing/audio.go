@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	nativeaudio "github.com/five82/reel/internal/audio"
-	"github.com/five82/reel/internal/ffmpeg"
-	"github.com/five82/reel/internal/ffprobe"
+	"github.com/five82/reel/internal/audio"
+	"github.com/five82/reel/internal/media"
 )
 
 // GetAudioChannels returns audio channel counts for a file.
 func GetAudioChannels(inputPath string) []uint32 {
-	channels, err := nativeaudio.GetAudioChannels(inputPath)
+	channels, err := media.GetAudioChannels(inputPath)
 	if err != nil {
 		return nil
 	}
@@ -19,8 +18,8 @@ func GetAudioChannels(inputPath string) []uint32 {
 }
 
 // GetAudioStreamInfo returns detailed audio stream information.
-func GetAudioStreamInfo(inputPath string) []ffprobe.AudioStreamInfo {
-	streams, err := nativeaudio.GetAudioStreamInfo(inputPath)
+func GetAudioStreamInfo(inputPath string) []media.AudioStreamInfo {
+	streams, err := media.GetAudioStreamInfo(inputPath)
 	if err != nil {
 		return nil
 	}
@@ -45,7 +44,7 @@ func FormatAudioDescription(channels []uint32) string {
 }
 
 // FormatAudioDescriptionConfig formats audio description for config display.
-func FormatAudioDescriptionConfig(channels []uint32, streams []ffprobe.AudioStreamInfo) string {
+func FormatAudioDescriptionConfig(channels []uint32, streams []media.AudioStreamInfo) string {
 	if streams == nil {
 		return FormatAudioDescription(channels)
 	}
@@ -56,29 +55,29 @@ func FormatAudioDescriptionConfig(channels []uint32, streams []ffprobe.AudioStre
 
 	if len(streams) == 1 {
 		stream := streams[0]
-		bitrate := ffmpeg.CalculateAudioBitrate(stream.Channels)
+		bitrate := audio.CalculateBitrate(stream.Channels)
 		return fmt.Sprintf("%d channels @ %dkbps Opus", stream.Channels, bitrate)
 	}
 
 	var parts []string
 	for _, stream := range streams {
-		bitrate := ffmpeg.CalculateAudioBitrate(stream.Channels)
+		bitrate := audio.CalculateBitrate(stream.Channels)
 		parts = append(parts, fmt.Sprintf("Stream %d: %dch [%dkbps Opus]", stream.Index, stream.Channels, bitrate))
 	}
 	return strings.Join(parts, ", ")
 }
 
 // GenerateAudioResultsDescription generates audio description for results.
-func GenerateAudioResultsDescription(channels []uint32, streams []ffprobe.AudioStreamInfo) string {
+func GenerateAudioResultsDescription(channels []uint32, streams []media.AudioStreamInfo) string {
 	if len(streams) > 0 {
 		if len(streams) == 1 {
-			bitrate := ffmpeg.CalculateAudioBitrate(streams[0].Channels)
+			bitrate := audio.CalculateBitrate(streams[0].Channels)
 			return fmt.Sprintf("Opus %dch @ %dkbps", streams[0].Channels, bitrate)
 		}
 
 		var parts []string
 		for _, stream := range streams {
-			bitrate := ffmpeg.CalculateAudioBitrate(stream.Channels)
+			bitrate := audio.CalculateBitrate(stream.Channels)
 			parts = append(parts, fmt.Sprintf("%dch@%dk", stream.Channels, bitrate))
 		}
 		return fmt.Sprintf("Opus (%s)", strings.Join(parts, ", "))
@@ -89,13 +88,13 @@ func GenerateAudioResultsDescription(channels []uint32, streams []ffprobe.AudioS
 	}
 
 	if len(channels) == 1 {
-		bitrate := ffmpeg.CalculateAudioBitrate(channels[0])
+		bitrate := audio.CalculateBitrate(channels[0])
 		return fmt.Sprintf("Opus %dch @ %dkbps", channels[0], bitrate)
 	}
 
 	var parts []string
 	for _, ch := range channels {
-		bitrate := ffmpeg.CalculateAudioBitrate(ch)
+		bitrate := audio.CalculateBitrate(ch)
 		parts = append(parts, fmt.Sprintf("%dch@%dk", ch, bitrate))
 	}
 	return fmt.Sprintf("Opus (%s)", strings.Join(parts, ", "))
