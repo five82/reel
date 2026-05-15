@@ -80,6 +80,70 @@ func TestSampleCropFramesUsesMiddleWindow(t *testing.T) {
 	}
 }
 
+func TestCropWorkerCountCapsWorkers(t *testing.T) {
+	if got := cropWorkerCount(0); got != 0 {
+		t.Fatalf("cropWorkerCount(0) = %d, want 0", got)
+	}
+	if got := cropWorkerCount(1); got != 1 {
+		t.Fatalf("cropWorkerCount(1) = %d, want 1", got)
+	}
+	if got := cropWorkerCount(100); got < 1 || got > maxCropWorkers {
+		t.Fatalf("cropWorkerCount(100) = %d, want between 1 and %d", got, maxCropWorkers)
+	}
+}
+
+func TestPartitionCropFramesPreservesSamples(t *testing.T) {
+	frames := []int{10, 20, 30, 40, 50, 60, 70}
+	partitions := partitionCropFrames(frames, 3)
+	if len(partitions) != 3 {
+		t.Fatalf("len(partitions) = %d, want 3", len(partitions))
+	}
+
+	got := make([]int, 0, len(frames))
+	for _, partition := range partitions {
+		got = append(got, partition...)
+	}
+	if len(got) != len(frames) {
+		t.Fatalf("flattened partitions = %v, want %v", got, frames)
+	}
+	for i := range frames {
+		if got[i] != frames[i] {
+			t.Fatalf("flattened partitions = %v, want %v", got, frames)
+		}
+	}
+}
+
+func TestCropResultFromSamplesUsesMinimumCrop(t *testing.T) {
+	result := cropResultFromSamples([]detectedCrop{
+		{Top: 100, Bottom: 100, Left: 0, Right: 0},
+		{Top: 80, Bottom: 80, Left: 0, Right: 0},
+	}, "Analyzed 2 samples", 1920, 1080)
+
+	if !result.Required {
+		t.Fatalf("expected crop to be required: %+v", result)
+	}
+	if result.CropFilter != "crop=1920:920:0:80" {
+		t.Fatalf("CropFilter = %q, want %q", result.CropFilter, "crop=1920:920:0:80")
+	}
+}
+
+func TestCropResultFromSamplesDetectsMultipleRatios(t *testing.T) {
+	result := cropResultFromSamples([]detectedCrop{
+		{Top: 100, Bottom: 100, Left: 0, Right: 0},
+		{},
+	}, "Analyzed 2 samples", 1920, 1080)
+
+	if result.Required {
+		t.Fatalf("expected crop not to be required: %+v", result)
+	}
+	if !result.MultipleRatios {
+		t.Fatalf("expected multiple ratios: %+v", result)
+	}
+	if result.Message != "Multiple aspect ratios detected" {
+		t.Fatalf("Message = %q, want %q", result.Message, "Multiple aspect ratios detected")
+	}
+}
+
 func makeLuma8(width, height, stride int, value byte) []byte {
 	data := make([]byte, stride*height)
 	for row := 0; row < height; row++ {

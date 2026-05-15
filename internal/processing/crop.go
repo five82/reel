@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
+	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/video"
 )
 
 const (
 	cropSampleCount       = 141
+	maxCropWorkers        = 4
 	cropSampleStart       = 0.15
 	cropSampleEnd         = 0.85
 	blackLumaThreshold    = 24
@@ -52,26 +55,89 @@ func DetectCrop(inputPath string, inf *video.Info, disableCrop bool) CropResult 
 		return CropResult{Required: false, Message: sampleMsg}
 	}
 
-	src, err := video.Open(inputPath, 1)
-	if err != nil {
-		return CropResult{Required: false, Message: sampleMsg}
-	}
-	defer src.Close()
+	crops := detectCropSamples(inputPath, inf, frames, cropWorkerCount(len(frames)))
+	return cropResultFromSamples(crops, sampleMsg, inf.Width, inf.Height)
+}
 
+func cropWorkerCount(sampleCount int) int {
+	if sampleCount <= 0 {
+		return 0
+	}
+	workers := min(util.PhysicalCores(), maxCropWorkers)
+	if workers < 1 {
+		workers = 1
+	}
+	return min(sampleCount, workers)
+}
+
+func detectCropSamples(inputPath string, inf *video.Info, frames []int, workers int) []detectedCrop {
+	partitions := partitionCropFrames(frames, workers)
+	if len(partitions) == 0 {
+		return nil
+	}
+
+	results := make(chan detectedCrop, len(frames))
+	var wg sync.WaitGroup
+	for _, partition := range partitions {
+		wg.Add(1)
+		go func(frames []int) {
+			defer wg.Done()
+
+			src, err := video.Open(inputPath, 1)
+			if err != nil {
+				return
+			}
+			defer src.Close()
+
+			for _, frameIdx := range frames {
+				frame, err := src.ReadLumaFrame(frameIdx, inf)
+				if err != nil {
+					continue
+				}
+				crop, ok := detectLumaCrop(frame.Data, frame.Width, frame.Height, frame.Stride, frame.Is10Bit)
+				if ok {
+					results <- crop
+				}
+			}
+		}(partition)
+	}
+
+	wg.Wait()
+	close(results)
+
+	crops := make([]detectedCrop, 0, len(results))
+	for crop := range results {
+		crops = append(crops, crop)
+	}
+	return crops
+}
+
+func partitionCropFrames(frames []int, workers int) [][]int {
+	if len(frames) == 0 || workers <= 0 {
+		return nil
+	}
+	workers = min(workers, len(frames))
+	partitions := make([][]int, 0, workers)
+	base := len(frames) / workers
+	extra := len(frames) % workers
+	start := 0
+	for i := 0; i < workers; i++ {
+		size := base
+		if i < extra {
+			size++
+		}
+		end := start + size
+		partitions = append(partitions, frames[start:end])
+		start = end
+	}
+	return partitions
+}
+
+func cropResultFromSamples(crops []detectedCrop, sampleMsg string, sourceWidth, sourceHeight uint32) CropResult {
 	best := detectedCrop{Top: ^uint32(0), Bottom: ^uint32(0), Left: ^uint32(0), Right: ^uint32(0)}
-	validSamples := 0
 	var reference detectedCrop
 	var haveReference, varied bool
-	for _, frameIdx := range frames {
-		frame, err := src.ReadLumaFrame(frameIdx, inf)
-		if err != nil {
-			continue
-		}
-		crop, ok := detectLumaCrop(frame.Data, frame.Width, frame.Height, frame.Stride, frame.Is10Bit)
-		if !ok {
-			continue
-		}
-		validSamples++
+	for _, crop := range crops {
 		evenCrop := crop.even()
 		if !haveReference {
 			reference = evenCrop
@@ -82,7 +148,7 @@ func DetectCrop(inputPath string, inf *video.Info, disableCrop bool) CropResult 
 		best = minCrop(best, crop)
 	}
 
-	if validSamples == 0 || best.Top == ^uint32(0) {
+	if len(crops) == 0 || best.Top == ^uint32(0) {
 		return CropResult{Required: false, Message: sampleMsg}
 	}
 
@@ -94,8 +160,8 @@ func DetectCrop(inputPath string, inf *video.Info, disableCrop bool) CropResult 
 		return CropResult{Required: false, Message: sampleMsg}
 	}
 
-	filter, ok := cropFilterForDetectedCrop(best, inf.Width, inf.Height)
-	if !ok || !isEffectiveCrop(strings.TrimPrefix(filter, "crop="), inf.Width, inf.Height) {
+	filter, ok := cropFilterForDetectedCrop(best, sourceWidth, sourceHeight)
+	if !ok || !isEffectiveCrop(strings.TrimPrefix(filter, "crop="), sourceWidth, sourceHeight) {
 		return CropResult{Required: false, Message: sampleMsg}
 	}
 
