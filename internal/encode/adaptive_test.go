@@ -128,8 +128,19 @@ func TestAdaptiveLimiterBacksOffOnThroughputPlateau(t *testing.T) {
 		limiter.maybeAdjustTarget(true, 120)
 	}
 	_, target, _ = limiter.stats()
+	if target != 1 {
+		t.Fatalf("target during plateau cooldown = %d, want 1", target)
+	}
+
+	for range plateauCooldownTicks {
+		limiter.maybeAdjustTarget(true, 120)
+	}
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 120)
+	}
+	_, target, _ = limiter.stats()
 	if target != 2 {
-		t.Fatalf("target after materially faster plateau = %d, want 2", target)
+		t.Fatalf("target after plateau cooldown = %d, want 2", target)
 	}
 }
 

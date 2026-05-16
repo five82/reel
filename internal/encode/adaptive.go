@@ -12,14 +12,15 @@ import (
 
 const (
 	memoryMonitorInterval = 5 * time.Second
-	rampEvaluationTicks   = 4  // 20 seconds
+	rampEvaluationTicks   = 6  // 30 seconds
 	pressureCooldownTicks = 12 // 60 seconds
+	plateauCooldownTicks  = 36 // 3 minutes
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
 	memoryStableAvailableFraction   = 0.35
 
-	minSpeedGainFraction = 0.02
+	minSpeedGainFraction = 0.03
 	speedSmoothing       = 0.50
 
 	swapStableGrowthBytes          = 16 << 20
@@ -45,14 +46,15 @@ type adaptiveLimiter struct {
 	stableTicks int
 	status      statusCallback
 
-	observedFrames    int
-	recentSpeed       float64
-	bestTarget        int
-	bestSpeed         float64
-	evaluatingRamp    bool
-	rampBaselineSpeed float64
-	rampBlocked       bool
-	cooldownTicks     int
+	observedFrames      int
+	recentSpeed         float64
+	bestTarget          int
+	bestSpeed           float64
+	evaluatingRamp      bool
+	rampBaselineSpeed   float64
+	rampBlocked         bool
+	cooldownTicks       int
+	plateauCooldownLeft int
 }
 
 // MaxAdaptiveWorkers returns the hardware-derived adaptive concurrency ceiling.
@@ -273,6 +275,7 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	l.evaluatingRamp = false
 	l.rampBlocked = false
 	l.cooldownTicks = pressureCooldownTicks
+	l.plateauCooldownLeft = 0
 	active := l.active
 	newTarget := l.target
 	l.cond.Broadcast()
@@ -302,6 +305,15 @@ func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float
 		l.mu.Unlock()
 		return
 	}
+	if l.rampBlocked {
+		if l.plateauCooldownLeft > 0 {
+			l.plateauCooldownLeft--
+			l.stableTicks = 0
+			l.mu.Unlock()
+			return
+		}
+		l.rampBlocked = false
+	}
 
 	l.stableTicks++
 	if l.stableTicks < rampEvaluationTicks {
@@ -313,7 +325,6 @@ func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float
 	if l.bestSpeed == 0 || recentSpeed > l.bestSpeed*(1+minSpeedGainFraction) {
 		l.bestSpeed = recentSpeed
 		l.bestTarget = l.target
-		l.rampBlocked = false
 	}
 
 	if l.evaluatingRamp {
@@ -326,6 +337,7 @@ func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float
 			l.target = newTarget
 			l.evaluatingRamp = false
 			l.rampBlocked = true
+			l.plateauCooldownLeft = plateauCooldownTicks
 			l.cond.Broadcast()
 			l.mu.Unlock()
 
@@ -339,7 +351,7 @@ func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float
 		l.evaluatingRamp = false
 	}
 
-	if l.rampBlocked || l.target >= l.max {
+	if l.target >= l.max {
 		l.mu.Unlock()
 		return
 	}
