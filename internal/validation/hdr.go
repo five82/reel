@@ -31,7 +31,7 @@ func validateHDRStatusWithAvailabilityCheck(outputPath string, expectedHDR *bool
 	}
 
 	var actualHDR *bool
-	hdrInfo, err := media.GetHDRInfo(outputPath)
+	hdrInfo, err := media.GetStreamHDRInfo(outputPath)
 	if err == nil {
 		actualHDR = &hdrInfo.IsHDR
 	}

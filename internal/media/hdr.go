@@ -7,18 +7,27 @@ func IsAvailable() bool {
 	return true
 }
 
-// GetHDRInfo returns HDR-related metadata using native libav probes.
-func GetHDRInfo(path string) (*HDRInfo, error) {
+// GetStreamHDRInfo returns HDR-related metadata from container/stream parameters only.
+func GetStreamHDRInfo(path string) (*HDRInfo, error) {
 	props, err := GetVideoProperties(path)
 	if err != nil {
 		return nil, err
 	}
-
 	hdr := props.HDRInfo
+	return &hdr, nil
+}
+
+// GetHDRInfo returns HDR-related metadata using native libav probes.
+func GetHDRInfo(path string) (*HDRInfo, error) {
+	hdr, err := GetStreamHDRInfo(path)
+	if err != nil {
+		return nil, err
+	}
+
 	inf, err := video.Probe(path)
 	if err != nil {
 		hdr.IsHDR = detectHDR(hdr.ColourPrimaries, hdr.TransferCharacteristics, hdr.MatrixCoefficients)
-		return &hdr, nil
+		return hdr, nil
 	}
 
 	if inf.Is10Bit {
@@ -41,7 +50,7 @@ func GetHDRInfo(path string) (*HDRInfo, error) {
 		}
 	}
 	hdr.IsHDR = detectHDR(hdr.ColourPrimaries, hdr.TransferCharacteristics, hdr.MatrixCoefficients)
-	return &hdr, nil
+	return hdr, nil
 }
 
 func colorPrimariesName(value int32) string {
