@@ -68,33 +68,68 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 	}
 }
 
-func TestAdaptiveLimiterRampIntervals(t *testing.T) {
+func TestAdaptiveLimiterTestsRampBeforeIncreasingAgain(t *testing.T) {
 	limiter := newAdaptiveLimiter(4, 1, nil)
+	limiter.active = 1
 
-	limiter.maybeIncreaseTarget(abundantRampIntervals)
+	for range rampEvaluationTicks - 1 {
+		limiter.maybeAdjustTarget(true, 100)
+	}
 	_, target, _ := limiter.stats()
 	if target != 1 {
-		t.Fatalf("target after one abundant tick = %d, want 1", target)
+		t.Fatalf("target before evaluation completes = %d, want 1", target)
 	}
 
-	limiter.maybeIncreaseTarget(abundantRampIntervals)
+	limiter.maybeAdjustTarget(true, 100)
 	_, target, _ = limiter.stats()
 	if target != 2 {
-		t.Fatalf("target after two abundant ticks = %d, want 2", target)
+		t.Fatalf("target after initial evaluation = %d, want 2", target)
 	}
 
-	for range stableRampIntervals - 1 {
-		limiter.maybeIncreaseTarget(stableRampIntervals)
+	limiter.active = 2
+	for range rampEvaluationTicks - 1 {
+		limiter.maybeAdjustTarget(true, 103)
 	}
 	_, target, _ = limiter.stats()
 	if target != 2 {
-		t.Fatalf("target before stable ramp completes = %d, want 2", target)
+		t.Fatalf("target before ramp test completes = %d, want 2", target)
 	}
 
-	limiter.maybeIncreaseTarget(stableRampIntervals)
+	limiter.maybeAdjustTarget(true, 103)
 	_, target, _ = limiter.stats()
 	if target != 3 {
-		t.Fatalf("target after stable ramp completes = %d, want 3", target)
+		t.Fatalf("target after successful ramp test = %d, want 3", target)
+	}
+}
+
+func TestAdaptiveLimiterBacksOffOnThroughputPlateau(t *testing.T) {
+	limiter := newAdaptiveLimiter(4, 1, nil)
+	limiter.active = 1
+
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 100)
+	}
+	_, target, _ := limiter.stats()
+	if target != 2 {
+		t.Fatalf("target after initial evaluation = %d, want 2", target)
+	}
+
+	limiter.active = 2
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 101)
+	}
+	_, target, _ = limiter.stats()
+	if target != 1 {
+		t.Fatalf("target after plateau = %d, want 1", target)
+	}
+
+	limiter.active = 1
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 120)
+	}
+	_, target, _ = limiter.stats()
+	if target != 2 {
+		t.Fatalf("target after materially faster plateau = %d, want 2", target)
 	}
 }
 

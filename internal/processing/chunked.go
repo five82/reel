@@ -143,8 +143,8 @@ func ProcessChunked(
 	}
 	resumedFrames := resumeInfo.Validate(workDir, chunks).TotalEncodedFrames()
 
-	// Adaptive encoding starts conservatively and ramps toward the requested worker
-	// count while monitoring real RAM/swap pressure.
+	// Adaptive encoding starts conservatively, tests higher worker counts by
+	// throughput, and backs off on real RAM/swap pressure.
 	maxWorkers := encode.MaxAdaptiveWorkers()
 	rep.StageProgress(reporter.StageProgress{
 		Stage:   "Encoding",

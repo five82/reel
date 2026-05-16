@@ -60,6 +60,8 @@ reel encode -i input.mkv -o output/
 reel encode -i /videos/ -o /encoded/
 ```
 
+Reel splits each video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, subtitles, chapters, and metadata. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
+
 ### Options
 
 ```

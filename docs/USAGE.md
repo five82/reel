@@ -44,14 +44,9 @@ reel encode -v -i input.mkv -o output/
 
 ## Parallel Chunked Encoding
 
-Reel splits videos into fixed-length chunks and encodes them in parallel:
+Reel splits video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, subtitles, chapters, and metadata. Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure.
 
-```bash
-# Adaptive parallelism: starts conservatively and ramps based on RAM/swap pressure
-reel encode -i input.mkv -o output/
-```
-
-See [docs/chunked-encoding.md](chunked-encoding.md) for details on how chunked encoding works.
+Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
 
 ## HDR Support
 
@@ -84,7 +79,7 @@ Validation catches mismatches before you archive or publish results:
 
 ## Progress Reporting
 
-Foreground runs show real-time progress with ETA, fps, and reduction stats. For automation, use the library API with a custom event handler (see [docs/spindle-integration.md](spindle-integration.md)).
+Foreground runs show real-time progress with ETA, fps, and reduction stats. For automation, use the library API with a custom event handler; see `README.md`, `reel.go`, and `events.go`.
 
 ## Environment Variables
 

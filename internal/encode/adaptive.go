@@ -12,13 +12,15 @@ import (
 
 const (
 	memoryMonitorInterval = 5 * time.Second
-	abundantRampIntervals = 2 // 10 seconds
-	stableRampIntervals   = 6 // 30 seconds
+	rampEvaluationTicks   = 4  // 20 seconds
+	pressureCooldownTicks = 12 // 60 seconds
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
 	memoryStableAvailableFraction   = 0.35
-	memoryAbundantAvailableFraction = 0.50
+
+	minSpeedGainFraction = 0.02
+	speedSmoothing       = 0.50
 
 	swapStableGrowthBytes          = 16 << 20
 	swapRampTotalGrowthFloorBytes  = 512 << 20
@@ -42,6 +44,15 @@ type adaptiveLimiter struct {
 
 	stableTicks int
 	status      statusCallback
+
+	observedFrames    int
+	recentSpeed       float64
+	bestTarget        int
+	bestSpeed         float64
+	evaluatingRamp    bool
+	rampBaselineSpeed float64
+	rampBlocked       bool
+	cooldownTicks     int
 }
 
 // MaxAdaptiveWorkers returns the hardware-derived adaptive concurrency ceiling.
@@ -123,6 +134,37 @@ func (l *adaptiveLimiter) stats() (active, target, maxWorkers int) {
 	return l.active, l.target, l.max
 }
 
+func (l *adaptiveLimiter) observeProgress(frames int) {
+	l.mu.Lock()
+	if frames > l.observedFrames {
+		l.observedFrames = frames
+	}
+	l.mu.Unlock()
+}
+
+func (l *adaptiveLimiter) progressFrames() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.observedFrames
+}
+
+func (l *adaptiveLimiter) updateRecentSpeed(framesDelta int, elapsedSeconds float64) float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if framesDelta <= 0 || elapsedSeconds <= 0 {
+		return l.recentSpeed
+	}
+
+	intervalSpeed := float64(framesDelta) / elapsedSeconds
+	if l.recentSpeed == 0 {
+		l.recentSpeed = intervalSpeed
+	} else {
+		l.recentSpeed = l.recentSpeed*(1-speedSmoothing) + intervalSpeed*speedSmoothing
+	}
+	return l.recentSpeed
+}
+
 func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc, setError func(error)) {
 	stats, ok := util.ReadMemoryStats()
 	if !ok || stats.MemTotal == 0 {
@@ -131,6 +173,8 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 
 	baselineSwapUsed := stats.SwapUsed()
 	lastSwapUsed := baselineSwapUsed
+	lastFrames := l.progressFrames()
+	lastSpeedAt := time.Now()
 	ticker := time.NewTicker(memoryMonitorInterval)
 	defer ticker.Stop()
 
@@ -141,6 +185,12 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 			return
 		case <-ticker.C:
 		}
+
+		now := time.Now()
+		currentFrames := l.progressFrames()
+		recentSpeed := l.updateRecentSpeed(currentFrames-lastFrames, now.Sub(lastSpeedAt).Seconds())
+		lastFrames = currentFrames
+		lastSpeedAt = now
 
 		stats, ok := util.ReadMemoryStats()
 		if !ok || stats.MemTotal == 0 {
@@ -167,15 +217,8 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 		}
 
 		swapGrowthStable := swapGrowthStableForRamp(stats, swapGrowthTotal, swapGrowthInterval)
-
-		switch {
-		case availableFraction > memoryAbundantAvailableFraction && swapGrowthStable:
-			l.maybeIncreaseTarget(abundantRampIntervals)
-		case availableFraction > memoryStableAvailableFraction && swapGrowthStable:
-			l.maybeIncreaseTarget(stableRampIntervals)
-		default:
-			l.resetStability()
-		}
+		memoryStable := availableFraction > memoryStableAvailableFraction && swapGrowthStable
+		l.maybeAdjustTarget(memoryStable, recentSpeed)
 	}
 }
 
@@ -227,6 +270,9 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	}
 	l.target = max(l.min, old-step)
 	l.stableTicks = 0
+	l.evaluatingRamp = false
+	l.rampBlocked = false
+	l.cooldownTicks = pressureCooldownTicks
 	active := l.active
 	newTarget := l.target
 	l.cond.Broadcast()
@@ -238,34 +284,75 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	}
 }
 
-func (l *adaptiveLimiter) maybeIncreaseTarget(requiredStableTicks int) {
+func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float64) {
 	l.mu.Lock()
-	if l.target >= l.max {
+	if !memoryStable || recentSpeed <= 0 {
+		l.stableTicks = 0
+		l.mu.Unlock()
+		return
+	}
+	if l.active != l.target {
+		l.stableTicks = 0
+		l.mu.Unlock()
+		return
+	}
+	if l.cooldownTicks > 0 {
+		l.cooldownTicks--
 		l.stableTicks = 0
 		l.mu.Unlock()
 		return
 	}
 
 	l.stableTicks++
-	if l.stableTicks < requiredStableTicks {
+	if l.stableTicks < rampEvaluationTicks {
+		l.mu.Unlock()
+		return
+	}
+	l.stableTicks = 0
+
+	if l.bestSpeed == 0 || recentSpeed > l.bestSpeed*(1+minSpeedGainFraction) {
+		l.bestSpeed = recentSpeed
+		l.bestTarget = l.target
+		l.rampBlocked = false
+	}
+
+	if l.evaluatingRamp {
+		if recentSpeed < l.rampBaselineSpeed*(1+minSpeedGainFraction) {
+			old := l.target
+			newTarget := l.bestTarget
+			if newTarget <= 0 || newTarget >= old {
+				newTarget = max(l.min, old-1)
+			}
+			l.target = newTarget
+			l.evaluatingRamp = false
+			l.rampBlocked = true
+			l.cond.Broadcast()
+			l.mu.Unlock()
+
+			if newTarget < old {
+				l.statusf("Throughput plateaued; reducing workers %d -> %d", old, newTarget)
+			} else {
+				l.statusf("Throughput plateaued at %d workers; holding concurrency", old)
+			}
+			return
+		}
+		l.evaluatingRamp = false
+	}
+
+	if l.rampBlocked || l.target >= l.max {
 		l.mu.Unlock()
 		return
 	}
 
 	old := l.target
+	l.rampBaselineSpeed = recentSpeed
 	l.target++
-	l.stableTicks = 0
+	l.evaluatingRamp = true
 	newTarget := l.target
 	l.cond.Broadcast()
 	l.mu.Unlock()
 
-	l.statusf("Memory stable; increasing workers %d -> %d", old, newTarget)
-}
-
-func (l *adaptiveLimiter) resetStability() {
-	l.mu.Lock()
-	l.stableTicks = 0
-	l.mu.Unlock()
+	l.statusf("Throughput stable; testing workers %d -> %d", old, newTarget)
 }
 
 func (l *adaptiveLimiter) statusf(format string, args ...any) {

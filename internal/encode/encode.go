@@ -116,6 +116,7 @@ func EncodeAll(
 		FramesComplete: resume.TotalEncodedFrames(),
 		BytesComplete:  resume.TotalEncodedSize(),
 	}
+	limiter.observeProgress(progress.FramesComplete)
 	snapshotProgress := func() worker.Progress {
 		p := progress
 		for _, frames := range activeFrames {
@@ -137,6 +138,7 @@ func EncodeAll(
 		}
 		activeFrames[chunkIdx] = frames
 		p := snapshotProgress()
+		limiter.observeProgress(p.FramesComplete)
 		progressMu.Unlock()
 
 		progressCb(p)
@@ -194,6 +196,7 @@ func EncodeAll(
 			if progressCb != nil {
 				progressMu.Lock()
 				p := snapshotProgress()
+				limiter.observeProgress(p.FramesComplete)
 				progressMu.Unlock()
 				progressCb(p)
 			}
