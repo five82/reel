@@ -71,6 +71,9 @@ func (r *LogReporter) EncodingConfig(summary EncodingConfigSummary) {
 	r.log("INFO", "Preset: %s", summary.Preset)
 	r.log("INFO", "Tune: %s", summary.Tune)
 	r.log("INFO", "Quality: %s", summary.Quality)
+	if summary.DecodeMode != "" {
+		r.log("INFO", "Decode: %s", summary.DecodeMode)
+	}
 	r.log("INFO", "Pixel format: %s", summary.PixelFormat)
 	r.log("INFO", "Matrix: %s", summary.MatrixCoefficients)
 	r.log("INFO", "Audio codec: %s", summary.AudioCodec)
