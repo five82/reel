@@ -1,6 +1,6 @@
 #!/bin/bash
 # Dependency health check for reel.
-# Reports available Go module updates and reachable vulnerabilities without changing files.
+# Reports available Go module updates, reachable vulnerabilities, and newer CI action tags without changing files.
 
 set -euo pipefail
 
@@ -24,6 +24,52 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}   $1${NC}"
+}
+
+is_version_tag() {
+    [[ "$1" =~ ^v?[0-9]+([.][0-9]+)*$ ]]
+}
+
+is_major_version_tag() {
+    [[ "$1" =~ ^v?[0-9]+$ ]]
+}
+
+version_major() {
+    local version=${1#v}
+    echo "${version%%.*}"
+}
+
+latest_stable_tag() {
+    local repo=$1
+    local tag_output
+
+    if ! tag_output=$(git ls-remote --tags --refs "$repo" 2>/dev/null); then
+        return 1
+    fi
+
+    printf '%s\n' "$tag_output" |
+        awk -F 'refs/tags/' 'NF > 1 {print $2}' |
+        grep -E '^v?[0-9]+([.][0-9]+)*$' |
+        sort -V |
+        tail -n 1 || true
+}
+
+is_newer_version_available() {
+    local current=$1
+    local latest=$2
+    local highest
+
+    if [ -z "$latest" ] || ! is_version_tag "$current"; then
+        return 1
+    fi
+
+    if is_major_version_tag "$current"; then
+        [ "$(version_major "$latest")" -gt "$(version_major "$current")" ]
+        return
+    fi
+
+    highest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)
+    [ "$highest" = "$latest" ] && [ "$current" != "$latest" ]
 }
 
 if ! command -v go &>/dev/null; then
@@ -74,12 +120,54 @@ else
 fi
 
 if [ -d .forgejo/workflows ]; then
-    print_step "Listing Forgejo Actions dependencies"
+    print_step "Checking Forgejo Actions dependencies"
     ACTION_REFS=$(grep -RhoE 'uses:[[:space:]]*[^[:space:]]+' .forgejo/workflows 2>/dev/null | sed 's/^uses:[[:space:]]*//' | sort -u || true)
     if [ -n "$ACTION_REFS" ]; then
-        printf '%s\n' "$ACTION_REFS" | sed 's/^/   /'
-        echo
-        echo "   Review these manually when updating CI actions."
+        if ! command -v git &>/dev/null; then
+            printf '%s\n' "$ACTION_REFS" | sed 's/^/   /'
+            echo
+            print_warning "Git is not installed; skipping action version checks."
+        else
+            OUTDATED_ACTIONS=0
+
+            while IFS= read -r action_ref; do
+                repo=${action_ref%@*}
+                current_ref=${action_ref##*@}
+
+                echo "   $action_ref"
+
+                if [[ "$action_ref" != *@* ]]; then
+                    echo "      no @ref found; skipping version check"
+                    continue
+                fi
+
+                if ! latest=$(latest_stable_tag "$repo"); then
+                    echo "      could not reach action tags; skipping version check"
+                    continue
+                fi
+
+                if [ -z "$latest" ]; then
+                    echo "      no stable version tags found; skipping version check"
+                    continue
+                fi
+
+                if is_newer_version_available "$current_ref" "$latest"; then
+                    echo "      latest stable tag: $latest; newer version may be available"
+                    OUTDATED_ACTIONS=1
+                elif is_major_version_tag "$current_ref" && [ "$(version_major "$current_ref")" = "$(version_major "$latest")" ]; then
+                    echo "      latest stable tag: $latest; $current_ref tracks the latest major"
+                elif is_version_tag "$current_ref"; then
+                    echo "      latest stable tag: $latest; no newer stable tag found"
+                else
+                    echo "      latest stable tag: $latest; current ref is not a version tag"
+                fi
+            done <<< "$ACTION_REFS"
+
+            if [ "$OUTDATED_ACTIONS" -eq 1 ]; then
+                echo
+                print_warning "Newer CI action tags may be available; review before updating."
+            fi
+        fi
     else
         print_success "No action dependencies found"
     fi
