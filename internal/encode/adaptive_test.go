@@ -1,6 +1,10 @@
 package encode
 
-import "testing"
+import (
+	"testing"
+
+	"codeberg.org/five82/reel/internal/util"
+)
 
 func TestInitialAdaptiveWorkers(t *testing.T) {
 	tests := []struct {
@@ -91,5 +95,21 @@ func TestAdaptiveLimiterRampIntervals(t *testing.T) {
 	_, target, _ = limiter.stats()
 	if target != 3 {
 		t.Fatalf("target after stable ramp completes = %d, want 3", target)
+	}
+}
+
+func TestSwapGrowthStableForRamp(t *testing.T) {
+	stats := util.MemoryStats{SwapTotal: 64 << 30}
+
+	if !swapGrowthStableForRamp(stats, 150<<20, 1<<20) {
+		t.Fatal("expected small swap growth on a large swap device to allow ramping")
+	}
+
+	if swapGrowthStableForRamp(stats, 150<<20, swapStableGrowthBytes+1) {
+		t.Fatal("expected active swap growth to block ramping")
+	}
+
+	if swapGrowthStableForRamp(stats, swapRampTotalGrowthLimit(stats)+1, 0) {
+		t.Fatal("expected excessive total swap growth to block ramping")
 	}
 }

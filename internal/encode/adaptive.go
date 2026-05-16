@@ -20,9 +20,11 @@ const (
 	memoryStableAvailableFraction   = 0.35
 	memoryAbundantAvailableFraction = 0.50
 
-	swapStableGrowthBytes   = 16 << 20
-	swapPressureGrowthBytes = 64 << 20
-	swapCriticalGrowthBytes = 1 << 30
+	swapStableGrowthBytes          = 16 << 20
+	swapRampTotalGrowthFloorBytes  = 512 << 20
+	swapRampTotalGrowthDenominator = 100 // 1% of configured swap
+	swapPressureGrowthBytes        = 64 << 20
+	swapCriticalGrowthBytes        = 1 << 30
 )
 
 // ErrMemoryPressure is returned when Reel cancels encoding to avoid system OOM.
@@ -164,10 +166,12 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 			continue
 		}
 
+		swapGrowthStable := swapGrowthStableForRamp(stats, swapGrowthTotal, swapGrowthInterval)
+
 		switch {
-		case availableFraction > memoryAbundantAvailableFraction && swapGrowthTotal == 0:
+		case availableFraction > memoryAbundantAvailableFraction && swapGrowthStable:
 			l.maybeIncreaseTarget(abundantRampIntervals)
-		case availableFraction > memoryStableAvailableFraction && swapGrowthTotal <= swapStableGrowthBytes:
+		case availableFraction > memoryStableAvailableFraction && swapGrowthStable:
 			l.maybeIncreaseTarget(stableRampIntervals)
 		default:
 			l.resetStability()
@@ -180,6 +184,18 @@ func positiveDelta(current, previous uint64) uint64 {
 		return 0
 	}
 	return current - previous
+}
+
+func swapGrowthStableForRamp(stats util.MemoryStats, totalGrowth, intervalGrowth uint64) bool {
+	return totalGrowth <= swapRampTotalGrowthLimit(stats) && intervalGrowth <= swapStableGrowthBytes
+}
+
+func swapRampTotalGrowthLimit(stats util.MemoryStats) uint64 {
+	limit := uint64(swapRampTotalGrowthFloorBytes)
+	if stats.SwapTotal == 0 {
+		return limit
+	}
+	return max(limit, stats.SwapTotal/swapRampTotalGrowthDenominator)
 }
 
 func (l *adaptiveLimiter) criticalPressure(availableFraction float64, swapGrowth uint64, stats util.MemoryStats) bool {
