@@ -17,6 +17,7 @@ const (
 	maxCropWorkers        = 4
 	cropSampleStart       = 0.15
 	cropSampleEnd         = 0.85
+	cropSampleDecodeLimit = 24
 	blackLumaThreshold    = 24
 	contrastThreshold     = 10
 	minActivePixelsDiv    = 100
@@ -90,7 +91,7 @@ func detectCropSamples(inputPath string, inf *video.Info, frames []int, workers 
 			defer src.Close()
 
 			for _, frameIdx := range frames {
-				frame, err := src.ReadLumaFrame(frameIdx, inf)
+				frame, err := src.ReadLumaFrameNear(frameIdx, inf, cropSampleDecodeLimit)
 				if err != nil {
 					continue
 				}

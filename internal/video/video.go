@@ -471,6 +471,28 @@ func (s *Source) ReadLumaFrame(frameIdx int, inf *Info) (*LumaFrame, error) {
 	if err != nil {
 		return nil, err
 	}
+	return lumaFrameFromAVFrame(frameIdx, frame, inf, is10Bit)
+}
+
+// ReadLumaFrameNear retrieves a luma frame near frameIdx without requiring exact frame access.
+// It is intended for sampling tasks where an approximate frame is good enough and avoids
+// unbounded decode if a container seek lands far before the requested frame.
+func (s *Source) ReadLumaFrameNear(frameIdx int, inf *Info, maxDecode int) (*LumaFrame, error) {
+	if s == nil {
+		return nil, fmt.Errorf("nil video source")
+	}
+	if inf == nil {
+		return nil, fmt.Errorf("nil video info")
+	}
+
+	frame, is10Bit, err := s.readFrameNear(frameIdx, maxDecode)
+	if err != nil {
+		return nil, err
+	}
+	return lumaFrameFromAVFrame(frameIdx, frame, inf, is10Bit)
+}
+
+func lumaFrameFromAVFrame(frameIdx int, frame *C.AVFrame, inf *Info, is10Bit bool) (*LumaFrame, error) {
 	if frame.data[0] == nil {
 		return nil, fmt.Errorf("frame %d has nil luma data", frameIdx)
 	}
@@ -511,6 +533,34 @@ func (s *Source) readFrame(frameIdx int, inf *Info) (*C.AVFrame, bool, error) {
 		}
 		return s.normalizeFrame(frame)
 	}
+}
+
+func (s *Source) readFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, bool, error) {
+	if frameIdx < 0 {
+		return nil, false, fmt.Errorf("negative frame index %d", frameIdx)
+	}
+	if maxDecode < 1 {
+		maxDecode = 1
+	}
+	if err := s.seekNear(frameIdx); err != nil {
+		return nil, false, err
+	}
+
+	var frame *C.AVFrame
+	for decoded := 0; decoded < maxDecode; decoded++ {
+		decodedFrame, decodedIdx, err := s.decodeOne()
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to decode near frame %d: %w", frameIdx, err)
+		}
+		frame = decodedFrame
+		if decodedIdx >= frameIdx {
+			break
+		}
+	}
+	if frame == nil {
+		return nil, false, fmt.Errorf("failed to decode near frame %d", frameIdx)
+	}
+	return s.normalizeFrame(frame)
 }
 
 func (s *Source) seekNear(frameIdx int) error {
