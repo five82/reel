@@ -6,7 +6,7 @@ func TestDetectLumaCropLetterbox(t *testing.T) {
 	data := makeLuma8(12, 8, 16, 16)
 	fillRect8(data, 16, 0, 2, 12, 4, 96)
 
-	crop, ok := detectLumaCrop(data, 12, 8, 16, false)
+	crop, ok := detectLumaCrop(data, 12, 8, 16, false, 0)
 	if !ok {
 		t.Fatal("expected valid crop")
 	}
@@ -20,7 +20,7 @@ func TestDetectLumaCropPillarbox(t *testing.T) {
 	data := makeLuma8(12, 8, 16, 16)
 	fillRect8(data, 16, 2, 0, 8, 8, 96)
 
-	crop, ok := detectLumaCrop(data, 12, 8, 16, false)
+	crop, ok := detectLumaCrop(data, 12, 8, 16, false, 0)
 	if !ok {
 		t.Fatal("expected valid crop")
 	}
@@ -32,7 +32,7 @@ func TestDetectLumaCropPillarbox(t *testing.T) {
 
 func TestDetectLumaCropRejectsAllBlackFrame(t *testing.T) {
 	data := makeLuma8(12, 8, 16, 16)
-	if crop, ok := detectLumaCrop(data, 12, 8, 16, false); ok {
+	if crop, ok := detectLumaCrop(data, 12, 8, 16, false, 0); ok {
 		t.Fatalf("expected all-black frame to be rejected, got %+v", crop)
 	}
 }
@@ -41,7 +41,7 @@ func TestDetectLumaCrop10Bit(t *testing.T) {
 	data := makeLuma10(12, 8, 32, 64)
 	fillRect10(data, 32, 0, 2, 12, 4, 384)
 
-	crop, ok := detectLumaCrop(data, 12, 8, 32, true)
+	crop, ok := detectLumaCrop(data, 12, 8, 32, true, 2)
 	if !ok {
 		t.Fatal("expected valid crop")
 	}

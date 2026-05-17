@@ -93,7 +93,9 @@ func ProcessVideos(
 		}
 
 		// Analyze video properties
+		finishStep := startVerboseStep(rep, "Video property analysis")
 		videoProps, err := media.GetVideoProperties(inputPath)
+		finishStep()
 		if err != nil {
 			rep.Error(reporter.ReporterError{
 				Title:      "Analysis Error",
@@ -104,7 +106,9 @@ func ProcessVideos(
 			continue
 		}
 
+		finishStep = startVerboseStep(rep, "HDR analysis")
 		hdrInfo, err := media.GetHDRInfo(inputPath)
+		finishStep()
 		if err != nil {
 			rep.Error(reporter.ReporterError{
 				Title:      "Analysis Error",
@@ -120,9 +124,11 @@ func ProcessVideos(
 		isHDR := hdrInfo.IsHDR
 
 		// Get audio info
+		finishStep = startVerboseStep(rep, "Audio analysis")
 		audioChannels := GetAudioChannels(inputPath)
 		audioStreams := GetAudioStreamInfo(inputPath)
 		audioDescription := FormatAudioDescription(audioChannels)
+		finishStep()
 
 		// Emit initialization event
 		rep.Initialization(reporter.InitializationSummary{
@@ -162,7 +168,9 @@ func ProcessVideos(
 		})
 
 		// Run chunked encoding with FFmpeg/libav + SVT-AV1 library
+		finishStep = startVerboseStep(rep, "Chunked encode pipeline")
 		cropResult, encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
+		finishStep()
 		encodeSuccess := encodeError == nil
 
 		if !encodeSuccess {
@@ -204,12 +212,14 @@ func ProcessVideos(
 		expectedDuration := videoProps.DurationSecs
 		expectedAudioTracks := len(audioChannels)
 
+		finishStep = startVerboseStep(rep, "Output validation")
 		validationResult, err := validation.ValidateOutputVideo(inputPath, outputPath, validation.Options{
 			ExpectedDimensions:  expectedDims,
 			ExpectedDuration:    &expectedDuration,
 			ExpectedHDR:         &isHDR,
 			ExpectedAudioTracks: &expectedAudioTracks,
 		})
+		finishStep()
 
 		var validationPassed bool
 		var validationSteps []validation.ValidationStep

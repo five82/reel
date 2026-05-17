@@ -95,7 +95,7 @@ func detectCropSamples(inputPath string, inf *video.Info, frames []int, workers 
 				if err != nil {
 					continue
 				}
-				crop, ok := detectLumaCrop(frame.Data, frame.Width, frame.Height, frame.Stride, frame.Is10Bit)
+				crop, ok := detectLumaCrop(frame.Data, frame.Width, frame.Height, frame.Stride, frame.Is10Bit, frame.LumaShift)
 				if ok {
 					results <- crop
 				}
@@ -207,7 +207,7 @@ func sampleCropFrames(totalFrames, sampleCount int) []int {
 	return frames
 }
 
-func detectLumaCrop(data []byte, width, height, stride int, is10Bit bool) (detectedCrop, bool) {
+func detectLumaCrop(data []byte, width, height, stride int, is10Bit bool, lumaShift int) (detectedCrop, bool) {
 	if width <= 0 || height <= 0 || stride <= 0 {
 		return detectedCrop{}, false
 	}
@@ -223,7 +223,7 @@ func detectLumaCrop(data []byte, width, height, stride int, is10Bit bool) (detec
 	for row := 0; row < height; row++ {
 		rowOff := row * stride
 		for col := 0; col < width; col++ {
-			stats.add(row, col, readLuma8(data, rowOff, col, is10Bit))
+			stats.add(row, col, readLuma8(data, rowOff, col, is10Bit, lumaShift))
 		}
 	}
 	if stats.activePixels < minActiveFramePixels(width, height) {
@@ -353,12 +353,15 @@ func (s *lumaStats) lastActiveCol() (int, bool) {
 	return 0, false
 }
 
-func readLuma8(data []byte, rowOff, col int, is10Bit bool) uint8 {
+func readLuma8(data []byte, rowOff, col int, is10Bit bool, lumaShift int) uint8 {
 	if !is10Bit {
 		return data[rowOff+col]
 	}
+	if lumaShift == 0 {
+		lumaShift = 2
+	}
 	sample := binary.LittleEndian.Uint16(data[rowOff+col*2:])
-	return uint8(min(sample>>2, 255))
+	return uint8(min(sample>>lumaShift, 255))
 }
 
 func minActiveLinePixels(length int) int {

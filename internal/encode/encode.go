@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -78,6 +79,13 @@ func EncodeAll(
 		return MaxAdaptiveWorkers(), nil // All chunks already done
 	}
 
+	// Scene-aware chunking creates variable-sized chunks. Dispatch larger chunks
+	// first so the encode does not finish with one long tail chunk while other
+	// workers are idle. Chunk indices are preserved for resume and final merge.
+	sort.SliceStable(remainingChunks, func(i, j int) bool {
+		return remainingChunks[i].Frames() > remainingChunks[j].Frames()
+	})
+
 	if cropRect != nil {
 		if err := video.ValidateCropRect(inf, *cropRect); err != nil {
 			return 0, fmt.Errorf("invalid crop rectangle: %w", err)
@@ -92,7 +100,7 @@ func EncodeAll(
 	// they are too content/SVT-version dependent and can leave the machine underused.
 	maxWorkers := MaxAdaptiveWorkers()
 	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height)
-	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, cfg.StatusCallback)
+	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames, cfg.StatusCallback)
 	if cfg.LevelOfParallelism == 0 {
 		cfg.LevelOfParallelism = levelOfParallelismForWorkers(maxWorkers)
 	}

@@ -11,16 +11,17 @@ import (
 )
 
 const (
-	memoryMonitorInterval = 5 * time.Second
-	rampEvaluationTicks   = 6  // 30 seconds
-	pressureCooldownTicks = 12 // 60 seconds
-	plateauCooldownTicks  = 36 // 3 minutes
+	memoryMonitorInterval  = 5 * time.Second
+	rampEvaluationTicks    = 18 // 90 seconds
+	pressureCooldownTicks  = 12 // 60 seconds
+	rampRetryCooldownTicks = 36 // 3 minutes
+	plateauCooldownTicks   = 72 // 6 minutes
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
 	memoryStableAvailableFraction   = 0.35
 
-	minSpeedGainFraction = 0.03
+	minSpeedGainFraction = 0.06
 	speedSmoothing       = 0.50
 
 	swapStableGrowthBytes          = 16 << 20
@@ -47,12 +48,12 @@ type adaptiveLimiter struct {
 	status      statusCallback
 
 	observedFrames      int
+	totalFrames         int
 	recentSpeed         float64
-	bestTarget          int
-	bestSpeed           float64
 	evaluatingRamp      bool
 	rampBaselineSpeed   float64
 	rampBlocked         bool
+	blockedTarget       int
 	cooldownTicks       int
 	plateauCooldownLeft int
 }
@@ -62,15 +63,16 @@ func MaxAdaptiveWorkers() int {
 	return max(util.LogicalCores(), 1)
 }
 
-func newAdaptiveLimiter(maxWorkers, initialWorkers int, status statusCallback) *adaptiveLimiter {
+func newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames int, status statusCallback) *adaptiveLimiter {
 	maxWorkers = max(maxWorkers, 1)
 	initialWorkers = min(max(initialWorkers, 1), maxWorkers)
 
 	l := &adaptiveLimiter{
-		min:    1,
-		max:    maxWorkers,
-		target: initialWorkers,
-		status: status,
+		min:         1,
+		max:         maxWorkers,
+		target:      initialWorkers,
+		totalFrames: max(totalFrames, 0),
+		status:      status,
 	}
 	l.cond = sync.NewCond(&l.mu)
 	return l
@@ -148,6 +150,14 @@ func (l *adaptiveLimiter) progressFrames() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.observedFrames
+}
+
+func (l *adaptiveLimiter) rampDisabledLate() bool {
+	return l.totalFrames > 0 && float64(l.observedFrames)/float64(l.totalFrames) >= 0.80
+}
+
+func (l *adaptiveLimiter) nextTargetBlocked() bool {
+	return l.blockedTarget > 0 && l.target+1 >= l.blockedTarget
 }
 
 func (l *adaptiveLimiter) updateRecentSpeed(framesDelta int, elapsedSeconds float64) float64 {
@@ -322,36 +332,38 @@ func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float
 	}
 	l.stableTicks = 0
 
-	if l.bestSpeed == 0 || recentSpeed > l.bestSpeed*(1+minSpeedGainFraction) {
-		l.bestSpeed = recentSpeed
-		l.bestTarget = l.target
-	}
-
 	if l.evaluatingRamp {
-		if recentSpeed < l.rampBaselineSpeed*(1+minSpeedGainFraction) {
-			old := l.target
-			newTarget := l.bestTarget
-			if newTarget <= 0 || newTarget >= old {
-				newTarget = max(l.min, old-1)
-			}
-			l.target = newTarget
+		old := l.target
+		baseline := l.rampBaselineSpeed
+		clearGainThreshold := baseline * (1 + minSpeedGainFraction)
+		switch {
+		case recentSpeed <= baseline:
 			l.evaluatingRamp = false
 			l.rampBlocked = true
+			l.blockedTarget = old + 1
 			l.plateauCooldownLeft = plateauCooldownTicks
-			l.cond.Broadcast()
 			l.mu.Unlock()
 
-			if newTarget < old {
-				l.statusf("Throughput plateaued; reducing workers %d -> %d", old, newTarget)
-			} else {
-				l.statusf("Throughput plateaued at %d workers; holding concurrency", old)
-			}
+			l.statusf("Throughput did not improve; holding at %d workers and skipping higher worker tests", old)
+			return
+		case recentSpeed < clearGainThreshold:
+			l.evaluatingRamp = false
+			l.rampBlocked = true
+			l.plateauCooldownLeft = rampRetryCooldownTicks
+			l.mu.Unlock()
+
+			l.statusf("Throughput gain was modest; holding at %d workers", old)
+			return
+		default:
+			l.evaluatingRamp = false
+			l.mu.Unlock()
+
+			l.statusf("Throughput improved; keeping %d workers", old)
 			return
 		}
-		l.evaluatingRamp = false
 	}
 
-	if l.target >= l.max {
+	if l.target >= l.max || l.rampDisabledLate() || l.nextTargetBlocked() {
 		l.mu.Unlock()
 		return
 	}

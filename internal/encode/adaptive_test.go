@@ -69,7 +69,7 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 }
 
 func TestAdaptiveLimiterTestsRampBeforeIncreasingAgain(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, nil)
+	limiter := newAdaptiveLimiter(4, 1, 0, nil)
 	limiter.active = 1
 
 	for range rampEvaluationTicks - 1 {
@@ -88,22 +88,30 @@ func TestAdaptiveLimiterTestsRampBeforeIncreasingAgain(t *testing.T) {
 
 	limiter.active = 2
 	for range rampEvaluationTicks - 1 {
-		limiter.maybeAdjustTarget(true, 103)
+		limiter.maybeAdjustTarget(true, 107)
 	}
 	_, target, _ = limiter.stats()
 	if target != 2 {
 		t.Fatalf("target before ramp test completes = %d, want 2", target)
 	}
 
-	limiter.maybeAdjustTarget(true, 103)
+	limiter.maybeAdjustTarget(true, 107)
+	_, target, _ = limiter.stats()
+	if target != 2 {
+		t.Fatalf("target after successful ramp test = %d, want 2", target)
+	}
+
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 107)
+	}
 	_, target, _ = limiter.stats()
 	if target != 3 {
-		t.Fatalf("target after successful ramp test = %d, want 3", target)
+		t.Fatalf("target after next stable window = %d, want 3", target)
 	}
 }
 
-func TestAdaptiveLimiterBacksOffOnThroughputPlateau(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, nil)
+func TestAdaptiveLimiterRetriesAfterMarginalRamp(t *testing.T) {
+	limiter := newAdaptiveLimiter(4, 1, 0, nil)
 	limiter.active = 1
 
 	for range rampEvaluationTicks {
@@ -116,22 +124,47 @@ func TestAdaptiveLimiterBacksOffOnThroughputPlateau(t *testing.T) {
 
 	limiter.active = 2
 	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 101)
+		limiter.maybeAdjustTarget(true, 103)
 	}
 	_, target, _ = limiter.stats()
-	if target != 1 {
-		t.Fatalf("target after plateau = %d, want 1", target)
+	if target != 2 {
+		t.Fatalf("target after marginal ramp = %d, want 2", target)
 	}
 
-	limiter.active = 1
+	for range rampRetryCooldownTicks {
+		limiter.maybeAdjustTarget(true, 120)
+	}
 	for range rampEvaluationTicks {
 		limiter.maybeAdjustTarget(true, 120)
 	}
 	_, target, _ = limiter.stats()
-	if target != 1 {
-		t.Fatalf("target during plateau cooldown = %d, want 1", target)
+	if target != 3 {
+		t.Fatalf("target after marginal-ramp cooldown = %d, want 3", target)
+	}
+}
+
+func TestAdaptiveLimiterHoldsAndBlocksAfterThroughputDrop(t *testing.T) {
+	limiter := newAdaptiveLimiter(4, 1, 0, nil)
+	limiter.active = 1
+
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 100)
+	}
+	_, target, _ := limiter.stats()
+	if target != 2 {
+		t.Fatalf("target after initial evaluation = %d, want 2", target)
 	}
 
+	limiter.active = 2
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 97)
+	}
+	_, target, _ = limiter.stats()
+	if target != 2 {
+		t.Fatalf("target after failed ramp = %d, want 2", target)
+	}
+
+	limiter.active = 2
 	for range plateauCooldownTicks {
 		limiter.maybeAdjustTarget(true, 120)
 	}
@@ -140,7 +173,7 @@ func TestAdaptiveLimiterBacksOffOnThroughputPlateau(t *testing.T) {
 	}
 	_, target, _ = limiter.stats()
 	if target != 2 {
-		t.Fatalf("target after plateau cooldown = %d, want 2", target)
+		t.Fatalf("target after blocked-ramp cooldown = %d, want 2", target)
 	}
 }
 
@@ -157,5 +190,20 @@ func TestSwapGrowthStableForRamp(t *testing.T) {
 
 	if swapGrowthStableForRamp(stats, swapRampTotalGrowthLimit(stats)+1, 0) {
 		t.Fatal("expected excessive total swap growth to block ramping")
+	}
+}
+
+func TestAdaptiveLimiterDoesNotRampLateInEncode(t *testing.T) {
+	limiter := newAdaptiveLimiter(4, 1, 100, nil)
+	limiter.active = 1
+	limiter.observeProgress(80)
+
+	for range rampEvaluationTicks {
+		limiter.maybeAdjustTarget(true, 100)
+	}
+
+	_, target, _ := limiter.stats()
+	if target != 1 {
+		t.Fatalf("target after late stable window = %d, want 1", target)
 	}
 }

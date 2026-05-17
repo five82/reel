@@ -204,11 +204,12 @@ type CropCalc struct {
 // LumaFrame is a borrowed view of a decoded frame's Y plane.
 // Data remains valid until the next frame request on the same Source or until the Source is closed.
 type LumaFrame struct {
-	Data    []byte
-	Stride  int
-	Width   int
-	Height  int
-	Is10Bit bool
+	Data      []byte
+	Stride    int
+	Width     int
+	Height    int
+	Is10Bit   bool
+	LumaShift int // Right shift needed to convert native samples to 8-bit values.
 }
 
 // Probe reads video stream properties and first-frame metadata.
@@ -467,11 +468,11 @@ func (s *Source) ReadLumaFrame(frameIdx int, inf *Info) (*LumaFrame, error) {
 		return nil, fmt.Errorf("nil video info")
 	}
 
-	frame, is10Bit, err := s.readFrame(frameIdx, inf)
+	frame, err := s.readRawFrame(frameIdx)
 	if err != nil {
 		return nil, err
 	}
-	return lumaFrameFromAVFrame(frameIdx, frame, inf, is10Bit)
+	return s.lumaFrameFromFrame(frameIdx, frame, inf)
 }
 
 // ReadLumaFrameNear retrieves a luma frame near frameIdx without requiring exact frame access.
@@ -485,14 +486,35 @@ func (s *Source) ReadLumaFrameNear(frameIdx int, inf *Info, maxDecode int) (*Lum
 		return nil, fmt.Errorf("nil video info")
 	}
 
-	frame, is10Bit, err := s.readFrameNear(frameIdx, maxDecode)
+	frame, err := s.readRawFrameNear(frameIdx, maxDecode)
 	if err != nil {
 		return nil, err
 	}
-	return lumaFrameFromAVFrame(frameIdx, frame, inf, is10Bit)
+	return s.lumaFrameFromFrame(frameIdx, frame, inf)
 }
 
-func lumaFrameFromAVFrame(frameIdx int, frame *C.AVFrame, inf *Info, is10Bit bool) (*LumaFrame, error) {
+func (s *Source) lumaFrameFromFrame(frameIdx int, frame *C.AVFrame, inf *Info) (*LumaFrame, error) {
+	switch int(frame.format) {
+	case C.AV_PIX_FMT_YUV420P, C.AV_PIX_FMT_NV12:
+		return lumaFrameFromAVFrame(frameIdx, frame, inf, false, 0)
+	case C.AV_PIX_FMT_YUV420P10LE:
+		return lumaFrameFromAVFrame(frameIdx, frame, inf, true, 2)
+	case C.AV_PIX_FMT_P010LE, C.AV_PIX_FMT_P016LE:
+		return lumaFrameFromAVFrame(frameIdx, frame, inf, true, 8)
+	}
+
+	converted, is10Bit, err := s.normalizeFrame(frame)
+	if err != nil {
+		return nil, err
+	}
+	shift := 0
+	if is10Bit {
+		shift = 2
+	}
+	return lumaFrameFromAVFrame(frameIdx, converted, inf, is10Bit, shift)
+}
+
+func lumaFrameFromAVFrame(frameIdx int, frame *C.AVFrame, inf *Info, is10Bit bool, lumaShift int) (*LumaFrame, error) {
 	if frame.data[0] == nil {
 		return nil, fmt.Errorf("frame %d has nil luma data", frameIdx)
 	}
@@ -502,55 +524,72 @@ func lumaFrameFromAVFrame(frameIdx int, frame *C.AVFrame, inf *Info, is10Bit boo
 		return nil, fmt.Errorf("invalid luma geometry for frame %d: stride=%d height=%d", frameIdx, stride, height)
 	}
 	return &LumaFrame{
-		Data:    unsafe.Slice((*byte)(unsafe.Pointer(frame.data[0])), stride*height),
-		Stride:  stride,
-		Width:   int(inf.Width),
-		Height:  height,
-		Is10Bit: is10Bit,
+		Data:      unsafe.Slice((*byte)(unsafe.Pointer(frame.data[0])), stride*height),
+		Stride:    stride,
+		Width:     int(inf.Width),
+		Height:    height,
+		Is10Bit:   is10Bit,
+		LumaShift: lumaShift,
 	}, nil
 }
 
-func (s *Source) readFrame(frameIdx int, inf *Info) (*C.AVFrame, bool, error) {
+func (s *Source) readFrame(frameIdx int, _ *Info) (*C.AVFrame, bool, error) {
+	frame, err := s.readRawFrame(frameIdx)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.normalizeFrame(frame)
+}
+
+func (s *Source) readRawFrame(frameIdx int) (*C.AVFrame, error) {
 	if frameIdx < 0 {
-		return nil, false, fmt.Errorf("negative frame index %d", frameIdx)
+		return nil, fmt.Errorf("negative frame index %d", frameIdx)
 	}
 	if frameIdx < s.nextFrame || frameIdx-s.nextFrame > 150 {
 		if err := s.seekNear(frameIdx); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 	}
 
 	for {
 		frame, decodedIdx, err := s.decodeOne()
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to decode frame %d: %w", frameIdx, err)
+			return nil, fmt.Errorf("failed to decode frame %d: %w", frameIdx, err)
 		}
 		if decodedIdx < frameIdx {
 			continue
 		}
 		if decodedIdx > frameIdx {
-			return nil, false, fmt.Errorf("decoder skipped requested frame %d, got %d", frameIdx, decodedIdx)
+			return nil, fmt.Errorf("decoder skipped requested frame %d, got %d", frameIdx, decodedIdx)
 		}
-		return s.normalizeFrame(frame)
+		return frame, nil
 	}
 }
 
 func (s *Source) readFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, bool, error) {
+	frame, err := s.readRawFrameNear(frameIdx, maxDecode)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.normalizeFrame(frame)
+}
+
+func (s *Source) readRawFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, error) {
 	if frameIdx < 0 {
-		return nil, false, fmt.Errorf("negative frame index %d", frameIdx)
+		return nil, fmt.Errorf("negative frame index %d", frameIdx)
 	}
 	if maxDecode < 1 {
 		maxDecode = 1
 	}
 	if err := s.seekNear(frameIdx); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	var frame *C.AVFrame
 	for decoded := 0; decoded < maxDecode; decoded++ {
 		decodedFrame, decodedIdx, err := s.decodeOne()
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to decode near frame %d: %w", frameIdx, err)
+			return nil, fmt.Errorf("failed to decode near frame %d: %w", frameIdx, err)
 		}
 		frame = decodedFrame
 		if decodedIdx >= frameIdx {
@@ -558,9 +597,9 @@ func (s *Source) readFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, bool, e
 		}
 	}
 	if frame == nil {
-		return nil, false, fmt.Errorf("failed to decode near frame %d", frameIdx)
+		return nil, fmt.Errorf("failed to decode near frame %d", frameIdx)
 	}
-	return s.normalizeFrame(frame)
+	return frame, nil
 }
 
 func (s *Source) seekNear(frameIdx int) error {
