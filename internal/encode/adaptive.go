@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"codeberg.org/five82/reel/internal/util"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 const (
@@ -16,6 +17,8 @@ const (
 	pressureCooldownTicks  = 12 // 60 seconds
 	rampRetryCooldownTicks = 36 // 3 minutes
 	plateauCooldownTicks   = 72 // 6 minutes
+
+	cudaUHDHardwareDecodeWorkers = 3
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
@@ -63,6 +66,17 @@ func MaxAdaptiveWorkers() int {
 	return max(util.LogicalCores(), 1)
 }
 
+func hybridDecodeForUHD(decodeMode video.DecodeMode, width, height uint32) bool {
+	return decodeMode == video.DecodeCUDA && (width >= 3840 || height >= 2160)
+}
+
+func decodeModeForWorkerSlot(decodeMode video.DecodeMode, width, height uint32, activeSlot int) video.DecodeMode {
+	if hybridDecodeForUHD(decodeMode, width, height) && activeSlot > cudaUHDHardwareDecodeWorkers {
+		return video.DecodeSoftware
+	}
+	return decodeMode
+}
+
 func newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames int, status statusCallback) *adaptiveLimiter {
 	maxWorkers = max(maxWorkers, 1)
 	initialWorkers = min(max(initialWorkers, 1), maxWorkers)
@@ -103,18 +117,18 @@ func levelOfParallelismForWorkers(workers int) uint32 {
 	}
 }
 
-func (l *adaptiveLimiter) acquire(ctx context.Context) error {
+func (l *adaptiveLimiter) acquire(ctx context.Context) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	for l.active >= l.target {
 		if err := ctx.Err(); err != nil {
-			return err
+			return 0, err
 		}
 		l.cond.Wait()
 	}
 	l.active++
-	return nil
+	return l.active, nil
 }
 
 func (l *adaptiveLimiter) release() {

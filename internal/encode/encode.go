@@ -37,6 +37,11 @@ type ProgressCallback func(progress worker.Progress)
 
 type chunkProgressCallback func(chunkIdx, frames int)
 
+type encodeJob struct {
+	chunk      chunk.Chunk
+	decodeMode video.DecodeMode
+}
+
 // EncodeAll runs the parallel encoding pipeline.
 // Uses streaming frame pipeline: each worker decodes and encodes one frame at a time,
 // avoiding the need to hold all frames in memory at once.
@@ -109,7 +114,7 @@ func EncodeAll(
 	defer cancel()
 
 	// Chunk channel - workers receive chunk metadata (not decoded frames)
-	chunkChan := make(chan chunk.Chunk, maxWorkers)
+	chunkChan := make(chan encodeJob, maxWorkers)
 
 	// Results channel
 	resultChan := make(chan worker.EncodeResult, len(remainingChunks))
@@ -225,13 +230,19 @@ func EncodeAll(
 			if getError() != nil {
 				return
 			}
-			if err := limiter.acquire(ctx); err != nil {
+			activeSlot, err := limiter.acquire(ctx)
+			if err != nil {
 				return
+			}
+
+			job := encodeJob{
+				chunk:      ch,
+				decodeMode: decodeModeForWorkerSlot(cfg.DecodeMode, width, height, activeSlot),
 			}
 
 			// Send chunk metadata to worker
 			select {
-			case chunkChan <- ch:
+			case chunkChan <- job:
 				// Successfully sent
 			case <-ctx.Done():
 				limiter.release()
@@ -255,7 +266,7 @@ func EncodeAll(
 func streamingWorker(
 	ctx context.Context,
 	inputPath string,
-	chunkChan <-chan chunk.Chunk,
+	chunkChan <-chan encodeJob,
 	resultChan chan<- worker.EncodeResult,
 	limiter *adaptiveLimiter,
 	cfg *EncodeConfig,
@@ -268,13 +279,15 @@ func streamingWorker(
 	getError func() error,
 ) {
 	var src *video.Source
+	var srcDecodeMode video.DecodeMode
 	defer func() {
 		if src != nil {
 			src.Close()
 		}
 	}()
 
-	for ch := range chunkChan {
+	for job := range chunkChan {
+		ch := job.chunk
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
@@ -293,17 +306,22 @@ func streamingWorker(
 			continue
 		}
 
+		if src != nil && srcDecodeMode != job.decodeMode {
+			src.Close()
+			src = nil
+		}
 		if src == nil {
 			var err error
-			src, err = video.OpenWithDecodeMode(inputPath, 1, cfg.DecodeMode)
+			src, err = video.OpenWithDecodeMode(inputPath, 1, job.decodeMode)
 			if err != nil {
 				limiter.release()
 				resultChan <- worker.EncodeResult{
 					ChunkIdx: ch.Idx,
-					Error:    fmt.Errorf("failed to create video source for worker: %w", err),
+					Error:    fmt.Errorf("failed to create %s video source for worker: %w", job.decodeMode, err),
 				}
 				return
 			}
+			srcDecodeMode = job.decodeMode
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)

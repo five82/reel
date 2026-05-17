@@ -190,6 +190,10 @@ func ProcessChunked(
 		Stage:   "Encoding",
 		Message: fmt.Sprintf("Starting adaptive chunked encoding with up to %d workers", maxWorkers),
 	})
+	encodeWidth, encodeHeight := video.OutputDimensions(vidInf, cropRect)
+	if video.DecodeMode(cfg.DecodeMode) == video.DecodeCUDA && (encodeWidth >= 3840 || encodeHeight >= 2160) {
+		rep.Verbose("UHD CUDA decode uses software decode for workers above 3 to avoid GPU memory exhaustion")
+	}
 
 	rep.EncodingStarted(uint64(vidInf.Frames))
 

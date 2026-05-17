@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"codeberg.org/five82/reel/internal/util"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 func TestInitialAdaptiveWorkers(t *testing.T) {
@@ -63,6 +64,59 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 			got := initialAdaptiveWorkers(tt.maxWorkers, tt.width, tt.height)
 			if got != tt.want {
 				t.Fatalf("initialAdaptiveWorkers() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeModeForWorkerSlot(t *testing.T) {
+	tests := []struct {
+		name       string
+		decodeMode video.DecodeMode
+		width      uint32
+		height     uint32
+		activeSlot int
+		want       video.DecodeMode
+	}{
+		{
+			name:       "software stays software",
+			decodeMode: video.DecodeSoftware,
+			width:      3840,
+			height:     2160,
+			activeSlot: 4,
+			want:       video.DecodeSoftware,
+		},
+		{
+			name:       "cuda hd stays cuda above three workers",
+			decodeMode: video.DecodeCUDA,
+			width:      1920,
+			height:     1080,
+			activeSlot: 4,
+			want:       video.DecodeCUDA,
+		},
+		{
+			name:       "cuda uhd keeps first three workers on cuda",
+			decodeMode: video.DecodeCUDA,
+			width:      3840,
+			height:     1600,
+			activeSlot: 3,
+			want:       video.DecodeCUDA,
+		},
+		{
+			name:       "cuda uhd uses software above three workers",
+			decodeMode: video.DecodeCUDA,
+			width:      3840,
+			height:     1600,
+			activeSlot: 4,
+			want:       video.DecodeSoftware,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decodeModeForWorkerSlot(tt.decodeMode, tt.width, tt.height, tt.activeSlot)
+			if got != tt.want {
+				t.Fatalf("decodeModeForWorkerSlot() = %q, want %q", got, tt.want)
 			}
 		})
 	}
