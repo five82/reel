@@ -69,6 +69,59 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 	}
 }
 
+func TestShouldReopenSource(t *testing.T) {
+	tests := []struct {
+		name        string
+		currentMode video.DecodeMode
+		nextMode    video.DecodeMode
+		nextFrame   int
+		chunkStart  int
+		want        bool
+	}{
+		{
+			name:        "keeps source for forward chunks",
+			currentMode: video.DecodeSoftware,
+			nextMode:    video.DecodeSoftware,
+			nextFrame:   1000,
+			chunkStart:  1200,
+			want:        false,
+		},
+		{
+			name:        "keeps source for contiguous chunks",
+			currentMode: video.DecodeSoftware,
+			nextMode:    video.DecodeSoftware,
+			nextFrame:   1000,
+			chunkStart:  1000,
+			want:        false,
+		},
+		{
+			name:        "reopens before backward chunks",
+			currentMode: video.DecodeSoftware,
+			nextMode:    video.DecodeSoftware,
+			nextFrame:   12759,
+			chunkStart:  5498,
+			want:        true,
+		},
+		{
+			name:        "reopens when decode mode changes",
+			currentMode: video.DecodeCUDA,
+			nextMode:    video.DecodeSoftware,
+			nextFrame:   1000,
+			chunkStart:  1200,
+			want:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldReopenSource(tt.currentMode, tt.nextMode, tt.nextFrame, tt.chunkStart)
+			if got != tt.want {
+				t.Fatalf("shouldReopenSource() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeModeForWorkerSlot(t *testing.T) {
 	tests := []struct {
 		name       string

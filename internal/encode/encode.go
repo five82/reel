@@ -42,6 +42,13 @@ type encodeJob struct {
 	decodeMode video.DecodeMode
 }
 
+// shouldReopenSource reports whether a worker needs a fresh decoder for the next chunk.
+// Chunks are dispatched by size, so a worker may receive an earlier chunk after a later one;
+// reopening avoids unreliable backward seeks on some Matroska/HEVC sources.
+func shouldReopenSource(currentMode, nextMode video.DecodeMode, nextFrame, chunkStart int) bool {
+	return currentMode != nextMode || chunkStart < nextFrame
+}
+
 // EncodeAll runs the parallel encoding pipeline.
 // Uses streaming frame pipeline: each worker decodes and encodes one frame at a time,
 // avoiding the need to hold all frames in memory at once.
@@ -280,6 +287,7 @@ func streamingWorker(
 ) {
 	var src *video.Source
 	var srcDecodeMode video.DecodeMode
+	srcNextFrame := 0
 	defer func() {
 		if src != nil {
 			src.Close()
@@ -306,9 +314,10 @@ func streamingWorker(
 			continue
 		}
 
-		if src != nil && srcDecodeMode != job.decodeMode {
+		if src != nil && shouldReopenSource(srcDecodeMode, job.decodeMode, srcNextFrame, ch.Start) {
 			src.Close()
 			src = nil
+			srcNextFrame = 0
 		}
 		if src == nil {
 			var err error
@@ -326,6 +335,10 @@ func streamingWorker(
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
 		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, workDir, width, height, progressCb)
+
+		if result.Error == nil {
+			srcNextFrame = ch.End
+		}
 
 		// Release adaptive worker slot
 		limiter.release()
