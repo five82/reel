@@ -30,9 +30,6 @@ func TestNewConfig(t *testing.T) {
 	if cfg.CRFUHD != DefaultCRFUHD {
 		t.Errorf("expected CRFUHD=%d, got %d", DefaultCRFUHD, cfg.CRFUHD)
 	}
-	if cfg.DecodeMode != DefaultDecodeMode {
-		t.Errorf("expected DecodeMode=%s, got %s", DefaultDecodeMode, cfg.DecodeMode)
-	}
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -79,16 +76,6 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name:    "chunk_duration_hd 121 is invalid",
 			modify:  func(c *Config) { c.ChunkDurationHD = 121 },
-			wantErr: true,
-		},
-		{
-			name:    "cuda decode is valid",
-			modify:  func(c *Config) { c.DecodeMode = DecodeModeCUDA },
-			wantErr: false,
-		},
-		{
-			name:    "unknown decode mode is invalid",
-			modify:  func(c *Config) { c.DecodeMode = "vdpau" },
 			wantErr: true,
 		},
 	}

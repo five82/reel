@@ -159,7 +159,6 @@ func ProcessVideos(
 			Preset:             fmt.Sprintf("%d", encodeParams.Preset),
 			Tune:               fmt.Sprintf("%d", encodeParams.Tune),
 			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality),
-			DecodeMode:         cfg.DecodeMode,
 			PixelFormat:        encodeParams.PixelFormat,
 			MatrixCoefficients: encodeParams.MatrixCoefficients,
 			AudioCodec:         "Opus",

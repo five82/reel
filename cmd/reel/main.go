@@ -76,7 +76,6 @@ type encodeArgs struct {
 	crf             string // Single value or comma-separated triple (SD,HD,UHD)
 	preset          uint
 	disableAutocrop bool
-	decodeMode      string
 	noLog           bool
 }
 
@@ -105,11 +104,10 @@ Quality Settings:
 
 Processing Options:
   --disable-autocrop     Disable automatic black bar crop detection
-  --decode <MODE>        Video decode backend: cuda or software. Default: %s
 
 Output Options:
   --no-log               Disable Reel log file creation
-`, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset, config.DefaultDecodeMode)
+`, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset)
 	}
 
 	var ea encodeArgs
@@ -132,7 +130,6 @@ Output Options:
 
 	// Processing options
 	fs.BoolVar(&ea.disableAutocrop, "disable-autocrop", false, "Disable automatic crop detection")
-	fs.StringVar(&ea.decodeMode, "decode", config.DefaultDecodeMode, "Video decode backend: cuda or software")
 	// Output options
 	fs.BoolVar(&ea.noLog, "no-log", false, "Disable log file creation")
 
@@ -228,7 +225,6 @@ func executeEncode(ea encodeArgs) error {
 	if ea.disableAutocrop {
 		cfg.CropMode = "none"
 	}
-	cfg.DecodeMode = strings.ToLower(strings.TrimSpace(ea.decodeMode))
 	// Debug options
 	cfg.Verbose = ea.verbose
 
@@ -243,7 +239,6 @@ func executeEncode(ea encodeArgs) error {
 		logger.Info("CRF quality: SD=%d, HD=%d, UHD=%d", cfg.CRFSD, cfg.CRFHD, cfg.CRFUHD)
 		logger.Info("SVT-AV1 preset: %d", cfg.SVTAV1Preset)
 		logger.Info("Crop mode: %s", cfg.CropMode)
-		logger.Info("Decode mode: %s", cfg.DecodeMode)
 		logger.Info("Adaptive encoding enabled")
 	}
 

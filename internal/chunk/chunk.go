@@ -57,7 +57,6 @@ type ResumeManifest struct {
 	FPSDen                uint32  `json:"fps_den"`
 	Frames                int     `json:"frames"`
 	CropFilter            string  `json:"crop_filter,omitempty"`
-	DecodeMode            string  `json:"decode_mode"`
 	Quality               uint32  `json:"quality"`
 	Preset                uint8   `json:"preset"`
 	Tune                  uint8   `json:"tune"`

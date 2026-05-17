@@ -17,12 +17,11 @@ import (
 
 // EncodeConfig contains configuration for the parallel encode pipeline.
 type EncodeConfig struct {
-	CRF                float32          // Quality (CRF value)
-	Preset             uint8            // SVT-AV1 preset
-	Tune               uint8            // SVT-AV1 tune
-	GrainTable         *string          // Optional film grain table path
-	LevelOfParallelism uint32           // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
-	DecodeMode         video.DecodeMode // Video decode backend
+	CRF                float32 // Quality (CRF value)
+	Preset             uint8   // SVT-AV1 preset
+	Tune               uint8   // SVT-AV1 tune
+	GrainTable         *string // Optional film grain table path
+	LevelOfParallelism uint32  // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
 	StatusCallback     func(message string)
 
 	// Advanced SVT-AV1 parameters
@@ -37,16 +36,11 @@ type ProgressCallback func(progress worker.Progress)
 
 type chunkProgressCallback func(chunkIdx, frames int)
 
-type encodeJob struct {
-	chunk      chunk.Chunk
-	decodeMode video.DecodeMode
-}
-
 // shouldReopenSource reports whether a worker needs a fresh decoder for the next chunk.
-// Chunks are dispatched by size, so a worker may receive an earlier chunk after a later one;
+// Chunks may be dispatched by size, so a worker can receive an earlier chunk after a later one;
 // reopening avoids unreliable backward seeks on some Matroska/HEVC sources.
-func shouldReopenSource(currentMode, nextMode video.DecodeMode, nextFrame, chunkStart int) bool {
-	return currentMode != nextMode || chunkStart < nextFrame
+func shouldReopenSource(nextFrame, chunkStart int) bool {
+	return chunkStart < nextFrame
 }
 
 // EncodeAll runs the parallel encoding pipeline.
@@ -121,7 +115,7 @@ func EncodeAll(
 	defer cancel()
 
 	// Chunk channel - workers receive chunk metadata (not decoded frames)
-	chunkChan := make(chan encodeJob, maxWorkers)
+	chunkChan := make(chan chunk.Chunk, maxWorkers)
 
 	// Results channel
 	resultChan := make(chan worker.EncodeResult, len(remainingChunks))
@@ -237,19 +231,14 @@ func EncodeAll(
 			if getError() != nil {
 				return
 			}
-			activeSlot, err := limiter.acquire(ctx)
+			_, err := limiter.acquire(ctx)
 			if err != nil {
 				return
 			}
 
-			job := encodeJob{
-				chunk:      ch,
-				decodeMode: decodeModeForWorkerSlot(cfg.DecodeMode, width, height, activeSlot),
-			}
-
 			// Send chunk metadata to worker
 			select {
-			case chunkChan <- job:
+			case chunkChan <- ch:
 				// Successfully sent
 			case <-ctx.Done():
 				limiter.release()
@@ -273,7 +262,7 @@ func EncodeAll(
 func streamingWorker(
 	ctx context.Context,
 	inputPath string,
-	chunkChan <-chan encodeJob,
+	chunkChan <-chan chunk.Chunk,
 	resultChan chan<- worker.EncodeResult,
 	limiter *adaptiveLimiter,
 	cfg *EncodeConfig,
@@ -286,7 +275,6 @@ func streamingWorker(
 	getError func() error,
 ) {
 	var src *video.Source
-	var srcDecodeMode video.DecodeMode
 	srcNextFrame := 0
 	defer func() {
 		if src != nil {
@@ -294,8 +282,7 @@ func streamingWorker(
 		}
 	}()
 
-	for job := range chunkChan {
-		ch := job.chunk
+	for ch := range chunkChan {
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
@@ -314,23 +301,22 @@ func streamingWorker(
 			continue
 		}
 
-		if src != nil && shouldReopenSource(srcDecodeMode, job.decodeMode, srcNextFrame, ch.Start) {
+		if src != nil && shouldReopenSource(srcNextFrame, ch.Start) {
 			src.Close()
 			src = nil
 			srcNextFrame = 0
 		}
 		if src == nil {
 			var err error
-			src, err = video.OpenWithDecodeMode(inputPath, 1, job.decodeMode)
+			src, err = video.Open(inputPath, 1)
 			if err != nil {
 				limiter.release()
 				resultChan <- worker.EncodeResult{
 					ChunkIdx: ch.Idx,
-					Error:    fmt.Errorf("failed to create %s video source for worker: %w", job.decodeMode, err),
+					Error:    fmt.Errorf("failed to create video source for worker: %w", err),
 				}
 				return
 			}
-			srcDecodeMode = job.decodeMode
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)

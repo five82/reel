@@ -100,10 +100,9 @@ func ProcessChunked(
 	lastScenePercent := -1
 	finishStep = startVerboseStep(rep, "Scene detection")
 	sceneResult, err := scene.DetectToFileIfNeeded(ctx, inputPath, sceneFile, sceneMetadataFile, vidInf, scene.Options{
-		MaxFrames:  maxSceneFrames,
-		MinFrames:  minSceneFrames,
-		CropRect:   cropRect,
-		DecodeMode: video.DecodeMode(cfg.DecodeMode),
+		MaxFrames: maxSceneFrames,
+		MinFrames: minSceneFrames,
+		CropRect:  cropRect,
 		Progress: func(current, total int) {
 			if total <= 0 {
 				return
@@ -152,13 +151,11 @@ func ProcessChunked(
 		CRF:                   float32(quality),
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
-		DecodeMode:            video.DecodeMode(cfg.DecodeMode),
 		ACBias:                cfg.SVTAV1ACBias,
 		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
 	}
-	rep.Verbose(fmt.Sprintf("Video decode mode: %s", cfg.DecodeMode))
 	if cfg.Verbose {
 		encCfg.StatusCallback = func(message string) {
 			rep.Verbose(message)
@@ -190,11 +187,6 @@ func ProcessChunked(
 		Stage:   "Encoding",
 		Message: fmt.Sprintf("Starting adaptive chunked encoding with up to %d workers", maxWorkers),
 	})
-	encodeWidth, encodeHeight := video.OutputDimensions(vidInf, cropRect)
-	if video.DecodeMode(cfg.DecodeMode) == video.DecodeCUDA && (encodeWidth >= 3840 || encodeHeight >= 2160) {
-		rep.Verbose("UHD CUDA decode uses software decode for workers above 3 to avoid GPU memory exhaustion")
-	}
-
 	rep.EncodingStarted(uint64(vidInf.Frames))
 
 	startTime := time.Now()
@@ -440,7 +432,6 @@ func buildResumeManifest(
 		FPSDen:                vidInf.FPSDen,
 		Frames:                vidInf.Frames,
 		CropFilter:            cropFilter,
-		DecodeMode:            cfg.DecodeMode,
 		Quality:               quality,
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,

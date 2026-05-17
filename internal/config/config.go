@@ -41,15 +41,6 @@ const (
 	// DefaultCropMode is the crop mode for the main encode.
 	DefaultCropMode string = "auto"
 
-	// DecodeModeSoftware uses normal CPU decoding.
-	DecodeModeSoftware string = "software"
-
-	// DecodeModeCUDA uses FFmpeg CUDA hardware decoding.
-	DecodeModeCUDA string = "cuda"
-
-	// DefaultDecodeMode is the default video decode backend.
-	DefaultDecodeMode string = DecodeModeCUDA
-
 	// DefaultEncodeCooldownSecs is the cooldown period between encodes.
 	DefaultEncodeCooldownSecs uint64 = 3
 
@@ -87,7 +78,6 @@ type Config struct {
 
 	// Processing options
 	CropMode           string // "auto" or "none"
-	DecodeMode         string // "software" or "cuda"
 	EncodeCooldownSecs uint64 // Cooldown between batch encodes
 
 	// Chunk duration settings by resolution (seconds)
@@ -115,7 +105,6 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 		CRFHD:                       DefaultCRFHD,
 		CRFUHD:                      DefaultCRFUHD,
 		CropMode:                    DefaultCropMode,
-		DecodeMode:                  DefaultDecodeMode,
 		EncodeCooldownSecs:          DefaultEncodeCooldownSecs,
 		ChunkDurationSD:             DefaultChunkDurationSD,
 		ChunkDurationHD:             DefaultChunkDurationHD,
@@ -137,10 +126,6 @@ func (c *Config) Validate() error {
 	}
 	if c.CRFUHD > 63 {
 		return fmt.Errorf("crf-uhd must be 0-63, got %d", c.CRFUHD)
-	}
-
-	if c.DecodeMode != DecodeModeSoftware && c.DecodeMode != DecodeModeCUDA {
-		return fmt.Errorf("decode mode must be %q or %q, got %q", DecodeModeSoftware, DecodeModeCUDA, c.DecodeMode)
 	}
 
 	// Validate chunk durations

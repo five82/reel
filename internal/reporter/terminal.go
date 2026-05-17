@@ -120,9 +120,6 @@ func (r *TerminalReporter) EncodingConfig(summary EncodingConfigSummary) {
 	r.printLabel("Preset:", summary.Preset)
 	r.printLabel("Tune:", summary.Tune)
 	r.printLabel("Quality:", summary.Quality)
-	if summary.DecodeMode != "" {
-		r.printLabel("Decode:", summary.DecodeMode)
-	}
 	r.printLabel("Pixel format:", summary.PixelFormat)
 	r.printLabel("Matrix:", summary.MatrixCoefficients)
 	r.printLabel("Audio codec:", summary.AudioCodec)

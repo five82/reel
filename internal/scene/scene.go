@@ -33,11 +33,10 @@ const (
 
 // Options controls scene detection.
 type Options struct {
-	MaxFrames  int
-	MinFrames  int
-	CropRect   *video.CropRect
-	DecodeMode video.DecodeMode
-	Progress   func(current, total int)
+	MaxFrames int
+	MinFrames int
+	CropRect  *video.CropRect
+	Progress  func(current, total int)
 }
 
 // Result describes detected chunk boundaries.
@@ -132,7 +131,7 @@ func Detect(ctx context.Context, inputPath string, inf *video.Info, opts Options
 }
 
 func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) ([]float64, error) {
-	src, err := video.OpenWithDecodeMode(inputPath, 0, opts.DecodeMode)
+	src, err := video.Open(inputPath, 0)
 	if err != nil {
 		return nil, fmt.Errorf("scene detection: open video: %w", err)
 	}

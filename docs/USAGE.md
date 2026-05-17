@@ -35,7 +35,6 @@ reel encode -v -i input.mkv -o output/
 
 **Processing**
 - `--disable-autocrop`: Skip black-bar detection and cropping
-- `--decode <MODE>`: Decode backend: `cuda` or `software` (default `cuda`)
 
 **Output**
 - `-l, --log-dir <DIR>`: Override the log directory (defaults to `~/.local/state/reel/logs`)

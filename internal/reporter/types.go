@@ -33,7 +33,6 @@ type EncodingConfigSummary struct {
 	Preset             string
 	Tune               string
 	Quality            string
-	DecodeMode         string
 	PixelFormat        string
 	MatrixCoefficients string
 	AudioCodec         string

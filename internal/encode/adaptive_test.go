@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"codeberg.org/five82/reel/internal/util"
-	"codeberg.org/five82/reel/internal/video"
 )
 
 func TestInitialAdaptiveWorkers(t *testing.T) {
@@ -23,11 +22,11 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 			want:       1,
 		},
 		{
-			name:       "4k starts conservatively",
+			name:       "4k starts with two workers",
 			maxWorkers: 32,
 			width:      3840,
 			height:     2160,
-			want:       1,
+			want:       2,
 		},
 		{
 			name:       "hd uses quarter of large machines",
@@ -71,105 +70,36 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 
 func TestShouldReopenSource(t *testing.T) {
 	tests := []struct {
-		name        string
-		currentMode video.DecodeMode
-		nextMode    video.DecodeMode
-		nextFrame   int
-		chunkStart  int
-		want        bool
+		name       string
+		nextFrame  int
+		chunkStart int
+		want       bool
 	}{
 		{
-			name:        "keeps source for forward chunks",
-			currentMode: video.DecodeSoftware,
-			nextMode:    video.DecodeSoftware,
-			nextFrame:   1000,
-			chunkStart:  1200,
-			want:        false,
+			name:       "keeps source for forward chunks",
+			nextFrame:  1000,
+			chunkStart: 1200,
+			want:       false,
 		},
 		{
-			name:        "keeps source for contiguous chunks",
-			currentMode: video.DecodeSoftware,
-			nextMode:    video.DecodeSoftware,
-			nextFrame:   1000,
-			chunkStart:  1000,
-			want:        false,
+			name:       "keeps source for contiguous chunks",
+			nextFrame:  1000,
+			chunkStart: 1000,
+			want:       false,
 		},
 		{
-			name:        "reopens before backward chunks",
-			currentMode: video.DecodeSoftware,
-			nextMode:    video.DecodeSoftware,
-			nextFrame:   12759,
-			chunkStart:  5498,
-			want:        true,
-		},
-		{
-			name:        "reopens when decode mode changes",
-			currentMode: video.DecodeCUDA,
-			nextMode:    video.DecodeSoftware,
-			nextFrame:   1000,
-			chunkStart:  1200,
-			want:        true,
+			name:       "reopens before backward chunks",
+			nextFrame:  12759,
+			chunkStart: 5498,
+			want:       true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldReopenSource(tt.currentMode, tt.nextMode, tt.nextFrame, tt.chunkStart)
+			got := shouldReopenSource(tt.nextFrame, tt.chunkStart)
 			if got != tt.want {
 				t.Fatalf("shouldReopenSource() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDecodeModeForWorkerSlot(t *testing.T) {
-	tests := []struct {
-		name       string
-		decodeMode video.DecodeMode
-		width      uint32
-		height     uint32
-		activeSlot int
-		want       video.DecodeMode
-	}{
-		{
-			name:       "software stays software",
-			decodeMode: video.DecodeSoftware,
-			width:      3840,
-			height:     2160,
-			activeSlot: 4,
-			want:       video.DecodeSoftware,
-		},
-		{
-			name:       "cuda hd stays cuda above three workers",
-			decodeMode: video.DecodeCUDA,
-			width:      1920,
-			height:     1080,
-			activeSlot: 4,
-			want:       video.DecodeCUDA,
-		},
-		{
-			name:       "cuda uhd keeps first three workers on cuda",
-			decodeMode: video.DecodeCUDA,
-			width:      3840,
-			height:     1600,
-			activeSlot: 3,
-			want:       video.DecodeCUDA,
-		},
-		{
-			name:       "cuda uhd uses software above three workers",
-			decodeMode: video.DecodeCUDA,
-			width:      3840,
-			height:     1600,
-			activeSlot: 4,
-			want:       video.DecodeSoftware,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := decodeModeForWorkerSlot(tt.decodeMode, tt.width, tt.height, tt.activeSlot)
-			if got != tt.want {
-				t.Fatalf("decodeModeForWorkerSlot() = %q, want %q", got, tt.want)
 			}
 		})
 	}
