@@ -1,5 +1,5 @@
-// Package scene detects content-aware chunk boundaries for video encoding.
-package scene
+// Package chunkplan builds shot-aware chunk boundaries for video encoding.
+package chunkplan
 
 import (
 	"bufio"
@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	detectorVersion = "reel-luma-scd-v1"
-	metadataVersion = 2
+	detectorVersion = "reel-luma-shot-scd-v2"
+	metadataVersion = 3
 
 	signatureWidth  = 64
 	signatureHeight = 36
@@ -32,7 +32,7 @@ const (
 	defaultMinimumFrames      = 1
 )
 
-// Options controls scene detection.
+// Options controls shot-cut detection and content-aware chunk planning.
 type Options struct {
 	MaxFrames int
 	MinFrames int
@@ -40,35 +40,50 @@ type Options struct {
 	Progress  func(current, total int)
 }
 
-// Result describes detected chunk boundaries.
+// BoundaryKind explains why a planned chunk boundary exists.
+type BoundaryKind string
+
+const (
+	BoundaryKindStart          BoundaryKind = "start"
+	BoundaryKindNaturalShotCut BoundaryKind = "natural_shot_cut"
+	BoundaryKindSyntheticSplit BoundaryKind = "synthetic_split"
+)
+
+// Result describes detected shot cuts and planned chunk boundaries.
 type Result struct {
 	Boundaries       []int
+	BoundaryKinds    []BoundaryKind
 	NaturalCuts      int
 	NaturalCutFrames []int
 	SyntheticSplits  int
-	MergedScenes     int
+	MergedShortShots int
+
+	// MergedScenes is kept for compatibility with older internal callers.
+	MergedScenes int
 }
 
-// Metadata records the inputs that produced a scene file.
+// Metadata records the inputs that produced a chunk boundary file.
 type Metadata struct {
-	Version              int    `json:"version"`
-	Detector             string `json:"detector"`
-	InputPath            string `json:"input_path"`
-	InputSize            int64  `json:"input_size"`
-	InputModTimeUnixNano int64  `json:"input_mod_time_unix_nano"`
-	Width                uint32 `json:"width"`
-	Height               uint32 `json:"height"`
-	FPSNum               uint32 `json:"fps_num"`
-	FPSDen               uint32 `json:"fps_den"`
-	Frames               int    `json:"frames"`
-	Crop                 string `json:"crop,omitempty"`
-	MaxFrames            int    `json:"max_frames"`
-	MinFrames            int    `json:"min_frames"`
-	Boundaries           int    `json:"boundaries"`
-	NaturalCuts          int    `json:"natural_cuts"`
-	SyntheticSplits      int    `json:"synthetic_splits"`
-	MergedScenes         int    `json:"merged_scenes"`
-	NaturalCutFrames     []int  `json:"natural_cut_frames,omitempty"`
+	Version              int            `json:"version"`
+	Detector             string         `json:"detector"`
+	InputPath            string         `json:"input_path"`
+	InputSize            int64          `json:"input_size"`
+	InputModTimeUnixNano int64          `json:"input_mod_time_unix_nano"`
+	Width                uint32         `json:"width"`
+	Height               uint32         `json:"height"`
+	FPSNum               uint32         `json:"fps_num"`
+	FPSDen               uint32         `json:"fps_den"`
+	Frames               int            `json:"frames"`
+	Crop                 string         `json:"crop,omitempty"`
+	MaxFrames            int            `json:"max_frames"`
+	MinFrames            int            `json:"min_frames"`
+	Boundaries           int            `json:"boundaries"`
+	NaturalCuts          int            `json:"natural_cuts"`
+	SyntheticSplits      int            `json:"synthetic_splits"`
+	MergedShortShots     int            `json:"merged_short_shots"`
+	MergedScenes         int            `json:"merged_scenes"`
+	NaturalCutFrames     []int          `json:"natural_cut_frames,omitempty"`
+	BoundaryKinds        []BoundaryKind `json:"boundary_kinds,omitempty"`
 }
 
 type frameSignature struct {
@@ -83,20 +98,20 @@ type inputIdentity struct {
 	ModTimeUnixNano int64
 }
 
-// DetectToFileIfNeeded detects scenes and writes sceneFile unless a matching cached file exists.
-func DetectToFileIfNeeded(ctx context.Context, inputPath, sceneFile, metadataFile string, inf *video.Info, opts Options) (Result, error) {
+// PlanToFileIfNeeded detects shot cuts and writes planned chunk starts unless a matching cached file exists.
+func PlanToFileIfNeeded(ctx context.Context, inputPath, boundaryFile, metadataFile string, inf *video.Info, opts Options) (Result, error) {
 	if inf == nil {
 		return Result{}, fmt.Errorf("nil video info")
 	}
-	if cached, ok := loadCachedResult(inputPath, sceneFile, metadataFile, inf, opts); ok {
+	if cached, ok := loadCachedResult(inputPath, boundaryFile, metadataFile, inf, opts); ok {
 		return cached, nil
 	}
 
-	result, err := Detect(ctx, inputPath, inf, opts)
+	result, err := Plan(ctx, inputPath, inf, opts)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := writeSceneFile(sceneFile, result.Boundaries); err != nil {
+	if err := writeBoundaryFile(boundaryFile, result.Boundaries); err != nil {
 		return Result{}, err
 	}
 	if err := writeMetadata(inputPath, metadataFile, inf, opts, result); err != nil {
@@ -105,13 +120,13 @@ func DetectToFileIfNeeded(ctx context.Context, inputPath, sceneFile, metadataFil
 	return result, nil
 }
 
-// Detect analyzes luma frames and returns scene-aware chunk starts.
-func Detect(ctx context.Context, inputPath string, inf *video.Info, opts Options) (Result, error) {
+// Plan analyzes luma frames and returns shot-aware chunk starts.
+func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) (Result, error) {
 	if inf == nil {
 		return Result{}, fmt.Errorf("nil video info")
 	}
 	if inf.Frames <= 0 {
-		return Result{Boundaries: []int{0}}, nil
+		return Result{Boundaries: []int{0}, BoundaryKinds: []BoundaryKind{BoundaryKindStart}}, nil
 	}
 	maxFrames := normalizeMaxFrames(opts.MaxFrames, inf.Frames)
 	minFrames := normalizeMinFrames(opts.MinFrames, maxFrames)
@@ -121,20 +136,22 @@ func Detect(ctx context.Context, inputPath string, inf *video.Info, opts Options
 		return Result{}, err
 	}
 	naturalCuts := detectNaturalCuts(scores)
-	boundaries, syntheticSplits, mergedScenes := refineBoundaries(naturalCuts, inf.Frames, maxFrames, minFrames, scores)
+	plan := planBoundaries(naturalCuts, inf.Frames, maxFrames, minFrames, scores)
 	return Result{
-		Boundaries:       boundaries,
+		Boundaries:       plan.Boundaries,
+		BoundaryKinds:    plan.BoundaryKinds,
 		NaturalCuts:      max(0, len(naturalCuts)-1),
 		NaturalCutFrames: naturalCutFrames(naturalCuts),
-		SyntheticSplits:  syntheticSplits,
-		MergedScenes:     mergedScenes,
+		SyntheticSplits:  plan.SyntheticSplits,
+		MergedShortShots: plan.MergedShortShots,
+		MergedScenes:     plan.MergedShortShots,
 	}, nil
 }
 
 func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) ([]float64, error) {
-	src, err := video.Open(inputPath, sceneDecoderThreads())
+	src, err := video.Open(inputPath, decoderThreads())
 	if err != nil {
-		return nil, fmt.Errorf("scene detection: open video: %w", err)
+		return nil, fmt.Errorf("shot cut detection: open video: %w", err)
 	}
 	defer src.Close()
 
@@ -147,11 +164,11 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 
 		frame, err := src.ReadLumaFrame(frameIdx, inf)
 		if err != nil {
-			return nil, fmt.Errorf("scene detection: read frame %d: %w", frameIdx, err)
+			return nil, fmt.Errorf("shot cut detection: read frame %d: %w", frameIdx, err)
 		}
 		sig, err := signatureFromFrame(frame, opts.CropRect)
 		if err != nil {
-			return nil, fmt.Errorf("scene detection: analyze frame %d: %w", frameIdx, err)
+			return nil, fmt.Errorf("shot cut detection: analyze frame %d: %w", frameIdx, err)
 		}
 		if previous != nil {
 			scores[frameIdx] = signatureChange(previous, sig)
@@ -165,7 +182,7 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 	return scores, nil
 }
 
-func sceneDecoderThreads() int {
+func decoderThreads() int {
 	return min(max(util.PhysicalCores(), 1), 16)
 }
 
@@ -257,7 +274,7 @@ func detectNaturalCuts(scores []float64) []int {
 	if len(scores) <= 1 {
 		return []int{0}
 	}
-	threshold := sceneCutThreshold(scores)
+	threshold := shotCutThreshold(scores)
 	cuts := []int{0}
 
 	for i := 1; i < len(scores); {
@@ -285,7 +302,7 @@ func detectNaturalCuts(scores []float64) []int {
 	return cuts
 }
 
-func sceneCutThreshold(scores []float64) float64 {
+func shotCutThreshold(scores []float64) float64 {
 	values := make([]float64, 0, len(scores)-1)
 	for _, score := range scores[1:] {
 		if score > 0 {
@@ -312,16 +329,46 @@ func looksLikeFlashCluster(clusterLen int) bool {
 	return clusterLen == 2
 }
 
+type boundaryPlan struct {
+	Boundaries       []int
+	BoundaryKinds    []BoundaryKind
+	SyntheticSplits  int
+	MergedShortShots int
+}
+
 func refineBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, scores []float64) ([]int, int, int) {
+	plan := planBoundaries(naturalCuts, totalFrames, maxFrames, minFrames, scores)
+	return plan.Boundaries, plan.SyntheticSplits, plan.MergedShortShots
+}
+
+func planBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, scores []float64) boundaryPlan {
 	if totalFrames <= 0 {
-		return []int{0}, 0, 0
+		return boundaryPlan{Boundaries: []int{0}, BoundaryKinds: []BoundaryKind{BoundaryKindStart}}
 	}
 	maxFrames = normalizeMaxFrames(maxFrames, totalFrames)
 	minFrames = normalizeMinFrames(minFrames, maxFrames)
 
-	cuts, mergedScenes := packShortScenes(normalizedNaturalCuts(naturalCuts, totalFrames), totalFrames, maxFrames, minFrames, scores)
-	boundaries := make([]int, 0, len(cuts))
-	syntheticSplits := 0
+	cuts, mergedShortShots := packShortShots(normalizedNaturalCuts(naturalCuts, totalFrames), totalFrames, maxFrames, minFrames, scores)
+	plan := boundaryPlan{
+		Boundaries:    make([]int, 0, len(cuts)),
+		BoundaryKinds: make([]BoundaryKind, 0, len(cuts)),
+	}
+
+	appendBoundary := func(frame int, kind BoundaryKind) {
+		if frame < 0 || frame >= totalFrames {
+			return
+		}
+		if frame == 0 {
+			kind = BoundaryKindStart
+		}
+		if len(plan.Boundaries) > 0 && plan.Boundaries[len(plan.Boundaries)-1] == frame {
+			plan.BoundaryKinds[len(plan.BoundaryKinds)-1] = preferredBoundaryKind(plan.BoundaryKinds[len(plan.BoundaryKinds)-1], kind)
+			return
+		}
+		plan.Boundaries = append(plan.Boundaries, frame)
+		plan.BoundaryKinds = append(plan.BoundaryKinds, kind)
+	}
+
 	for i, start := range cuts {
 		end := totalFrames
 		if i+1 < len(cuts) {
@@ -330,9 +377,7 @@ func refineBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, 
 		if end <= start {
 			continue
 		}
-		if len(boundaries) == 0 || boundaries[len(boundaries)-1] != start {
-			boundaries = append(boundaries, start)
-		}
+		appendBoundary(start, BoundaryKindNaturalShotCut)
 		currentStart := start
 		for end-currentStart > maxFrames {
 			split := chooseSplitPoint(currentStart, end, maxFrames, scores)
@@ -340,17 +385,29 @@ func refineBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, 
 				split = min(maxFrames, (end-currentStart)/2)
 			}
 			currentStart += split
-			boundaries = append(boundaries, currentStart)
-			syntheticSplits++
+			appendBoundary(currentStart, BoundaryKindSyntheticSplit)
+			plan.SyntheticSplits++
 		}
 	}
-	if len(boundaries) == 0 || boundaries[0] != 0 {
-		boundaries = append([]int{0}, boundaries...)
+	if len(plan.Boundaries) == 0 || plan.Boundaries[0] != 0 {
+		plan.Boundaries = append([]int{0}, plan.Boundaries...)
+		plan.BoundaryKinds = append([]BoundaryKind{BoundaryKindStart}, plan.BoundaryKinds...)
 	}
-	return dedupeSorted(boundaries), syntheticSplits, mergedScenes
+	plan.MergedShortShots = mergedShortShots
+	return plan
 }
 
-func packShortScenes(cuts []int, totalFrames, maxFrames, minFrames int, scores []float64) ([]int, int) {
+func preferredBoundaryKind(a, b BoundaryKind) BoundaryKind {
+	if a == BoundaryKindStart || b == BoundaryKindStart {
+		return BoundaryKindStart
+	}
+	if a == BoundaryKindNaturalShotCut || b == BoundaryKindNaturalShotCut {
+		return BoundaryKindNaturalShotCut
+	}
+	return BoundaryKindSyntheticSplit
+}
+
+func packShortShots(cuts []int, totalFrames, maxFrames, minFrames int, scores []float64) ([]int, int) {
 	if minFrames <= defaultMinimumFrames || len(cuts) <= 1 {
 		return cuts, 0
 	}
@@ -369,7 +426,7 @@ func packShortScenes(cuts []int, totalFrames, maxFrames, minFrames int, scores [
 				continue
 			}
 
-			removeIdx := shortSceneBoundaryToRemove(packed, totalFrames, maxFrames, scores, i)
+			removeIdx := shortShotBoundaryToRemove(packed, totalFrames, maxFrames, scores, i)
 			if removeIdx <= 0 || removeIdx >= len(packed) {
 				continue
 			}
@@ -384,26 +441,26 @@ func packShortScenes(cuts []int, totalFrames, maxFrames, minFrames int, scores [
 	}
 }
 
-func shortSceneBoundaryToRemove(cuts []int, totalFrames, maxFrames int, scores []float64, sceneIdx int) int {
-	start := cuts[sceneIdx]
+func shortShotBoundaryToRemove(cuts []int, totalFrames, maxFrames int, scores []float64, shotIdx int) int {
+	start := cuts[shotIdx]
 	end := totalFrames
-	if sceneIdx+1 < len(cuts) {
-		end = cuts[sceneIdx+1]
+	if shotIdx+1 < len(cuts) {
+		end = cuts[shotIdx+1]
 	}
 
 	prevRemoveIdx := -1
-	if sceneIdx > 0 && end-cuts[sceneIdx-1] <= maxFrames {
-		prevRemoveIdx = sceneIdx
+	if shotIdx > 0 && end-cuts[shotIdx-1] <= maxFrames {
+		prevRemoveIdx = shotIdx
 	}
 
 	nextRemoveIdx := -1
-	if sceneIdx+1 < len(cuts) {
+	if shotIdx+1 < len(cuts) {
 		nextEnd := totalFrames
-		if sceneIdx+2 < len(cuts) {
-			nextEnd = cuts[sceneIdx+2]
+		if shotIdx+2 < len(cuts) {
+			nextEnd = cuts[shotIdx+2]
 		}
 		if nextEnd-start <= maxFrames {
-			nextRemoveIdx = sceneIdx + 1
+			nextRemoveIdx = shotIdx + 1
 		}
 	}
 
@@ -434,6 +491,25 @@ func naturalCutFrames(cuts []int) []int {
 		}
 	}
 	return frames
+}
+
+func inferBoundaryKinds(boundaries, naturalCutFrames []int) []BoundaryKind {
+	natural := make(map[int]bool, len(naturalCutFrames))
+	for _, frame := range naturalCutFrames {
+		natural[frame] = true
+	}
+	kinds := make([]BoundaryKind, len(boundaries))
+	for i, boundary := range boundaries {
+		switch {
+		case boundary == 0:
+			kinds[i] = BoundaryKindStart
+		case natural[boundary]:
+			kinds[i] = BoundaryKindNaturalShotCut
+		default:
+			kinds[i] = BoundaryKindSyntheticSplit
+		}
+	}
+	return kinds
 }
 
 func normalizedNaturalCuts(cuts []int, totalFrames int) []int {
@@ -497,7 +573,7 @@ func normalizeMinFrames(minFrames, maxFrames int) int {
 	return min(max(minFrames, defaultMinimumFrames), maxFrames)
 }
 
-func loadCachedResult(inputPath, sceneFile, metadataFile string, inf *video.Info, opts Options) (Result, bool) {
+func loadCachedResult(inputPath, boundaryFile, metadataFile string, inf *video.Info, opts Options) (Result, bool) {
 	data, err := os.ReadFile(metadataFile)
 	if err != nil {
 		return Result{}, false
@@ -509,11 +585,27 @@ func loadCachedResult(inputPath, sceneFile, metadataFile string, inf *video.Info
 	if !metadataMatches(inputPath, inf, opts, meta) {
 		return Result{}, false
 	}
-	boundaries, err := readSceneFile(sceneFile)
+	boundaries, err := readBoundaryFile(boundaryFile)
 	if err != nil || len(boundaries) == 0 {
 		return Result{}, false
 	}
-	return Result{Boundaries: boundaries, NaturalCuts: meta.NaturalCuts, NaturalCutFrames: meta.NaturalCutFrames, SyntheticSplits: meta.SyntheticSplits, MergedScenes: meta.MergedScenes}, true
+	mergedShortShots := meta.MergedShortShots
+	if mergedShortShots == 0 {
+		mergedShortShots = meta.MergedScenes
+	}
+	boundaryKinds := meta.BoundaryKinds
+	if len(boundaryKinds) != len(boundaries) {
+		boundaryKinds = inferBoundaryKinds(boundaries, meta.NaturalCutFrames)
+	}
+	return Result{
+		Boundaries:       boundaries,
+		BoundaryKinds:    boundaryKinds,
+		NaturalCuts:      meta.NaturalCuts,
+		NaturalCutFrames: meta.NaturalCutFrames,
+		SyntheticSplits:  meta.SyntheticSplits,
+		MergedShortShots: mergedShortShots,
+		MergedScenes:     mergedShortShots,
+	}, true
 }
 
 func metadataMatches(inputPath string, inf *video.Info, opts Options, meta Metadata) bool {
@@ -539,7 +631,15 @@ func metadataMatches(inputPath string, inf *video.Info, opts Options, meta Metad
 func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options, result Result) error {
 	id, err := identifyInput(inputPath)
 	if err != nil {
-		return fmt.Errorf("scene detection: stat input: %w", err)
+		return fmt.Errorf("shot cut detection: stat input: %w", err)
+	}
+	mergedShortShots := result.MergedShortShots
+	if mergedShortShots == 0 {
+		mergedShortShots = result.MergedScenes
+	}
+	boundaryKinds := result.BoundaryKinds
+	if len(boundaryKinds) != len(result.Boundaries) {
+		boundaryKinds = inferBoundaryKinds(result.Boundaries, result.NaturalCutFrames)
 	}
 	meta := Metadata{
 		Version:              metadataVersion,
@@ -558,16 +658,18 @@ func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options
 		Boundaries:           len(result.Boundaries),
 		NaturalCuts:          result.NaturalCuts,
 		SyntheticSplits:      result.SyntheticSplits,
-		MergedScenes:         result.MergedScenes,
+		MergedShortShots:     mergedShortShots,
+		MergedScenes:         mergedShortShots,
 		NaturalCutFrames:     result.NaturalCutFrames,
+		BoundaryKinds:        boundaryKinds,
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return fmt.Errorf("scene detection: encode metadata: %w", err)
+		return fmt.Errorf("shot cut detection: encode metadata: %w", err)
 	}
 	data = append(data, '\n')
 	if err := os.WriteFile(metadataFile, data, 0644); err != nil {
-		return fmt.Errorf("scene detection: write metadata: %w", err)
+		return fmt.Errorf("shot cut detection: write metadata: %w", err)
 	}
 	return nil
 }
@@ -595,18 +697,18 @@ func cropString(crop *video.CropRect) string {
 	return fmt.Sprintf("crop=%d:%d:%d:%d", crop.Width, crop.Height, crop.X, crop.Y)
 }
 
-func writeSceneFile(path string, boundaries []int) error {
+func writeBoundaryFile(path string, boundaries []int) error {
 	var b strings.Builder
 	for _, boundary := range boundaries {
 		_, _ = fmt.Fprintf(&b, "%d\n", boundary)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
-		return fmt.Errorf("scene detection: write scene file: %w", err)
+		return fmt.Errorf("shot cut detection: write chunk plan: %w", err)
 	}
 	return nil
 }
 
-func readSceneFile(path string) ([]int, error) {
+func readBoundaryFile(path string) ([]int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

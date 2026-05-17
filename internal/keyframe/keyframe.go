@@ -33,25 +33,24 @@ func GenerateFixedChunks(totalFrames int, fpsNum, fpsDen uint32, chunkDurationSe
 	return keyframes
 }
 
-// ExtractKeyframesIfNeeded generates fixed-length chunks and writes them to scenes.txt if not already present.
-// Returns the path to the scenes.txt file.
+// ExtractKeyframesIfNeeded generates fixed-length chunks and writes them to chunk-plan.txt if not already present.
+// Returns the path to the chunk plan file.
 func ExtractKeyframesIfNeeded(videoPath, workDir string, fpsNum, fpsDen uint32, totalFrames int, chunkDuration float64) (string, error) {
-	sceneFile := filepath.Join(workDir, "scenes.txt")
+	boundaryFile := filepath.Join(workDir, "chunk-plan.txt")
 
-	// Check if scene file already exists
-	if _, err := os.Stat(sceneFile); err == nil {
-		return sceneFile, nil
+	// Check if chunk plan already exists
+	if _, err := os.Stat(boundaryFile); err == nil {
+		return boundaryFile, nil
 	}
 
 	// Generate fixed-length chunks
 	keyframes := GenerateFixedChunks(totalFrames, fpsNum, fpsDen, chunkDuration)
 
-	// Write to scenes.txt
-	if err := writeSceneFile(sceneFile, keyframes); err != nil {
+	if err := writeBoundaryFile(boundaryFile, keyframes); err != nil {
 		return "", err
 	}
 
-	return sceneFile, nil
+	return boundaryFile, nil
 }
 
 // dedupe removes duplicate values from a sorted slice.
@@ -72,17 +71,17 @@ func dedupe(sorted []int) []int {
 	return result
 }
 
-// writeSceneFile writes frame numbers to a scenes.txt file.
-func writeSceneFile(path string, frames []int) error {
+// writeBoundaryFile writes frame numbers to a chunk plan file.
+func writeBoundaryFile(path string, frames []int) error {
 	file, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("failed to create scene file: %w", err)
+		return fmt.Errorf("failed to create chunk plan file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
 	for _, frame := range frames {
 		if _, err := fmt.Fprintf(file, "%d\n", frame); err != nil {
-			return fmt.Errorf("failed to write scene file: %w", err)
+			return fmt.Errorf("failed to write chunk plan file: %w", err)
 		}
 	}
 

@@ -85,7 +85,7 @@ func EncodeAll(
 		return MaxAdaptiveWorkers(), nil // All chunks already done
 	}
 
-	// Scene-aware chunking creates variable-sized chunks. Dispatch larger chunks
+	// Content-aware chunking creates variable-sized chunks. Dispatch larger chunks
 	// first so the encode does not finish with one long tail chunk while other
 	// workers are idle. Chunk indices are preserved for resume and final merge.
 	sort.SliceStable(remainingChunks, func(i, j int) bool {

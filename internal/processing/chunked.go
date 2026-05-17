@@ -14,11 +14,11 @@ import (
 
 	nativeaudio "codeberg.org/five82/reel/internal/audio"
 	"codeberg.org/five82/reel/internal/chunk"
+	"codeberg.org/five82/reel/internal/chunkplan"
 	"codeberg.org/five82/reel/internal/config"
 	"codeberg.org/five82/reel/internal/encode"
 	"codeberg.org/five82/reel/internal/media"
 	"codeberg.org/five82/reel/internal/reporter"
-	"codeberg.org/five82/reel/internal/scene"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
 )
@@ -72,7 +72,7 @@ func ProcessChunked(
 		Disabled: cfg.CropMode == "none",
 	})
 
-	// Convert crop filter to an exact source rectangle for scene detection and encoding.
+	// Convert crop filter to an exact source rectangle for shot detection and encoding.
 	var cropRect *video.CropRect
 	if cropResult.Required && cropResult.CropFilter != "" {
 		cropRect, err = parseCropFilter(cropResult.CropFilter, videoProps.Width, videoProps.Height)
@@ -82,26 +82,26 @@ func ProcessChunked(
 		rep.Verbose(fmt.Sprintf("Crop rectangle: %dx%d at +%d+%d", cropRect.Width, cropRect.Height, cropRect.X, cropRect.Y))
 	}
 
-	// Generate scene-aware chunks based on resolution (using config values).
+	// Generate shot-aware chunks based on resolution (using config values).
 	chunkDuration := cfg.ChunkDurationForWidth(vidInf.Width)
 	fps := float64(vidInf.FPSNum) / float64(vidInf.FPSDen)
-	maxSceneFrames := int(math.Ceil(fps * chunkDuration))
-	if maxSceneFrames < 1 {
-		maxSceneFrames = 1
+	maxChunkFrames := int(math.Ceil(fps * chunkDuration))
+	if maxChunkFrames < 1 {
+		maxChunkFrames = 1
 	}
-	minSceneFrames := int(math.Ceil(fps * 2))
-	if minSceneFrames < 1 {
-		minSceneFrames = 1
+	minChunkFrames := int(math.Ceil(fps * 2))
+	if minChunkFrames < 1 {
+		minChunkFrames = 1
 	}
-	rep.StageProgress(reporter.StageProgress{Stage: "Chunking", Message: "Detecting scene changes"})
-	sceneFile := filepath.Join(workDir, "scenes.txt")
-	sceneMetadataFile := filepath.Join(workDir, "scenes.json")
-	lastSceneProgress := time.Now().Add(-10 * time.Second)
-	lastScenePercent := -1
-	finishStep = startVerboseStep(rep, "Scene detection")
-	sceneResult, err := scene.DetectToFileIfNeeded(ctx, inputPath, sceneFile, sceneMetadataFile, vidInf, scene.Options{
-		MaxFrames: maxSceneFrames,
-		MinFrames: minSceneFrames,
+	rep.StageProgress(reporter.StageProgress{Stage: "Chunking", Message: "Detecting shot cuts"})
+	chunkPlanFile := filepath.Join(workDir, "chunk-plan.txt")
+	chunkPlanMetadataFile := filepath.Join(workDir, "chunk-plan.json")
+	lastPlanProgress := time.Now().Add(-10 * time.Second)
+	lastPlanPercent := -1
+	finishStep = startVerboseStep(rep, "Shot cut detection")
+	planResult, err := chunkplan.PlanToFileIfNeeded(ctx, inputPath, chunkPlanFile, chunkPlanMetadataFile, vidInf, chunkplan.Options{
+		MaxFrames: maxChunkFrames,
+		MinFrames: minChunkFrames,
 		CropRect:  cropRect,
 		Progress: func(current, total int) {
 			if total <= 0 {
@@ -109,30 +109,37 @@ func ProcessChunked(
 			}
 			percent := int(float64(current) * 100 / float64(total))
 			now := time.Now()
-			if current == total || percent >= lastScenePercent+5 || now.Sub(lastSceneProgress) >= 10*time.Second {
-				rep.Verbose(fmt.Sprintf("Scene detection progress: %d%% (%d/%d frames)", percent, current, total))
-				lastScenePercent = percent
-				lastSceneProgress = now
+			if current == total || percent >= lastPlanPercent+5 || now.Sub(lastPlanProgress) >= 10*time.Second {
+				rep.Verbose(fmt.Sprintf("Shot cut detection progress: %d%% (%d/%d frames)", percent, current, total))
+				lastPlanPercent = percent
+				lastPlanProgress = now
 			}
 		},
 	})
 	finishStep()
 	if err != nil {
-		return CropResult{}, fmt.Errorf("scene detection failed: %w", err)
+		return CropResult{}, fmt.Errorf("shot cut detection failed: %w", err)
 	}
-	rep.Verbose(fmt.Sprintf("Detected %d scene cuts, merged %d short scenes, and added %d balanced splits", sceneResult.NaturalCuts, sceneResult.MergedScenes, sceneResult.SyntheticSplits))
+	rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, and added %d balanced splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
+	retainedNaturalCuts := 0
+	for _, kind := range planResult.BoundaryKinds {
+		if kind == chunkplan.BoundaryKindNaturalShotCut {
+			retainedNaturalCuts++
+		}
+	}
+	rep.Verbose(fmt.Sprintf("Chunk boundaries: %d natural shot cuts, %d balanced splits", retainedNaturalCuts, planResult.SyntheticSplits))
 
-	// Load scenes
+	// Load planned chunk boundaries
 	finishStep = startVerboseStep(rep, "Chunk planning")
-	scenes, err := chunk.LoadScenes(sceneFile, vidInf.Frames)
+	segments, err := chunk.LoadSegments(chunkPlanFile, vidInf.Frames)
 	if err != nil {
 		finishStep()
-		return CropResult{}, fmt.Errorf("failed to load scenes: %w", err)
+		return CropResult{}, fmt.Errorf("failed to load chunk boundaries: %w", err)
 	}
-	rep.Verbose(fmt.Sprintf("Created %d chunks", len(scenes)))
+	rep.Verbose(fmt.Sprintf("Created %d content-aware chunks", len(segments)))
 
-	// Convert scenes to chunks
-	chunks := chunk.Chunkify(scenes)
+	// Convert planned segments to chunks
+	chunks := chunk.Chunkify(segments)
 	rep.StageProgress(reporter.StageProgress{Stage: "Chunking", Message: fmt.Sprintf("Split video into %d chunks", len(chunks))})
 
 	// Calculate average chunk duration for verbose output

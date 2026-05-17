@@ -15,8 +15,8 @@ import (
 	"strings"
 )
 
-// Scene represents a detected scene in the video.
-type Scene struct {
+// Segment represents a planned content segment in the video.
+type Segment struct {
 	StartFrame int
 	EndFrame   int
 }
@@ -68,12 +68,12 @@ type ResumeManifest struct {
 	ChunkFingerprint      string  `json:"chunk_fingerprint"`
 }
 
-// LoadScenes loads scene boundaries from a file.
+// LoadSegments loads planned segment boundaries from a file.
 // The file format is one frame number per line.
-func LoadScenes(path string, totalFrames int) ([]Scene, error) {
+func LoadSegments(path string, totalFrames int) ([]Segment, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open scenes file: %w", err)
+		return nil, fmt.Errorf("failed to open segment boundary file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
@@ -93,7 +93,7 @@ func LoadScenes(path string, totalFrames int) ([]Scene, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading scenes file: %w", err)
+		return nil, fmt.Errorf("error reading segment boundary file: %w", err)
 	}
 
 	// Sort frame numbers
@@ -104,8 +104,8 @@ func LoadScenes(path string, totalFrames int) ([]Scene, error) {
 		frameNums = append([]int{0}, frameNums...)
 	}
 
-	// Convert to scenes
-	scenes := make([]Scene, 0, len(frameNums))
+	// Convert to planned segments
+	segments := make([]Segment, 0, len(frameNums))
 	for i := 0; i < len(frameNums); i++ {
 		start := frameNums[i]
 		end := totalFrames
@@ -114,20 +114,20 @@ func LoadScenes(path string, totalFrames int) ([]Scene, error) {
 		}
 
 		if start < end {
-			scenes = append(scenes, Scene{
+			segments = append(segments, Segment{
 				StartFrame: start,
 				EndFrame:   end,
 			})
 		}
 	}
 
-	return scenes, nil
+	return segments, nil
 }
 
-// ValidateScenes checks that scenes are valid and not too long.
-func ValidateScenes(scenes []Scene, fpsNum, fpsDen uint32) error {
-	if len(scenes) == 0 {
-		return fmt.Errorf("no scenes provided")
+// ValidateSegments checks that segments are valid and not too long.
+func ValidateSegments(segments []Segment, fpsNum, fpsDen uint32) error {
+	if len(segments) == 0 {
+		return fmt.Errorf("no segments provided")
 	}
 
 	// Validate FPS denominator to prevent division by zero
@@ -135,32 +135,32 @@ func ValidateScenes(scenes []Scene, fpsNum, fpsDen uint32) error {
 		return fmt.Errorf("invalid FPS denominator: 0")
 	}
 
-	// Calculate max scene length (30 seconds or 1000 frames, whichever is smaller)
+	// Calculate max segment length (30 seconds or 1000 frames, whichever is smaller)
 	fps := float64(fpsNum) / float64(fpsDen)
 	maxFrames := min(int(fps*30), 1000)
 
-	for i, scene := range scenes {
-		length := scene.EndFrame - scene.StartFrame
+	for i, segment := range segments {
+		length := segment.EndFrame - segment.StartFrame
 		if length > maxFrames {
-			return fmt.Errorf("scene %d is too long: %d frames (max %d)", i, length, maxFrames)
+			return fmt.Errorf("segment %d is too long: %d frames (max %d)", i, length, maxFrames)
 		}
 		if length <= 0 {
-			return fmt.Errorf("scene %d has invalid length: %d", i, length)
+			return fmt.Errorf("segment %d has invalid length: %d", i, length)
 		}
 	}
 
 	return nil
 }
 
-// Chunkify converts scenes to chunks for encoding.
-// Each scene becomes one chunk.
-func Chunkify(scenes []Scene) []Chunk {
-	chunks := make([]Chunk, len(scenes))
-	for i, scene := range scenes {
+// Chunkify converts planned segments to chunks for encoding.
+// Each segment becomes one chunk.
+func Chunkify(segments []Segment) []Chunk {
+	chunks := make([]Chunk, len(segments))
+	for i, segment := range segments {
 		chunks[i] = Chunk{
 			Idx:   i,
-			Start: scene.StartFrame,
-			End:   scene.EndFrame,
+			Start: segment.StartFrame,
+			End:   segment.EndFrame,
 		}
 	}
 	return chunks

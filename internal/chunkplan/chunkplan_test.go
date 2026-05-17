@@ -1,4 +1,4 @@
-package scene
+package chunkplan
 
 import (
 	"encoding/binary"
@@ -48,7 +48,7 @@ func TestRefineBoundariesUsesHighScoreNearBalancedSplit(t *testing.T) {
 		t.Fatalf("synthetic splits = %d, want 1", synthetic)
 	}
 	if merged != 0 {
-		t.Fatalf("merged scenes = %d, want 0", merged)
+		t.Fatalf("merged short shots = %d, want 0", merged)
 	}
 }
 
@@ -62,11 +62,11 @@ func TestRefineBoundariesSplitsRepeatedlyUnderMax(t *testing.T) {
 		t.Fatalf("synthetic splits = %d, want 3", synthetic)
 	}
 	if merged != 0 {
-		t.Fatalf("merged scenes = %d, want 0", merged)
+		t.Fatalf("merged short shots = %d, want 0", merged)
 	}
 }
 
-func TestRefineBoundariesPacksShortScenesAcrossWeakCut(t *testing.T) {
+func TestRefineBoundariesPacksShortShotsAcrossWeakCut(t *testing.T) {
 	scores := make([]float64, 200)
 	scores[60] = 0.9
 	scores[70] = 0.2
@@ -80,7 +80,7 @@ func TestRefineBoundariesPacksShortScenesAcrossWeakCut(t *testing.T) {
 		t.Fatalf("synthetic splits = %d, want 0", synthetic)
 	}
 	if merged != 1 {
-		t.Fatalf("merged scenes = %d, want 1", merged)
+		t.Fatalf("merged short shots = %d, want 1", merged)
 	}
 }
 
@@ -91,7 +91,27 @@ func TestRefineBoundariesDoesNotPackBeyondMaxFrames(t *testing.T) {
 		t.Fatalf("refineBoundaries() = %v, want %v", boundaries, want)
 	}
 	if merged != 0 {
-		t.Fatalf("merged scenes = %d, want 0", merged)
+		t.Fatalf("merged short shots = %d, want 0", merged)
+	}
+}
+
+func TestPlanBoundariesTracksBoundaryKinds(t *testing.T) {
+	plan := planBoundaries([]int{0, 70}, 220, 100, 1, nil)
+	wantBoundaries := []int{0, 70, 145}
+	if !reflect.DeepEqual(plan.Boundaries, wantBoundaries) {
+		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, wantBoundaries)
+	}
+	wantKinds := []BoundaryKind{BoundaryKindStart, BoundaryKindNaturalShotCut, BoundaryKindSyntheticSplit}
+	if !reflect.DeepEqual(plan.BoundaryKinds, wantKinds) {
+		t.Fatalf("plan boundary kinds = %v, want %v", plan.BoundaryKinds, wantKinds)
+	}
+}
+
+func TestInferBoundaryKindsPreservesNaturalCuts(t *testing.T) {
+	got := inferBoundaryKinds([]int{0, 60, 120}, []int{60})
+	want := []BoundaryKind{BoundaryKindStart, BoundaryKindNaturalShotCut, BoundaryKindSyntheticSplit}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inferBoundaryKinds() = %v, want %v", got, want)
 	}
 }
 
@@ -123,7 +143,7 @@ func TestReadLuma8SupportsP010Shift(t *testing.T) {
 	}
 }
 
-func TestDetectToFileIfNeededUsesMetadataCache(t *testing.T) {
+func TestPlanToFileIfNeededUsesMetadataCache(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.mkv")
 	if err := os.WriteFile(input, []byte("not a real video"), 0644); err != nil {
@@ -134,22 +154,31 @@ func TestDetectToFileIfNeededUsesMetadataCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sceneFile := filepath.Join(dir, "scenes.txt")
-	metadataFile := filepath.Join(dir, "scenes.json")
-	if err := os.WriteFile(sceneFile, []byte("0\n25\n"), 0644); err != nil {
+	boundaryFile := filepath.Join(dir, "chunk-plan.txt")
+	metadataFile := filepath.Join(dir, "chunk-plan.json")
+	if err := os.WriteFile(boundaryFile, []byte("0\n25\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	inf := &video.Info{Width: 1920, Height: 1080, FPSNum: 24000, FPSDen: 1001, Frames: 50}
-	result := Result{Boundaries: []int{0, 25}, NaturalCuts: 2, SyntheticSplits: 0}
+	result := Result{
+		Boundaries:       []int{0, 25},
+		BoundaryKinds:    []BoundaryKind{BoundaryKindStart, BoundaryKindNaturalShotCut},
+		NaturalCuts:      1,
+		NaturalCutFrames: []int{25},
+		SyntheticSplits:  0,
+	}
 	if err := writeMetadata(input, metadataFile, inf, Options{MaxFrames: 30}, result); err != nil {
 		t.Fatal(err)
 	}
 
-	got, ok := loadCachedResult(input, sceneFile, metadataFile, inf, Options{MaxFrames: 30})
+	got, ok := loadCachedResult(input, boundaryFile, metadataFile, inf, Options{MaxFrames: 30})
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
 	if !reflect.DeepEqual(got.Boundaries, result.Boundaries) {
 		t.Fatalf("cached boundaries = %v, want %v", got.Boundaries, result.Boundaries)
+	}
+	if !reflect.DeepEqual(got.BoundaryKinds, result.BoundaryKinds) {
+		t.Fatalf("cached boundary kinds = %v, want %v", got.BoundaryKinds, result.BoundaryKinds)
 	}
 }
