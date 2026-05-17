@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/video"
 )
 
@@ -131,7 +132,7 @@ func Detect(ctx context.Context, inputPath string, inf *video.Info, opts Options
 }
 
 func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) ([]float64, error) {
-	src, err := video.Open(inputPath, 0)
+	src, err := video.Open(inputPath, sceneDecoderThreads())
 	if err != nil {
 		return nil, fmt.Errorf("scene detection: open video: %w", err)
 	}
@@ -162,6 +163,10 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 		}
 	}
 	return scores, nil
+}
+
+func sceneDecoderThreads() int {
+	return min(max(util.PhysicalCores(), 1), 16)
 }
 
 func signatureFromFrame(frame *video.LumaFrame, crop *video.CropRect) (*frameSignature, error) {
