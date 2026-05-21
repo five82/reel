@@ -1,6 +1,7 @@
 #!/bin/bash
 # Dependency health check for reel.
-# Reports available Go module updates, reachable vulnerabilities, and newer CI action tags without changing files.
+# Reports reachable vulnerabilities immediately, Go module updates after a cooldown,
+# and newer CI action tags without changing files.
 
 set -euo pipefail
 
@@ -9,6 +10,14 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
+
+UPDATE_COOLDOWN_DAYS=${UPDATE_COOLDOWN_DAYS:-7}
+if ! [[ "$UPDATE_COOLDOWN_DAYS" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}   UPDATE_COOLDOWN_DAYS must be a non-negative integer.${NC}"
+    exit 1
+fi
+UPDATE_COOLDOWN_SECONDS=$((UPDATE_COOLDOWN_DAYS * 24 * 60 * 60))
+CURRENT_EPOCH=$(date -u +%s)
 
 print_step() {
     echo -e "\n${BLUE}:: $1${NC}"
@@ -72,38 +81,43 @@ is_newer_version_available() {
     [ "$highest" = "$latest" ] && [ "$current" != "$latest" ]
 }
 
+module_version_time_epoch() {
+    local module=$1
+    local version=$2
+    local release_time
+
+    if ! release_time=$(go list -m -json "$module@$version" 2>/dev/null | awk -F '"' '/"Time":/ {print $4; exit}'); then
+        return 1
+    fi
+
+    if [ -z "$release_time" ]; then
+        return 1
+    fi
+
+    date -u -d "$release_time" +%s 2>/dev/null
+}
+
+is_update_past_cooldown() {
+    local module=$1
+    local version=$2
+    local release_epoch
+    local age_seconds
+
+    if [ "$UPDATE_COOLDOWN_DAYS" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! release_epoch=$(module_version_time_epoch "$module" "$version"); then
+        return 0
+    fi
+
+    age_seconds=$((CURRENT_EPOCH - release_epoch))
+    [ "$age_seconds" -ge "$UPDATE_COOLDOWN_SECONDS" ]
+}
+
 if ! command -v go &>/dev/null; then
     print_error "Go is not installed."
     exit 1
-fi
-
-print_step "Checking for available Go module updates"
-UPDATE_OUTPUT=$(go list -m -u all)
-OUTDATED_OUTPUT=$(
-    while IFS= read -r line; do
-        if [[ "$line" != *"["* ]]; then
-            continue
-        fi
-
-        module=$(awk '{print $1}' <<< "$line")
-        if go mod why -m "$module" 2>/dev/null | grep -q "main module does not need module"; then
-            continue
-        fi
-
-        echo "$line"
-    done <<< "$UPDATE_OUTPUT"
-)
-
-if [ -n "$OUTDATED_OUTPUT" ]; then
-    print_warning "Updates are available:"
-    printf '%s\n' "$OUTDATED_OUTPUT" | sed 's/^/   /'
-    echo
-    echo "   To apply a listed update, run:"
-    echo "     go get <module>@latest"
-    echo "     go mod tidy"
-    echo "     ./check-ci.sh"
-else
-    print_success "Go modules are up to date"
 fi
 
 print_step "Checking for reachable Go vulnerabilities"
@@ -117,6 +131,55 @@ if govulncheck ./...; then
 else
     print_error "Reachable vulnerabilities detected"
     exit 1
+fi
+
+print_step "Checking for available Go module updates"
+UPDATE_OUTPUT=$(go list -m -u all)
+OUTDATED_OUTPUT=""
+COOLDOWN_OUTPUT=""
+
+while IFS= read -r line; do
+    if [[ "$line" != *"["* ]]; then
+        continue
+    fi
+
+    module=$(awk '{print $1}' <<< "$line")
+    latest_version=${line##*[}
+    latest_version=${latest_version%%]*}
+
+    if go mod why -m "$module" 2>/dev/null | grep -q "main module does not need module"; then
+        continue
+    fi
+
+    if is_update_past_cooldown "$module" "$latest_version"; then
+        OUTDATED_OUTPUT+="$line"$'\n'
+    else
+        COOLDOWN_OUTPUT+="$line"$'\n'
+    fi
+done <<< "$UPDATE_OUTPUT"
+
+OUTDATED_OUTPUT=${OUTDATED_OUTPUT%$'\n'}
+COOLDOWN_OUTPUT=${COOLDOWN_OUTPUT%$'\n'}
+
+if [ -n "$OUTDATED_OUTPUT" ]; then
+    print_warning "Updates are available:"
+    printf '%s\n' "$OUTDATED_OUTPUT" | sed 's/^/   /'
+    echo
+    echo "   To apply a listed update, run:"
+    echo "     go get <module>@latest"
+    echo "     go mod tidy"
+    echo "     ./check-ci.sh"
+else
+    if [ "$UPDATE_COOLDOWN_DAYS" -eq 0 ]; then
+        print_success "Go modules are up to date"
+    else
+        print_success "No Go module updates older than $UPDATE_COOLDOWN_DAYS days"
+    fi
+fi
+
+if [ -n "$COOLDOWN_OUTPUT" ]; then
+    cooldown_count=$(printf '%s\n' "$COOLDOWN_OUTPUT" | grep -c .)
+    print_success "$cooldown_count recent Go module update(s) are in the ${UPDATE_COOLDOWN_DAYS}-day cooldown"
 fi
 
 if [ -d .forgejo/workflows ]; then
