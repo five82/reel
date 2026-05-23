@@ -273,15 +273,18 @@ func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.A
 	if err != nil {
 		return err
 	}
-	defer enc.close()
 
 	channels := int(stream.Channels)
-	return dec.decodeTo(ctx, func(pcm []float32) error {
+	if err := dec.decodeTo(ctx, func(pcm []float32) error {
 		if channels > 2 {
 			reorderSurround(pcm, channels)
 		}
 		return enc.writeFloat(pcm, channels)
-	})
+	}); err != nil {
+		enc.destroy()
+		return err
+	}
+	return enc.close()
 }
 
 func reorderSurround(buf []float32, channels int) {

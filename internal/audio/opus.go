@@ -96,7 +96,7 @@ func newOpusEncoder(path string, channels, bitrate uint32) (*opusEncoder, error)
 	}
 	for _, setting := range settings {
 		if ret := C.reel_ope_encoder_ctl_int(ptr, setting.request, setting.value); ret != 0 {
-			enc.close()
+			enc.destroy()
 			return nil, fmt.Errorf("opus encoder setting failed: %s", opusError(ret))
 		}
 	}
@@ -115,11 +115,22 @@ func (e *opusEncoder) writeFloat(pcm []float32, channels int) error {
 	return nil
 }
 
-func (e *opusEncoder) close() {
+func (e *opusEncoder) close() error {
+	if e == nil || e.ptr == nil {
+		return nil
+	}
+	ret := C.reel_ope_encoder_drain_call(e.ptr)
+	e.destroy()
+	if ret != 0 {
+		return fmt.Errorf("opus drain failed: %s", opusError(ret))
+	}
+	return nil
+}
+
+func (e *opusEncoder) destroy() {
 	if e == nil || e.ptr == nil {
 		return
 	}
-	C.reel_ope_encoder_drain_call(e.ptr)
 	C.reel_ope_encoder_destroy_call(e.ptr)
 	e.ptr = nil
 }
