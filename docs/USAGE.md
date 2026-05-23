@@ -43,7 +43,7 @@ reel encode -v -i input.mkv -o output/
 
 ## Parallel Chunked Encoding
 
-Reel splits video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, subtitles, chapters, and metadata. Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure.
+Reel splits video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, chapters, and metadata. Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure.
 
 Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
 

@@ -34,7 +34,6 @@ func muxFinalArgs(inputPath, videoPath, outputPath string, audioStreams []native
 	for i := range audioStreams {
 		args = append(args, "-map", fmt.Sprintf("%d:a:0", i+1))
 	}
-	args = append(args, "-map", fmt.Sprintf("%d:s?", sourceInputIdx))
 	args = append(args, "-c", "copy")
 	args = append(args, "-map_metadata", fmt.Sprintf("%d", sourceInputIdx))
 	args = append(args, "-map_chapters", fmt.Sprintf("%d", sourceInputIdx))
@@ -52,7 +51,7 @@ func muxFinalArgs(inputPath, videoPath, outputPath string, audioStreams []native
 	return args
 }
 
-// MuxFinal combines the encoded video with audio and other streams.
+// MuxFinal combines the encoded video with audio, chapters, and metadata.
 func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.EncodedStream, displayAspect string) error {
 	videoPath := GetVideoPath(workDir)
 	if _, err := os.Stat(videoPath); err != nil {

@@ -44,18 +44,31 @@ func TestMuxFinalArgsMapsPerStreamOpusFiles(t *testing.T) {
 	assertArgValue(t, args, "-i", "/tmp/audio_01.opus")
 	assertArgValue(t, args, "-map", "1:a:0")
 	assertArgValue(t, args, "-map", "2:a:0")
-	assertArgValue(t, args, "-map", "3:s?")
 	assertArgValue(t, args, "-map_chapters", "3")
+	assertNoArgValue(t, args, "-map", "3:s?")
 	assertArgValue(t, args, "-aspect:v:0", "16:9")
 	assertArgValue(t, args, "-metadata:s:a:1", "title=Commentary")
 }
 
 func assertArgValue(t *testing.T, args []string, key, want string) {
 	t.Helper()
+	if !hasArgValue(args, key, want) {
+		t.Fatalf("%s %q not found in args: %v", key, want, args)
+	}
+}
+
+func assertNoArgValue(t *testing.T, args []string, key, want string) {
+	t.Helper()
+	if hasArgValue(args, key, want) {
+		t.Fatalf("%s %q unexpectedly found in args: %v", key, want, args)
+	}
+}
+
+func hasArgValue(args []string, key, want string) bool {
 	idx := slices.Index(args, key)
 	for idx != -1 && idx+1 < len(args) {
 		if args[idx+1] == want {
-			return
+			return true
 		}
 		next := slices.Index(args[idx+2:], key)
 		if next == -1 {
@@ -63,5 +76,5 @@ func assertArgValue(t *testing.T, args []string, key, want string) {
 		}
 		idx += next + 2
 	}
-	t.Fatalf("%s %q not found in args: %v", key, want, args)
+	return false
 }
