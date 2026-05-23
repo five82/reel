@@ -70,3 +70,15 @@ func TestDisplayAspectAfterCropFallsBackToVideoInfo(t *testing.T) {
 		t.Fatalf("displayAspectAfterCrop() = %q, want %q", got, "64:27")
 	}
 }
+
+func TestExpectedDisplayAspectAfterCrop(t *testing.T) {
+	props := &media.VideoProperties{
+		SampleAspectRatioNum: 32,
+		SampleAspectRatioDen: 27,
+	}
+
+	got := expectedDisplayAspectAfterCrop(props, 720, 360)
+	if got == nil || *got != [2]uint32{64, 27} {
+		t.Fatalf("expectedDisplayAspectAfterCrop() = %v, want 64:27", got)
+	}
+}

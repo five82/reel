@@ -381,10 +381,28 @@ func displayAspectAfterCrop(props *media.VideoProperties, inf *video.Info, cropR
 		return ""
 	}
 
+	aspect := displayAspectRatio(width, height, sarNum, sarDen)
+	if aspect == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", aspect[0], aspect[1])
+}
+
+func expectedDisplayAspectAfterCrop(props *media.VideoProperties, width, height uint32) *[2]uint32 {
+	if props == nil || props.SampleAspectRatioNum == 0 || props.SampleAspectRatioDen == 0 || props.SampleAspectRatioNum == props.SampleAspectRatioDen {
+		return nil
+	}
+	return displayAspectRatio(width, height, props.SampleAspectRatioNum, props.SampleAspectRatioDen)
+}
+
+func displayAspectRatio(width, height, sarNum, sarDen uint32) *[2]uint32 {
+	if width == 0 || height == 0 || sarNum == 0 || sarDen == 0 {
+		return nil
+	}
 	num := uint64(width) * uint64(sarNum)
 	den := uint64(height) * uint64(sarDen)
 	g := gcd(num, den)
-	return fmt.Sprintf("%d:%d", num/g, den/g)
+	return &[2]uint32{uint32(num / g), uint32(den / g)}
 }
 
 func aspectInputs(props *media.VideoProperties, inf *video.Info) (width, height, sarNum, sarDen uint32) {

@@ -22,6 +22,7 @@ type Options struct {
 	ExpectedHDR           *bool
 	ExpectedAudioTracks   *int
 	ExpectedAudioChannels []uint32
+	ExpectedDisplayAspect *[2]uint32
 }
 
 // ValidateOutputVideo performs comprehensive validation of an encoded video.
@@ -33,6 +34,7 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 		IsAudioOpus:              true,
 		IsAudioTrackCountCorrect: true,
 		IsSyncPreserved:          true,
+		IsAspectCorrect:          true,
 	}
 
 	// Get output video properties
@@ -55,6 +57,15 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 		)
 	} else {
 		result.CropMessage = "No crop validation required"
+	}
+
+	// Validate display aspect ratio for anamorphic sources if expected.
+	if opts.ExpectedDisplayAspect != nil {
+		result.ExpectedDisplayAspect = opts.ExpectedDisplayAspect
+		result.ActualDisplayAspect = displayAspect(outputProps.Width, outputProps.Height, outputProps.SampleAspectRatioNum, outputProps.SampleAspectRatioDen)
+		result.IsAspectCorrect, result.AspectMessage = validateDisplayAspect(result.ActualDisplayAspect, *opts.ExpectedDisplayAspect)
+	} else {
+		result.AspectMessage = "Aspect validation skipped"
 	}
 
 	// Validate duration if expected
@@ -141,6 +152,42 @@ func validateDimensions(actualW, actualH, expectedW, expectedH uint32) (bool, st
 	}
 	return false, fmt.Sprintf("Dimension mismatch: got %dx%d, expected %dx%d",
 		actualW, actualH, expectedW, expectedH)
+}
+
+// displayAspect calculates the reduced display aspect ratio from dimensions and sample aspect ratio.
+func displayAspect(width, height, sarNum, sarDen uint32) *[2]uint32 {
+	if width == 0 || height == 0 {
+		return nil
+	}
+	if sarNum == 0 || sarDen == 0 {
+		sarNum = 1
+		sarDen = 1
+	}
+	num := uint64(width) * uint64(sarNum)
+	den := uint64(height) * uint64(sarDen)
+	g := gcd(num, den)
+	aspect := [2]uint32{uint32(num / g), uint32(den / g)}
+	return &aspect
+}
+
+func validateDisplayAspect(actual *[2]uint32, expected [2]uint32) (bool, string) {
+	if actual == nil {
+		return false, fmt.Sprintf("Display aspect unavailable, expected %d:%d", expected[0], expected[1])
+	}
+	if actual[0] == expected[0] && actual[1] == expected[1] {
+		return true, fmt.Sprintf("Display aspect matches: %d:%d", actual[0], actual[1])
+	}
+	return false, fmt.Sprintf("Display aspect mismatch: got %d:%d, expected %d:%d", actual[0], actual[1], expected[0], expected[1])
+}
+
+func gcd(a, b uint64) uint64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a == 0 {
+		return 1
+	}
+	return a
 }
 
 // validateDuration checks that duration is within acceptable tolerance.

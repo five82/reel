@@ -214,13 +214,15 @@ func ProcessVideos(
 		expectedDims := &[2]uint32{expectedWidth, expectedHeight}
 		expectedDuration := videoProps.DurationSecs
 		expectedAudioTracks := len(audioChannels)
+		expectedDisplayAspect := expectedDisplayAspectAfterCrop(videoProps, expectedWidth, expectedHeight)
 
 		finishStep = startVerboseStep(rep, "Output validation")
 		validationResult, err := validation.ValidateOutputVideo(inputPath, outputPath, validation.Options{
-			ExpectedDimensions:  expectedDims,
-			ExpectedDuration:    &expectedDuration,
-			ExpectedHDR:         &isHDR,
-			ExpectedAudioTracks: &expectedAudioTracks,
+			ExpectedDimensions:    expectedDims,
+			ExpectedDuration:      &expectedDuration,
+			ExpectedHDR:           &isHDR,
+			ExpectedAudioTracks:   &expectedAudioTracks,
+			ExpectedDisplayAspect: expectedDisplayAspect,
 		})
 		finishStep()
 
