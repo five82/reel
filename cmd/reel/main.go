@@ -212,6 +212,9 @@ func executeEncode(ea encodeArgs) error {
 
 	// Build configuration
 	cfg := config.NewConfig(inputPath, outputDir, logDir)
+	if logger != nil {
+		cfg.LogFile = logger.FilePath()
+	}
 
 	// Override with explicit CLI arguments
 	if ea.crf != "" {

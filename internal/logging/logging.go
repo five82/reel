@@ -90,6 +90,14 @@ func Setup(logDir string, verbose, noLog bool, cmdArgs []string) (*Logger, error
 	return l, nil
 }
 
+// FilePath returns the path to the active log file.
+func (l *Logger) FilePath() string {
+	if l == nil {
+		return ""
+	}
+	return l.filePath
+}
+
 // Close closes the log file.
 func (l *Logger) Close() error {
 	if l == nil || l.file == nil {

@@ -61,6 +61,7 @@ type Config struct {
 	InputDir  string
 	OutputDir string
 	LogDir    string
+	LogFile   string
 	TempDir   string // Optional, defaults to OutputDir
 
 	// SVT-AV1 parameters

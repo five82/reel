@@ -194,7 +194,7 @@ func ProcessVideos(
 				Title:      "Encoding Error",
 				Message:    fmt.Sprintf("Failed to encode %s: %v", inputFilename, encodeError),
 				Context:    fmt.Sprintf("File: %s", inputPath),
-				Suggestion: "Check logs for more details",
+				Suggestion: logSuggestion(cfg),
 			})
 			continue
 		}
@@ -342,7 +342,13 @@ func ProcessVideos(
 	return results, nil
 }
 
-// determineQualitySettings returns the CRF quality setting based on video resolution.
+func logSuggestion(cfg *config.Config) string {
+	if cfg == nil || cfg.LogFile == "" {
+		return ""
+	}
+	return fmt.Sprintf("Check the log for more details: %s", cfg.LogFile)
+}
+
 func videoStreamBytes(path, label string, rep reporter.Reporter) uint64 {
 	bytes, err := media.GetVideoStreamBytes(path)
 	if err != nil {
@@ -352,6 +358,7 @@ func videoStreamBytes(path, label string, rep reporter.Reporter) uint64 {
 	return bytes
 }
 
+// determineQualitySettings returns the CRF quality setting based on video resolution.
 func determineQualitySettings(props *media.VideoProperties, cfg *config.Config) (uint32, string) {
 	crf := cfg.CRFForWidth(props.Width)
 	return uint32(crf), ""

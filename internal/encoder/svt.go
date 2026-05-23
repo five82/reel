@@ -240,7 +240,6 @@ func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 		{"profile", "0"},
 		{"tile-rows", "0"},
 		{"tile-columns", "0"},
-		{"passes", "1"},
 		{"keyint", fmt.Sprintf("%d", keyintFrames)},
 		{"rc", "0"},
 		{"scd", "0"},
