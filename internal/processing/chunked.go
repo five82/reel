@@ -316,18 +316,7 @@ func ProcessChunked(
 		cancelEncode()
 		<-audioDone
 		finishAudioStep()
-		// If the context was canceled (e.g., user pressed Ctrl+C), return that directly
-		// so the caller can handle it gracefully instead of reporting it as an encoding error.
-		if ctx.Err() != nil {
-			return CropResult{}, ctx.Err()
-		}
-		if errors.Is(encodeErr, encode.ErrMemoryPressure) {
-			return CropResult{}, fmt.Errorf("chunked encoding failed: %w", encodeErr)
-		}
-		if audioErr != nil {
-			return CropResult{}, fmt.Errorf("audio encoding failed: %w", audioErr)
-		}
-		return CropResult{}, fmt.Errorf("chunked encoding failed: %w", encodeErr)
+		return CropResult{}, encodePipelineError(ctx.Err(), encodeErr, audioErr)
 	}
 
 	// Merge IVF files
@@ -364,6 +353,25 @@ func ProcessChunked(
 	finishStep()
 
 	return cropResult, nil
+}
+
+func encodePipelineError(parentErr, encodeErr, audioErr error) error {
+	// If the parent context was canceled (e.g. user pressed Ctrl+C), return that
+	// directly so the caller can handle it gracefully.
+	if parentErr != nil {
+		return parentErr
+	}
+	if errors.Is(encodeErr, encode.ErrMemoryPressure) {
+		return fmt.Errorf("chunked encoding failed: %w", encodeErr)
+	}
+
+	// Audio runs under the same child context as video. When video fails first,
+	// Reel cancels that child context and audio often reports only "context canceled".
+	// Do not let that cleanup error hide the real video failure.
+	if audioErr != nil && errors.Is(encodeErr, context.Canceled) && !errors.Is(audioErr, context.Canceled) {
+		return fmt.Errorf("audio encoding failed: %w", audioErr)
+	}
+	return fmt.Errorf("chunked encoding failed: %w", encodeErr)
 }
 
 // displayAspectAfterCrop returns the display aspect ratio to signal after cropping anamorphic sources.
