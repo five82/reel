@@ -11,11 +11,14 @@ reel encode -i input.mkv -o output/
 # Batch encode an entire directory
 reel encode -i /videos/ -o /encoded/
 
-# Override quality settings
-reel encode -i input.mkv -o output/ --crf 24 --preset 6
+# Default target-quality encode (CVVDP via VSHIP/CUDA)
+reel encode -i input.mkv -o output/
 
-# Resolution-specific CRF (SD, HD, UHD)
-reel encode -i input.mkv -o output/ --crf 24,26,26
+# Fixed CRF mode
+reel encode -i input.mkv -o output/ --quality-mode crf --crf 24.25 --preset 6
+
+# Resolution-specific fixed CRF (SD, HD, UHD)
+reel encode -i input.mkv -o output/ --crf 24,26.25,26.5
 
 # Verbose output
 reel encode -v -i input.mkv -o output/
@@ -28,9 +31,14 @@ reel encode -v -i input.mkv -o output/
 - `-o, --output <DIR>`: Output directory (or filename when single file)
 
 **Quality Settings**
-- `--crf <VALUE>`: CRF quality level (0-63, lower is better quality)
-  - Single value: `--crf 26` (use for all resolutions)
-  - Triple: `--crf 24,26,26` (SD,HD,UHD)
+- `--quality-mode target|crf`: target-quality CVVDP mode is the default in normal builds; `crf` is the default in `no_vship` builds and keeps fixed-CRF behavior
+- `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.45-9.55`)
+- `--crf-range <LOW-HIGH>`: target-quality search bounds (default `4.25-63.75`)
+- `--cvvdp-display <PATH>`: optional VSHIP/CVVDP display JSON; otherwise Reel generates a normal-viewing `xav` model
+- `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (default `1`)
+- `--crf <VALUE>`: fixed CRF, `1-70` in `0.25` increments. Supplying `--crf` without `--quality-mode` selects `crf` mode for compatibility.
+  - Single value: `--crf 26.25` (use for all resolutions)
+  - Triple: `--crf 24,26.25,26.5` (SD,HD,UHD)
 - `--preset <0-13>`: SVT-AV1 encoder speed/quality (default `6`, lower is slower but higher quality)
 
 **Processing**
@@ -44,6 +52,8 @@ reel encode -v -i input.mkv -o output/
 ## Parallel Chunked Encoding
 
 Reel splits video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, chapters, and metadata. Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure.
+
+Target-quality mode is enabled in the default build and requires a working `libvship`/CUDA install. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
 Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
 

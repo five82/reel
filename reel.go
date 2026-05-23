@@ -92,22 +92,50 @@ func New(opts ...Option) (*Encoder, error) {
 	return &Encoder{config: cfg}, nil
 }
 
-// WithCRF sets a single CRF value for all resolutions (0-63, lower is better quality).
-func WithCRF(crf uint8) Option {
+type crfValue interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~float32 | ~float64
+}
+
+// WithCRF sets a single fixed CRF value for all resolutions (1-70 in 0.25 steps, lower is better quality).
+func WithCRF[T crfValue](crf T) Option {
 	return func(c *config.Config) {
-		c.CRFSD = crf
-		c.CRFHD = crf
-		c.CRFUHD = crf
+		value := float32(crf)
+		c.QualityMode = config.QualityModeCRF
+		c.CRFSD = value
+		c.CRFHD = value
+		c.CRFUHD = value
 	}
 }
 
-// WithCRFByResolution sets resolution-specific CRF values (0-63, lower is better quality).
+// WithCRFByResolution sets resolution-specific fixed CRF values (1-70 in 0.25 steps, lower is better quality).
 // SD applies to videos <1920 width, HD to >=1920 and <3840, UHD to >=3840.
-func WithCRFByResolution(sd, hd, uhd uint8) Option {
+func WithCRFByResolution[SD crfValue, HD crfValue, UHD crfValue](sd SD, hd HD, uhd UHD) Option {
 	return func(c *config.Config) {
-		c.CRFSD = sd
-		c.CRFHD = hd
-		c.CRFUHD = uhd
+		c.QualityMode = config.QualityModeCRF
+		c.CRFSD = float32(sd)
+		c.CRFHD = float32(hd)
+		c.CRFUHD = float32(uhd)
+	}
+}
+
+// WithQualityMode selects target-quality (default) or fixed-CRF mode.
+func WithQualityMode(mode string) Option {
+	return func(c *config.Config) {
+		c.QualityMode = mode
+	}
+}
+
+// WithTargetQuality sets the CVVDP JOD target range for target-quality mode.
+func WithTargetQuality(targetRange string) Option {
+	return func(c *config.Config) {
+		c.TargetQuality = targetRange
+	}
+}
+
+// WithCVVDPDisplay sets a VSHIP/CVVDP display JSON override for target-quality mode.
+func WithCVVDPDisplay(path string) Option {
+	return func(c *config.Config) {
+		c.CVVDPDisplay = path
 	}
 }
 

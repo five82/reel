@@ -43,6 +43,16 @@ if version_lt "$GO_VERSION" "$MIN_GO_VERSION"; then
     exit 1
 fi
 
+GO_TAGS_ARG=()
+GOLANGCI_TAGS_ARG=()
+if pkg-config --exists vship 2>/dev/null || [ -e /usr/local/lib/libvship.so ] || [ -e /usr/lib/libvship.so ] || [ -e /usr/lib64/libvship.so ]; then
+    print_success "VSHIP found; checking default target-quality build"
+else
+    print_success "VSHIP not found; checking fixed-CRF-only no_vship build"
+    GO_TAGS_ARG=(-tags no_vship)
+    GOLANGCI_TAGS_ARG=(--build-tags no_vship)
+fi
+
 print_step "Updating golangci-lint to latest"
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 GOLANGCI_VERSION=$(golangci-lint version --format short 2>/dev/null || golangci-lint version 2>/dev/null | head -n1 | sed 's/.*version //; s/ .*//')
@@ -65,7 +75,7 @@ trap - EXIT
 print_success "go.mod is tidy"
 
 print_step "Running go test ./..."
-if go test ./...; then
+if go test "${GO_TAGS_ARG[@]}" ./...; then
     print_success "Tests passed"
 else
     print_error "Tests failed"
@@ -76,7 +86,7 @@ print_step "Running go test -race ./..."
 GO_ARCH=$(go env GOARCH)
 if [ "$GO_ARCH" = "arm64" ]; then
     print_success "Skipping race detection on arm64; ThreadSanitizer is not supported on this runner."
-elif go test -race ./...; then
+elif go test "${GO_TAGS_ARG[@]}" -race ./...; then
     print_success "Race detection passed"
 else
     print_error "Race condition detected"
@@ -84,7 +94,7 @@ else
 fi
 
 print_step "Running go build -trimpath ./..."
-if go build -trimpath ./...; then
+if go build "${GO_TAGS_ARG[@]}" -trimpath ./...; then
     print_success "Build passed"
 else
     print_error "Build failed"
@@ -92,7 +102,7 @@ else
 fi
 
 print_step "Running golangci-lint"
-if golangci-lint run; then
+if golangci-lint run "${GOLANGCI_TAGS_ARG[@]}"; then
     print_success "Lint passed"
 else
     print_error "Lint issues found"
@@ -104,7 +114,7 @@ if ! command -v govulncheck &>/dev/null; then
     echo "   Installing govulncheck..."
     go install golang.org/x/vuln/cmd/govulncheck@latest
 fi
-if govulncheck ./...; then
+if govulncheck "${GO_TAGS_ARG[@]}" ./...; then
     print_success "No vulnerabilities found"
 else
     print_error "Vulnerabilities detected"

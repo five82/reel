@@ -2,6 +2,8 @@ package config
 
 import (
 	"testing"
+
+	"codeberg.org/five82/reel/internal/quality"
 )
 
 func TestNewConfig(t *testing.T) {
@@ -22,13 +24,20 @@ func TestNewConfig(t *testing.T) {
 		t.Errorf("expected SVTAV1Preset=%d, got %d", DefaultSVTAV1Preset, cfg.SVTAV1Preset)
 	}
 	if cfg.CRFSD != DefaultCRFSD {
-		t.Errorf("expected CRFSD=%d, got %d", DefaultCRFSD, cfg.CRFSD)
+		t.Errorf("expected CRFSD=%g, got %g", DefaultCRFSD, cfg.CRFSD)
 	}
 	if cfg.CRFHD != DefaultCRFHD {
-		t.Errorf("expected CRFHD=%d, got %d", DefaultCRFHD, cfg.CRFHD)
+		t.Errorf("expected CRFHD=%g, got %g", DefaultCRFHD, cfg.CRFHD)
 	}
 	if cfg.CRFUHD != DefaultCRFUHD {
-		t.Errorf("expected CRFUHD=%d, got %d", DefaultCRFUHD, cfg.CRFUHD)
+		t.Errorf("expected CRFUHD=%g, got %g", DefaultCRFUHD, cfg.CRFUHD)
+	}
+	wantMode := QualityModeCRF
+	if quality.VshipBuildEnabled() {
+		wantMode = QualityModeTarget
+	}
+	if cfg.QualityMode != wantMode {
+		t.Errorf("expected default quality mode %q, got %q", wantMode, cfg.QualityMode)
 	}
 }
 
@@ -54,18 +63,40 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "crf-sd 64 is invalid",
-			modify:  func(c *Config) { c.CRFSD = 64 },
+			name:    "crf-sd 70 is valid",
+			modify:  func(c *Config) { c.CRFSD = 70 },
+			wantErr: false,
+		},
+		{
+			name:    "crf-hd 70.25 is invalid",
+			modify:  func(c *Config) { c.CRFHD = 70.25 },
 			wantErr: true,
 		},
 		{
-			name:    "crf-hd 64 is invalid",
-			modify:  func(c *Config) { c.CRFHD = 64 },
+			name:    "crf-uhd non-quarter is invalid",
+			modify:  func(c *Config) { c.CRFUHD = 26.1 },
 			wantErr: true,
 		},
 		{
-			name:    "crf-uhd 64 is invalid",
-			modify:  func(c *Config) { c.CRFUHD = 64 },
+			name:    "quality-mode crf is valid",
+			modify:  func(c *Config) { c.QualityMode = QualityModeCRF },
+			wantErr: false,
+		},
+		{
+			name:    "invalid target quality is invalid",
+			modify:  func(c *Config) { c.TargetQuality = "9-11" },
+			wantErr: true,
+		},
+		{
+			name: "target mode is valid only when VSHIP is enabled",
+			modify: func(c *Config) {
+				c.QualityMode = QualityModeTarget
+			},
+			wantErr: !quality.VshipBuildEnabled(),
+		},
+		{
+			name:    "invalid search range is invalid",
+			modify:  func(c *Config) { c.CRFSearchRange = "4.1-63.75" },
 			wantErr: true,
 		},
 		{
@@ -100,7 +131,7 @@ func TestCRFForWidth(t *testing.T) {
 
 	tests := []struct {
 		width    uint32
-		expected uint8
+		expected float32
 	}{
 		{width: 720, expected: 25},  // SD
 		{width: 1280, expected: 25}, // SD (720p)
@@ -116,7 +147,7 @@ func TestCRFForWidth(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			got := cfg.CRFForWidth(tt.width)
 			if got != tt.expected {
-				t.Errorf("CRFForWidth(%d) = %d, want %d", tt.width, got, tt.expected)
+				t.Errorf("CRFForWidth(%d) = %g, want %g", tt.width, got, tt.expected)
 			}
 		})
 	}

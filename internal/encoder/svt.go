@@ -56,6 +56,7 @@ import (
 	"fmt"
 	"unsafe"
 
+	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/video"
 )
 
@@ -250,7 +251,7 @@ func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 		{"forced-max-frame-height", fmt.Sprintf("%d", cfg.Height)},
 		{"fps-num", fmt.Sprintf("%d", cfg.Inf.FPSNum)},
 		{"fps-denom", fmt.Sprintf("%d", cfg.Inf.FPSDen)},
-		{"crf", fmt.Sprintf("%.0f", cfg.CRF)},
+		{"crf", quality.FormatCRF(cfg.CRF)},
 		{"preset", fmt.Sprintf("%d", cfg.Preset)},
 		{"tune", fmt.Sprintf("%d", cfg.Tune)},
 	}

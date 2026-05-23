@@ -41,7 +41,8 @@ ldconfig -p | grep SvtAv1Enc
 ## Install
 
 ```bash
-go install -trimpath codeberg.org/five82/reel/cmd/reel@latest
+go install -trimpath codeberg.org/five82/reel/cmd/reel@latest                # default target-quality CVVDP/VSHIP build
+go install -trimpath -tags no_vship codeberg.org/five82/reel/cmd/reel@latest # fixed-CRF-only build without VSHIP
 ```
 
 Or build from source:
@@ -49,7 +50,8 @@ Or build from source:
 ```bash
 git clone https://codeberg.org/five82/reel
 cd reel
-go build -trimpath -o reel ./cmd/reel
+go build -trimpath -o reel ./cmd/reel                 # default target-quality CVVDP/VSHIP build
+go build -trimpath -tags no_vship -o reel ./cmd/reel  # fixed-CRF-only build without VSHIP
 ```
 
 ## Usage
@@ -61,6 +63,8 @@ reel encode -i /videos/ -o /encoded/
 
 Reel splits each video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
 
+Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
+
 ### Options
 
 ```
@@ -69,9 +73,15 @@ Required:
   -o, --output         Output directory (required)
 
 Quality Settings:
-  --crf <VALUE>        CRF quality level (0-63, lower = better quality)
-                         Single value: --crf 26 (use for all resolutions)
-                         Triple: --crf 24,26,26 (SD,HD,UHD)
+  --quality-mode MODE  target by default; crf by default in no_vship builds
+  --target-quality R   CVVDP JOD target range (default 9.45-9.55)
+  --crf-range R        Target-quality CRF search range (default 4.25-63.75)
+  --cvvdp-display PATH Optional VSHIP/CVVDP display JSON override
+  --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 1)
+  --crf <VALUE>        Fixed CRF mode, 1-70 in 0.25 steps
+                         Defaults in CRF mode: SD=24, HD=26, UHD=26
+                         Single value: --crf 25.25
+                         Triple: --crf 24,26.25,26.5 (SD,HD,UHD)
   --preset <0-13>      SVT-AV1 preset (default 6, lower = slower/better)
 
 Processing Options:
@@ -91,7 +101,7 @@ Reel can be used as a Go library:
 import "codeberg.org/five82/reel"
 
 encoder, err := reel.New(
-    reel.WithCRF(26),
+    reel.WithCRF(26.25), // fixed-CRF mode; default is target-quality mode
 )
 if err != nil {
     log.Fatal(err)

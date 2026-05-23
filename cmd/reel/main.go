@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -16,6 +15,7 @@ import (
 	"codeberg.org/five82/reel/internal/discovery"
 	"codeberg.org/five82/reel/internal/logging"
 	"codeberg.org/five82/reel/internal/processing"
+	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/util"
 )
@@ -52,6 +52,22 @@ func main() {
 	}
 }
 
+func qualityModeDefaultHelp() string {
+	if quality.VshipBuildEnabled() {
+		return "target"
+	}
+	return "crf (target unavailable in no_vship build)"
+}
+
+func targetQualityOptionsRequested(ea encodeArgs) bool {
+	return ea.targetQuality != "" ||
+		ea.crfSearchRange != "" ||
+		ea.cvvdpDisplay != "" ||
+		ea.metricWorkers != 0 ||
+		ea.maxProbes != 0 ||
+		(ea.qualityModeSet && strings.EqualFold(strings.TrimSpace(ea.qualityMode), config.QualityModeTarget))
+}
+
 func printUsage() {
 	fmt.Printf(`%s - Video encoding tool
 
@@ -73,6 +89,13 @@ type encodeArgs struct {
 	outputDir       string
 	logDir          string
 	verbose         bool
+	qualityMode     string
+	qualityModeSet  bool
+	targetQuality   string
+	crfSearchRange  string
+	cvvdpDisplay    string
+	metricWorkers   int
+	maxProbes       int
 	crf             string // Single value or comma-separated triple (SD,HD,UHD)
 	preset          uint
 	disableAutocrop bool
@@ -96,10 +119,17 @@ Options:
   -v, --verbose          Enable verbose output for troubleshooting
 
 Quality Settings:
-  --crf <VALUE>          CRF quality level (0-63, lower=better). Accepts:
-                           Single value: --crf 26 (use for all resolutions)
-                           Triple: --crf 24,26,26 (SD,HD,UHD)
-                         Defaults: SD=%d, HD=%d, UHD=%d
+  --quality-mode <MODE>  Quality mode: target or crf. Default: %s
+  --target-quality <R>   CVVDP JOD target range for target mode. Default: %s
+  --crf-range <R>        CRF search range for target mode. Default: %s
+  --cvvdp-display <PATH> CVVDP display JSON override. Default: generated normal-viewing model
+  --metric-workers <N>   Concurrent VSHIP/CUDA scoring workers. Default: %d
+  --max-probes <N>       Maximum target-quality probes per chunk. Default: %d
+  --crf <VALUE>          Fixed CRF quality level (1-70, quarter steps). Accepts:
+                           Single value: --crf 25.25 (use for all resolutions)
+                           Triple: --crf 24,26.25,26.5 (SD,HD,UHD)
+                         Supplying --crf without --quality-mode selects fixed-CRF mode.
+                         Fixed defaults: SD=%s, HD=%s, UHD=%s
   --preset <0-13>        SVT-AV1 encoder preset. Lower=slower/better. Default: %d
 
 Processing Options:
@@ -107,7 +137,7 @@ Processing Options:
 
 Output Options:
   --no-log               Disable Reel log file creation
-`, appName, config.DefaultCRFSD, config.DefaultCRFHD, config.DefaultCRFUHD, config.DefaultSVTAV1Preset)
+`, appName, qualityModeDefaultHelp(), config.DefaultTargetQuality, config.DefaultCRFSearchRange, config.DefaultMetricWorkers, config.DefaultTargetQualityMaxProbes, quality.FormatCRF(config.DefaultCRFSD), quality.FormatCRF(config.DefaultCRFHD), quality.FormatCRF(config.DefaultCRFUHD), config.DefaultSVTAV1Preset)
 	}
 
 	var ea encodeArgs
@@ -125,7 +155,17 @@ Output Options:
 	fs.BoolVar(&ea.verbose, "verbose", false, "Enable verbose output")
 
 	// Quality settings
-	fs.StringVar(&ea.crf, "crf", "", "CRF quality level (single value or SD,HD,UHD)")
+	fs.Func("quality-mode", "Quality mode: target or crf", func(value string) error {
+		ea.qualityMode = value
+		ea.qualityModeSet = true
+		return nil
+	})
+	fs.StringVar(&ea.targetQuality, "target-quality", "", "CVVDP JOD target range LOW-HIGH")
+	fs.StringVar(&ea.crfSearchRange, "crf-range", "", "Target-quality CRF search range LOW-HIGH")
+	fs.StringVar(&ea.cvvdpDisplay, "cvvdp-display", "", "CVVDP display JSON override")
+	fs.IntVar(&ea.metricWorkers, "metric-workers", 0, "Concurrent VSHIP/CUDA scoring workers")
+	fs.IntVar(&ea.maxProbes, "max-probes", 0, "Maximum target-quality probes per chunk")
+	fs.StringVar(&ea.crf, "crf", "", "Fixed CRF quality level (single value or SD,HD,UHD)")
 	fs.UintVar(&ea.preset, "preset", 0, "SVT-AV1 encoder preset (0-13)")
 
 	// Processing options
@@ -216,8 +256,33 @@ func executeEncode(ea encodeArgs) error {
 		cfg.LogFile = logger.FilePath()
 	}
 
+	if !quality.VshipBuildEnabled() && targetQualityOptionsRequested(ea) {
+		return fmt.Errorf("target-quality options are not available in no_vship builds; rebuild with libvship support or use --quality-mode crf")
+	}
+
 	// Override with explicit CLI arguments
+	if ea.qualityModeSet {
+		cfg.QualityMode = strings.ToLower(strings.TrimSpace(ea.qualityMode))
+	}
+	if ea.targetQuality != "" {
+		cfg.TargetQuality = ea.targetQuality
+	}
+	if ea.crfSearchRange != "" {
+		cfg.CRFSearchRange = ea.crfSearchRange
+	}
+	if ea.cvvdpDisplay != "" {
+		cfg.CVVDPDisplay = ea.cvvdpDisplay
+	}
+	if ea.metricWorkers != 0 {
+		cfg.MetricWorkers = ea.metricWorkers
+	}
+	if ea.maxProbes != 0 {
+		cfg.TargetQualityMaxProbes = ea.maxProbes
+	}
 	if ea.crf != "" {
+		if !ea.qualityModeSet {
+			cfg.QualityMode = config.QualityModeCRF
+		}
 		if err := parseCRF(ea.crf, cfg); err != nil {
 			return err
 		}
@@ -239,7 +304,12 @@ func executeEncode(ea encodeArgs) error {
 	// Log configuration
 	if logger != nil {
 		logger.Info("Output directory: %s", outputDir)
-		logger.Info("CRF quality: SD=%d, HD=%d, UHD=%d", cfg.CRFSD, cfg.CRFHD, cfg.CRFUHD)
+		logger.Info("Quality mode: %s", cfg.QualityMode)
+		if cfg.QualityMode == config.QualityModeTarget {
+			logger.Info("Target quality: %s (target %.2f +/- %.2f), CRF range %s", cfg.TargetQuality, cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange)
+		} else {
+			logger.Info("CRF quality: SD=%s, HD=%s, UHD=%s", quality.FormatCRF(cfg.CRFSD), quality.FormatCRF(cfg.CRFHD), quality.FormatCRF(cfg.CRFUHD))
+		}
 		logger.Info("SVT-AV1 preset: %d", cfg.SVTAV1Preset)
 		logger.Info("Crop mode: %s", cfg.CropMode)
 		logger.Info("Adaptive encoding enabled")
@@ -307,22 +377,22 @@ func parseCRF(crfStr string, cfg *config.Config) error {
 	switch len(parts) {
 	case 1:
 		// Single value: apply to all resolutions
-		val, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 8)
+		val, err := quality.ParseCRF(parts[0])
 		if err != nil {
 			return fmt.Errorf("invalid CRF value %q: %w", crfStr, err)
 		}
-		cfg.CRFSD = uint8(val)
-		cfg.CRFHD = uint8(val)
-		cfg.CRFUHD = uint8(val)
+		cfg.CRFSD = val
+		cfg.CRFHD = val
+		cfg.CRFUHD = val
 	case 3:
 		// Triple: SD,HD,UHD
-		vals := make([]uint8, 3)
+		vals := make([]float32, 3)
 		for i, part := range parts {
-			val, err := strconv.ParseUint(strings.TrimSpace(part), 10, 8)
+			val, err := quality.ParseCRF(strings.TrimSpace(part))
 			if err != nil {
 				return fmt.Errorf("invalid CRF value in position %d: %w", i+1, err)
 			}
-			vals[i] = uint8(val)
+			vals[i] = val
 		}
 		cfg.CRFSD = vals[0]
 		cfg.CRFHD = vals[1]

@@ -120,6 +120,15 @@ if ! command -v go &>/dev/null; then
     exit 1
 fi
 
+print_step "Checking optional VSHIP/CVVDP dependency"
+if pkg-config --exists vship 2>/dev/null; then
+    print_success "VSHIP is available via pkg-config"
+elif [ -e /usr/local/lib/libvship.so ] || [ -e /usr/lib/libvship.so ] || [ -e /usr/lib64/libvship.so ]; then
+    print_success "VSHIP shared library found"
+else
+    print_warning "VSHIP not found; default builds require libvship for target-quality mode. Use -tags no_vship for fixed-CRF-only builds."
+fi
+
 print_step "Checking for reachable Go vulnerabilities"
 if ! command -v govulncheck &>/dev/null; then
     echo "   Installing govulncheck..."

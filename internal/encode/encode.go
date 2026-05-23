@@ -320,7 +320,7 @@ func streamingWorker(
 		}
 
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
-		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, workDir, width, height, progressCb)
+		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, chunk.IVFPath(workDir, ch.Idx), cfg.CRF, width, height, progressCb)
 
 		if result.Error == nil {
 			srcNextFrame = ch.End
@@ -344,16 +344,16 @@ func encodeChunkStreaming(
 	inf *video.Info,
 	cropRect *video.CropRect,
 	cfg *EncodeConfig,
-	workDir string,
+	outputPath string,
+	crf float32,
 	width, height uint32,
 	progressCb chunkProgressCallback,
 ) worker.EncodeResult {
 	frameCount := ch.Frames()
-	outputPath := chunk.IVFPath(workDir, ch.Idx)
 
 	encCfg := &encoder.EncConfig{
 		Inf:                   inf,
-		CRF:                   cfg.CRF,
+		CRF:                   crf,
 		Preset:                cfg.Preset,
 		Tune:                  cfg.Tune,
 		Output:                outputPath,

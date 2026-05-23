@@ -17,6 +17,7 @@ import (
 	"codeberg.org/five82/reel/internal/config"
 	"codeberg.org/five82/reel/internal/encode"
 	"codeberg.org/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
@@ -30,9 +31,13 @@ func ProcessChunked(
 	inputPath, outputPath string,
 	videoProps *media.VideoProperties,
 	audioStreams []media.AudioStreamInfo,
-	quality uint32,
+	qualitySetting float32,
 	rep reporter.Reporter,
 ) (CropResult, error) {
+	if cfg.QualityMode == config.QualityModeTarget && !quality.VshipBuildEnabled() {
+		return CropResult{}, fmt.Errorf("target-quality mode is not available in this build; rebuild without -tags no_vship and with libvship installed, or use --quality-mode crf")
+	}
+
 	// Create work directory
 	workDir := chunk.GetWorkDirPath(inputPath, cfg.GetTempDir())
 	if err := chunk.CreateWorkDir(workDir); err != nil {
@@ -154,7 +159,7 @@ func ProcessChunked(
 
 	// Setup encode config
 	encCfg := &encode.EncodeConfig{
-		CRF:                   float32(quality),
+		CRF:                   qualitySetting,
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
 		ACBias:                cfg.SVTAV1ACBias,
@@ -169,7 +174,7 @@ func ProcessChunked(
 	}
 
 	finishStep = startVerboseStep(rep, "Resume setup")
-	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, quality)
+	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting)
 	if err != nil {
 		finishStep()
 		return CropResult{}, err
@@ -297,16 +302,52 @@ func ProcessChunked(
 
 	// Run parallel video encode
 	finishStep = startVerboseStep(rep, "Video encoding")
-	_, encodeErr := encode.EncodeAll(
-		encodeCtx,
-		chunks,
-		inputPath,
-		vidInf,
-		encCfg,
-		workDir,
-		cropRect,
-		progressCallback,
-	)
+	var encodeErr error
+	if cfg.QualityMode == config.QualityModeTarget {
+		displayPath, err := quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
+		if err != nil {
+			finishStep()
+			cancelEncode()
+			<-audioDone
+			finishAudioStep()
+			return CropResult{}, err
+		}
+		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, cfg.MetricWorkers, displayPath))
+		rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
+		_, encodeErr = encode.EncodeTargetQuality(
+			encodeCtx,
+			chunks,
+			inputPath,
+			vidInf,
+			encCfg,
+			workDir,
+			cropRect,
+			progressCallback,
+			encode.TargetQualityConfig{
+				Target:        cfg.TargetQualityTarget,
+				Tolerance:     cfg.TargetQualityTolerance,
+				CRFMin:        cfg.CRFSearchMin,
+				CRFMax:        cfg.CRFSearchMax,
+				MaxProbes:     cfg.TargetQualityMaxProbes,
+				MetricWorkers: cfg.MetricWorkers,
+				DisplayPath:   displayPath,
+				Verbose: func(message string) {
+					rep.Verbose(message)
+				},
+			},
+		)
+	} else {
+		_, encodeErr = encode.EncodeAll(
+			encodeCtx,
+			chunks,
+			inputPath,
+			vidInf,
+			encCfg,
+			workDir,
+			cropRect,
+			progressCallback,
+		)
+	}
 
 	finishStep()
 
@@ -352,6 +393,16 @@ func ProcessChunked(
 	finishStep()
 
 	return cropResult, nil
+}
+
+func cvvdpDisplaySummary(cfg *config.Config, inf *video.Info) string {
+	if cfg.CVVDPDisplay != "" {
+		return fmt.Sprintf("CVVDP display model: key=xav, override=%s", cfg.CVVDPDisplay)
+	}
+	if inf.TransferCharacteristics != nil && (*inf.TransferCharacteristics == 16 || *inf.TransferCharacteristics == 18) {
+		return "CVVDP display model: key=xav, generated HDR normal-viewing model, ppd~75, resolution=3840x2160, peak=1000 nits, contrast=1000000, ambient=10 lux"
+	}
+	return "CVVDP display model: key=xav, generated SDR normal-viewing model, ppd~75, resolution=3840x2160, peak=200 nits, contrast=1000, ambient=100 lux"
 }
 
 func encodePipelineError(parentErr, encodeErr, audioErr error) error {
@@ -448,7 +499,7 @@ func buildResumeManifest(
 	chunks []chunk.Chunk,
 	cropFilter string,
 	chunkDuration float64,
-	quality uint32,
+	qualitySetting float32,
 ) (chunk.ResumeManifest, error) {
 	stat, err := os.Stat(inputPath)
 	if err != nil {
@@ -464,7 +515,10 @@ func buildResumeManifest(
 		FPSDen:                vidInf.FPSDen,
 		Frames:                vidInf.Frames,
 		CropFilter:            cropFilter,
-		Quality:               quality,
+		QualityMode:           cfg.QualityMode,
+		Quality:               qualitySetting,
+		TargetQuality:         cfg.TargetQuality,
+		CRFSearchRange:        cfg.CRFSearchRange,
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
 		ACBias:                cfg.SVTAV1ACBias,

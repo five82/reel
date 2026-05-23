@@ -1,18 +1,39 @@
 // Package config provides configuration types and defaults for reel.
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+
+	"codeberg.org/five82/reel/internal/quality"
+)
 
 // Default constants
 const (
-	// DefaultCRFSD is the default CRF quality setting for SD content (<1920 width).
-	DefaultCRFSD uint8 = 24
+	// DefaultCRFSD is the default fixed-CRF quality setting for SD content (<1920 width).
+	DefaultCRFSD float32 = 24
 
-	// DefaultCRFHD is the default CRF quality setting for HD content (>=1920, <3840 width).
-	DefaultCRFHD uint8 = 26
+	// DefaultCRFHD is the default fixed-CRF quality setting for HD content (>=1920, <3840 width).
+	DefaultCRFHD float32 = 26
 
-	// DefaultCRFUHD is the default CRF quality setting for UHD content (>=3840 width).
-	DefaultCRFUHD uint8 = 26
+	// DefaultCRFUHD is the default fixed-CRF quality setting for UHD content (>=3840 width).
+	DefaultCRFUHD float32 = 26
+
+	// Quality mode constants.
+	QualityModeTarget = "target"
+	QualityModeCRF    = "crf"
+
+	// DefaultTargetQuality is the default CVVDP JOD target range.
+	DefaultTargetQuality = "9.45-9.55"
+
+	// DefaultCRFSearchRange is the default target-quality CRF search range.
+	DefaultCRFSearchRange = "4.25-63.75"
+
+	// DefaultMetricWorkers limits concurrent VSHIP/CUDA scoring by default.
+	DefaultMetricWorkers = 1
+
+	// DefaultTargetQualityMaxProbes caps per-chunk target-quality probes.
+	DefaultTargetQualityMaxProbes = 6
 
 	// HDWidthThreshold is the minimum width for HD resolution.
 	HDWidthThreshold uint32 = 1920
@@ -72,10 +93,24 @@ type Config struct {
 	SVTAV1VarianceBoostStrength uint8
 	SVTAV1VarianceOctile        uint8
 
-	// Quality settings (CRF value 0-63) by resolution
-	CRFSD  uint8 // CRF for SD content (<1920 width)
-	CRFHD  uint8 // CRF for HD content (>=1920, <3840 width)
-	CRFUHD uint8 // CRF for UHD content (>=3840 width)
+	// Quality mode and settings.
+	QualityMode            string  // "target" or "crf"
+	TargetQuality          string  // CVVDP JOD target range, LOW-HIGH
+	TargetQualityMin       float32 // Parsed CVVDP target low bound
+	TargetQualityMax       float32 // Parsed CVVDP target high bound
+	TargetQualityTarget    float32 // Parsed CVVDP target midpoint
+	TargetQualityTolerance float32 // Parsed CVVDP tolerance
+	CRFSearchRange         string  // Target-quality search bounds, LOW-HIGH
+	CRFSearchMin           float32 // Parsed target-quality CRF low bound
+	CRFSearchMax           float32 // Parsed target-quality CRF high bound
+	CVVDPDisplay           string  // Optional display JSON override
+	MetricWorkers          int     // Concurrent VSHIP/CUDA scoring workers
+	TargetQualityMaxProbes int     // Per-chunk target-quality probe cap
+
+	// Fixed-CRF settings by resolution.
+	CRFSD  float32 // CRF for SD content (<1920 width)
+	CRFHD  float32 // CRF for HD content (>=1920, <3840 width)
+	CRFUHD float32 // CRF for UHD content (>=3840 width)
 
 	// Processing options
 	CropMode           string // "auto" or "none"
@@ -102,6 +137,11 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 		SVTAV1EnableVarianceBoost:   DefaultSVTAV1EnableVarianceBoost,
 		SVTAV1VarianceBoostStrength: DefaultSVTAV1VarianceBoostStrength,
 		SVTAV1VarianceOctile:        DefaultSVTAV1VarianceOctile,
+		QualityMode:                 defaultQualityMode(),
+		TargetQuality:               DefaultTargetQuality,
+		CRFSearchRange:              DefaultCRFSearchRange,
+		MetricWorkers:               DefaultMetricWorkers,
+		TargetQualityMaxProbes:      DefaultTargetQualityMaxProbes,
 		CRFSD:                       DefaultCRFSD,
 		CRFHD:                       DefaultCRFHD,
 		CRFUHD:                      DefaultCRFUHD,
@@ -113,20 +153,72 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 	}
 }
 
+func defaultQualityMode() string {
+	if quality.VshipBuildEnabled() {
+		return QualityModeTarget
+	}
+	return QualityModeCRF
+}
+
 // Validate checks the configuration for errors.
 func (c *Config) Validate() error {
 	if c.SVTAV1Preset > 13 {
 		return fmt.Errorf("svt_av1_preset must be 0-13, got %d", c.SVTAV1Preset)
 	}
 
-	if c.CRFSD > 63 {
-		return fmt.Errorf("crf-sd must be 0-63, got %d", c.CRFSD)
+	switch c.QualityMode {
+	case QualityModeTarget, QualityModeCRF:
+	case "":
+		c.QualityMode = defaultQualityMode()
+	default:
+		return fmt.Errorf("quality-mode must be %q or %q, got %q", QualityModeTarget, QualityModeCRF, c.QualityMode)
 	}
-	if c.CRFHD > 63 {
-		return fmt.Errorf("crf-hd must be 0-63, got %d", c.CRFHD)
+	if c.QualityMode == QualityModeTarget && !quality.VshipBuildEnabled() {
+		return fmt.Errorf("quality-mode %q is not available in no_vship builds; rebuild with VSHIP or use %q", QualityModeTarget, QualityModeCRF)
 	}
-	if c.CRFUHD > 63 {
-		return fmt.Errorf("crf-uhd must be 0-63, got %d", c.CRFUHD)
+
+	if err := quality.ValidateCRF(c.CRFSD); err != nil {
+		return fmt.Errorf("crf-sd: %w", err)
+	}
+	if err := quality.ValidateCRF(c.CRFHD); err != nil {
+		return fmt.Errorf("crf-hd: %w", err)
+	}
+	if err := quality.ValidateCRF(c.CRFUHD); err != nil {
+		return fmt.Errorf("crf-uhd: %w", err)
+	}
+
+	if c.TargetQuality == "" {
+		c.TargetQuality = DefaultTargetQuality
+	}
+	low, high, target, tolerance, err := quality.ParseTargetQualityRange(c.TargetQuality)
+	if err != nil {
+		return err
+	}
+	c.TargetQualityMin = low
+	c.TargetQualityMax = high
+	c.TargetQualityTarget = target
+	c.TargetQualityTolerance = tolerance
+
+	if c.CRFSearchRange == "" {
+		c.CRFSearchRange = DefaultCRFSearchRange
+	}
+	searchMin, searchMax, err := quality.ParseCRFSearchRange(c.CRFSearchRange)
+	if err != nil {
+		return err
+	}
+	c.CRFSearchMin = searchMin
+	c.CRFSearchMax = searchMax
+
+	if c.MetricWorkers < 1 {
+		return fmt.Errorf("metric-workers must be >= 1, got %d", c.MetricWorkers)
+	}
+	if c.TargetQualityMaxProbes < 1 {
+		return fmt.Errorf("target-quality-max-probes must be >= 1, got %d", c.TargetQualityMaxProbes)
+	}
+	if c.CVVDPDisplay != "" {
+		if _, err := os.Stat(c.CVVDPDisplay); err != nil {
+			return fmt.Errorf("cvvdp-display is not readable: %w", err)
+		}
 	}
 
 	// Validate chunk durations
@@ -155,7 +247,7 @@ func (c *Config) GetTempDir() string {
 }
 
 // CRFForWidth returns the appropriate CRF value based on video width.
-func (c *Config) CRFForWidth(width uint32) uint8 {
+func (c *Config) CRFForWidth(width uint32) float32 {
 	if width >= UHDWidthThreshold {
 		return c.CRFUHD
 	}

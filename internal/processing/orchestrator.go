@@ -10,6 +10,7 @@ import (
 	encodepipe "codeberg.org/five82/reel/internal/encode"
 	"codeberg.org/five82/reel/internal/encoder"
 	"codeberg.org/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/validation"
@@ -160,7 +161,7 @@ func ProcessVideos(
 			EncoderVersion:     encoder.SVTVersion(),
 			Preset:             fmt.Sprintf("%d", encodeParams.Preset),
 			Tune:               fmt.Sprintf("%d", encodeParams.Tune),
-			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality),
+			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality, cfg),
 			PixelFormat:        encodeParams.PixelFormat,
 			MatrixCoefficients: encodeParams.MatrixCoefficients,
 			AudioCodec:         "Opus",
@@ -359,9 +360,8 @@ func videoStreamBytes(path, label string, rep reporter.Reporter) uint64 {
 }
 
 // determineQualitySettings returns the CRF quality setting based on video resolution.
-func determineQualitySettings(props *media.VideoProperties, cfg *config.Config) (uint32, string) {
-	crf := cfg.CRFForWidth(props.Width)
-	return uint32(crf), ""
+func determineQualitySettings(props *media.VideoProperties, cfg *config.Config) (float32, string) {
+	return cfg.CRFForWidth(props.Width), ""
 }
 
 func formatDynamicRange(isHDR bool) string {
@@ -371,7 +371,10 @@ func formatDynamicRange(isHDR bool) string {
 	return "SDR"
 }
 
-func formatQualityDescription(width uint32, crf uint32) string {
+func formatQualityDescription(width uint32, crf float32, cfg *config.Config) string {
+	if cfg.QualityMode == config.QualityModeTarget {
+		return fmt.Sprintf("CVVDP target %.2f-%.2f JOD (CRF search %s, metric workers %d)", cfg.TargetQualityMin, cfg.TargetQualityMax, cfg.CRFSearchRange, cfg.MetricWorkers)
+	}
 	var tier string
 	if width >= config.UHDWidthThreshold {
 		tier = "UHD"
@@ -380,11 +383,11 @@ func formatQualityDescription(width uint32, crf uint32) string {
 	} else {
 		tier = "SD"
 	}
-	return fmt.Sprintf("CRF %d (%s)", crf, tier)
+	return fmt.Sprintf("CRF %s (%s)", quality.FormatCRF(crf), tier)
 }
 
 type encodeParams struct {
-	Quality            uint32
+	Quality            float32
 	Preset             uint8
 	Tune               uint8
 	PixelFormat        string
@@ -393,7 +396,7 @@ type encodeParams struct {
 
 func setupEncodeParams(
 	cfg *config.Config,
-	quality uint32,
+	quality float32,
 	hdrInfo *media.HDRInfo,
 ) *encodeParams {
 	params := &encodeParams{
