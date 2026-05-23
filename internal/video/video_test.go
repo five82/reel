@@ -92,12 +92,21 @@ func TestFrameCountFromDurations(t *testing.T) {
 }
 
 func TestSVTMetadataMapping(t *testing.T) {
+	assertInt32Ptr(t, svtColorValue(1), 1)
+	assertInt32Ptr(t, svtColorValue(2), 1)
+	assertInt32Ptr(t, svtColorValue(0), 1)
+	assertInt32Ptr(t, svtColorValue(2, 9), 9)
+	assertInt32Ptr(t, svtColorValue(3, 9), 9)
+
 	assertInt32Ptr(t, svtColorRange(1), 0)
 	assertInt32Ptr(t, svtColorRange(2), 1)
-	assertNil(t, svtColorRange(0))
+	assertInt32Ptr(t, svtColorRange(0), 0)
+	assertInt32Ptr(t, svtColorRange(0, 2), 1)
 
 	assertInt32Ptr(t, svtChromaSamplePosition(1), 1)
 	assertInt32Ptr(t, svtChromaSamplePosition(3), 2)
+	assertInt32Ptr(t, svtChromaSamplePosition(0), 1)
+	assertInt32Ptr(t, svtChromaSamplePosition(0, 3), 2)
 	assertNil(t, svtChromaSamplePosition(2))
 }
 

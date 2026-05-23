@@ -72,7 +72,16 @@ import (
 	"unsafe"
 )
 
-const avTimeBase = 1000000
+const (
+	avTimeBase               = 1000000
+	avColorBT709             = 1
+	avColorUnspecified       = 2
+	avColorReserved          = 3
+	svtColorRangeLimited     = 0
+	svtColorRangeFull        = 1
+	svtChromaPositionLeft    = 1
+	svtChromaPositionTopLeft = 2
+)
 
 var initOnce sync.Once
 
@@ -188,7 +197,7 @@ func Probe(path string) (*Info, error) {
 	if frame != nil {
 		inf.PixelFormat = int(frame.format)
 		inf.Is10Bit = pixelDepth(int(frame.format)) >= 10
-		src.fillFrameMetadata(inf, frame, int(par.color_space))
+		src.fillFrameMetadata(inf, frame, par)
 	} else {
 		inf.Is10Bit = pixelDepth(int(par.format)) >= 10
 	}
@@ -638,28 +647,12 @@ func (s *Source) countVideoPackets() int {
 	return count
 }
 
-func (s *Source) fillFrameMetadata(inf *Info, frame *C.AVFrame, parColorSpace int) {
-	if frame.color_primaries > 0 {
-		v := int32(frame.color_primaries)
-		inf.ColorPrimaries = &v
-	}
-	if frame.color_trc > 0 {
-		v := int32(frame.color_trc)
-		inf.TransferCharacteristics = &v
-	}
-	colorSpace := int(frame.colorspace)
-	if colorSpace <= 0 || colorSpace == 3 { // AVCOL_SPC_RESERVED; match XAV fallback.
-		colorSpace = parColorSpace
-	}
-	if colorSpace == 0 {
-		colorSpace = 2 // AVCOL_SPC_UNSPECIFIED for SVT-AV1.
-	}
-	if colorSpace > 0 {
-		v := int32(colorSpace)
-		inf.MatrixCoefficients = &v
-	}
-	inf.ColorRange = svtColorRange(int(frame.color_range))
-	inf.ChromaSamplePosition = svtChromaSamplePosition(int(frame.chroma_location))
+func (s *Source) fillFrameMetadata(inf *Info, frame *C.AVFrame, par *C.AVCodecParameters) {
+	inf.ColorPrimaries = svtColorValue(int(frame.color_primaries), int(par.color_primaries))
+	inf.TransferCharacteristics = svtColorValue(int(frame.color_trc), int(par.color_trc))
+	inf.MatrixCoefficients = svtColorValue(int(frame.colorspace), int(par.color_space))
+	inf.ColorRange = svtColorRange(int(frame.color_range), int(par.color_range))
+	inf.ChromaSamplePosition = svtChromaSamplePosition(int(frame.chroma_location), int(par.chroma_location))
 	inf.MasteringDisplay = masteringDisplayFromFrame(frame)
 	inf.ContentLight = contentLightFromFrame(frame)
 }
@@ -682,30 +675,53 @@ func avError(ret C.int) string {
 	return C.GoString(buf)
 }
 
-func svtColorRange(avRange int) *int32 {
-	var rangeValue int32
-	switch avRange {
-	case 1: // AVCOL_RANGE_MPEG, SVT-AV1 studio/limited range
-		rangeValue = 0
-	case 2: // AVCOL_RANGE_JPEG, SVT-AV1 full range
-		rangeValue = 1
-	default:
-		return nil
+func svtColorValue(avValues ...int) *int32 {
+	for _, avValue := range avValues {
+		if avValue > 0 && avValue != avColorUnspecified && avValue != avColorReserved {
+			v := int32(avValue)
+			return &v
+		}
 	}
-	return &rangeValue
+	v := int32(avColorBT709)
+	return &v
 }
 
-func svtChromaSamplePosition(avLocation int) *int32 {
-	var position int32
-	switch avLocation {
-	case 1: // AVCHROMA_LOC_LEFT
-		position = 1 // AV1 vertical/left
-	case 3: // AVCHROMA_LOC_TOPLEFT
-		position = 2 // AV1 colocated/topleft
-	default:
-		return nil
+func svtColorRange(avRanges ...int) *int32 {
+	for _, avRange := range avRanges {
+		switch avRange {
+		case 1: // AVCOL_RANGE_MPEG, SVT-AV1 studio/limited range
+			v := int32(svtColorRangeLimited)
+			return &v
+		case 2: // AVCOL_RANGE_JPEG, SVT-AV1 full range
+			v := int32(svtColorRangeFull)
+			return &v
+		case 0: // AVCOL_RANGE_UNSPECIFIED
+			continue
+		default:
+			return nil
+		}
 	}
-	return &position
+	v := int32(svtColorRangeLimited)
+	return &v
+}
+
+func svtChromaSamplePosition(avLocations ...int) *int32 {
+	for _, avLocation := range avLocations {
+		switch avLocation {
+		case 1: // AVCHROMA_LOC_LEFT
+			v := int32(svtChromaPositionLeft) // AV1 vertical/left
+			return &v
+		case 3: // AVCHROMA_LOC_TOPLEFT
+			v := int32(svtChromaPositionTopLeft) // AV1 colocated/topleft
+			return &v
+		case 0: // AVCHROMA_LOC_UNSPECIFIED
+			continue
+		default:
+			return nil
+		}
+	}
+	v := int32(svtChromaPositionLeft)
+	return &v
 }
 
 func masteringDisplayFromFrame(frame *C.AVFrame) *string {
