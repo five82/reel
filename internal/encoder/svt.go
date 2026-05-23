@@ -234,67 +234,85 @@ func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 	fps := float64(cfg.Inf.FPSNum) / float64(cfg.Inf.FPSDen)
 	keyintFrames := int(fps * 10)
 
-	parseSvtParam(config, "input-depth", "10")
-	parseSvtParam(config, "color-format", "1")
-	parseSvtParam(config, "profile", "0")
-	parseSvtParam(config, "tile-rows", "0")
-	parseSvtParam(config, "tile-columns", "0")
-	parseSvtParam(config, "passes", "1")
-	parseSvtParam(config, "keyint", fmt.Sprintf("%d", keyintFrames))
-	parseSvtParam(config, "rc", "0")
-	parseSvtParam(config, "scd", "0")
-	parseSvtParam(config, "scm", "0")
-	parseSvtParam(config, "width", fmt.Sprintf("%d", cfg.Width))
-	parseSvtParam(config, "forced-max-frame-width", fmt.Sprintf("%d", cfg.Width))
-	parseSvtParam(config, "height", fmt.Sprintf("%d", cfg.Height))
-	parseSvtParam(config, "forced-max-frame-height", fmt.Sprintf("%d", cfg.Height))
-	parseSvtParam(config, "fps-num", fmt.Sprintf("%d", cfg.Inf.FPSNum))
-	parseSvtParam(config, "fps-denom", fmt.Sprintf("%d", cfg.Inf.FPSDen))
-	parseSvtParam(config, "crf", fmt.Sprintf("%.0f", cfg.CRF))
-	parseSvtParam(config, "preset", fmt.Sprintf("%d", cfg.Preset))
-	parseSvtParam(config, "tune", fmt.Sprintf("%d", cfg.Tune))
+	params := [][2]string{
+		{"input-depth", "10"},
+		{"color-format", "1"},
+		{"profile", "0"},
+		{"tile-rows", "0"},
+		{"tile-columns", "0"},
+		{"passes", "1"},
+		{"keyint", fmt.Sprintf("%d", keyintFrames)},
+		{"rc", "0"},
+		{"scd", "0"},
+		{"scm", "0"},
+		{"width", fmt.Sprintf("%d", cfg.Width)},
+		{"forced-max-frame-width", fmt.Sprintf("%d", cfg.Width)},
+		{"height", fmt.Sprintf("%d", cfg.Height)},
+		{"forced-max-frame-height", fmt.Sprintf("%d", cfg.Height)},
+		{"fps-num", fmt.Sprintf("%d", cfg.Inf.FPSNum)},
+		{"fps-denom", fmt.Sprintf("%d", cfg.Inf.FPSDen)},
+		{"crf", fmt.Sprintf("%.0f", cfg.CRF)},
+		{"preset", fmt.Sprintf("%d", cfg.Preset)},
+		{"tune", fmt.Sprintf("%d", cfg.Tune)},
+	}
+	for _, param := range params {
+		if err := parseSvtParam(config, param[0], param[1]); err != nil {
+			return err
+		}
+	}
 	if cfg.LevelOfParallelism > 0 {
 		C.reel_set_level_of_parallelism(config, C.uint32_t(cfg.LevelOfParallelism))
 	}
 
+	var optionalParams [][2]string
 	if cfg.Inf.ColorPrimaries != nil {
-		parseSvtParam(config, "color-primaries", fmt.Sprintf("%d", *cfg.Inf.ColorPrimaries))
+		optionalParams = append(optionalParams, [2]string{"color-primaries", fmt.Sprintf("%d", *cfg.Inf.ColorPrimaries)})
 	}
 	if cfg.Inf.TransferCharacteristics != nil {
-		parseSvtParam(config, "transfer-characteristics", fmt.Sprintf("%d", *cfg.Inf.TransferCharacteristics))
+		optionalParams = append(optionalParams, [2]string{"transfer-characteristics", fmt.Sprintf("%d", *cfg.Inf.TransferCharacteristics)})
 	}
 	if cfg.Inf.MatrixCoefficients != nil {
-		parseSvtParam(config, "matrix-coefficients", fmt.Sprintf("%d", *cfg.Inf.MatrixCoefficients))
+		optionalParams = append(optionalParams, [2]string{"matrix-coefficients", fmt.Sprintf("%d", *cfg.Inf.MatrixCoefficients)})
 	}
 	if cfg.Inf.ColorRange != nil {
-		parseSvtParam(config, "color-range", fmt.Sprintf("%d", *cfg.Inf.ColorRange))
+		optionalParams = append(optionalParams, [2]string{"color-range", fmt.Sprintf("%d", *cfg.Inf.ColorRange)})
 	}
 	if cfg.Inf.ChromaSamplePosition != nil {
-		parseSvtParam(config, "chroma-sample-position", chromaSamplePosition(*cfg.Inf.ChromaSamplePosition))
+		optionalParams = append(optionalParams, [2]string{"chroma-sample-position", chromaSamplePosition(*cfg.Inf.ChromaSamplePosition)})
 	}
 	if cfg.Inf.MasteringDisplay != nil {
-		parseSvtParam(config, "mastering-display", *cfg.Inf.MasteringDisplay)
+		optionalParams = append(optionalParams, [2]string{"mastering-display", *cfg.Inf.MasteringDisplay})
 	}
 	if cfg.Inf.ContentLight != nil {
-		parseSvtParam(config, "content-light", *cfg.Inf.ContentLight)
+		optionalParams = append(optionalParams, [2]string{"content-light", *cfg.Inf.ContentLight})
 	}
-
 	if cfg.ACBias != 0 {
-		parseSvtParam(config, "ac-bias", fmt.Sprintf("%.2f", cfg.ACBias))
+		optionalParams = append(optionalParams, [2]string{"ac-bias", fmt.Sprintf("%.2f", cfg.ACBias)})
 	}
 	if cfg.EnableVarianceBoost {
-		parseSvtParam(config, "enable-variance-boost", "1")
-		parseSvtParam(config, "variance-boost-strength", fmt.Sprintf("%d", cfg.VarianceBoostStrength))
-		parseSvtParam(config, "variance-octile", fmt.Sprintf("%d", cfg.VarianceOctile))
+		optionalParams = append(optionalParams,
+			[2]string{"enable-variance-boost", "1"},
+			[2]string{"variance-boost-strength", fmt.Sprintf("%d", cfg.VarianceBoostStrength)},
+			[2]string{"variance-octile", fmt.Sprintf("%d", cfg.VarianceOctile)},
+		)
+	}
+	for _, param := range optionalParams {
+		if err := parseSvtParam(config, param[0], param[1]); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func parseSvtParam(config *C.EbSvtAv1EncConfiguration, name, value string) {
+func parseSvtParam(config *C.EbSvtAv1EncConfiguration, name, value string) error {
 	cName := C.CString(name)
 	cValue := C.CString(value)
 	defer C.free(unsafe.Pointer(cName))
 	defer C.free(unsafe.Pointer(cValue))
-	C.svt_av1_enc_parse_parameter(config, cName, cValue)
+
+	if ret := C.svt_av1_enc_parse_parameter(config, cName, cValue); ret != C.EB_ErrorNone {
+		return fmt.Errorf("svt-av1 rejected parameter %s=%q: %d", name, value, int32(ret))
+	}
+	return nil
 }
