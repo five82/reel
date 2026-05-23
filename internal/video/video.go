@@ -10,6 +10,7 @@ package video
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
 #include <libavutil/mastering_display_metadata.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 #include <stdlib.h>
@@ -29,6 +30,12 @@ static void reel_discard_non_video_streams(AVFormatContext *ctx) {
 
 static void reel_init_av_log(void) {
 	av_log_set_level(AV_LOG_ERROR);
+}
+
+static void reel_set_probe_size(AVFormatContext *ctx) {
+	if (ctx != NULL) {
+		av_opt_set_int(ctx, "probesize", 0x80000, AV_OPT_SEARCH_CHILDREN);
+	}
 }
 
 static int reel_averror_eagain(void) {
@@ -201,6 +208,7 @@ func Open(path string, threads int) (*Source, error) {
 		return nil, fmt.Errorf("decoder: open failed: %s", avError(ret))
 	}
 
+	C.reel_set_probe_size(fmtCtx)
 	C.reel_discard_non_video_streams(fmtCtx)
 	if ret := C.avformat_find_stream_info(fmtCtx, nil); ret < 0 {
 		C.avformat_close_input(&fmtCtx)

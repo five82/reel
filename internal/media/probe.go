@@ -9,11 +9,18 @@ package media
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/log.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <stdlib.h>
 
 static void reel_probe_init_av_log(void) {
 	av_log_set_level(AV_LOG_ERROR);
+}
+
+static void reel_probe_set_probe_size(AVFormatContext *ctx) {
+	if (ctx != NULL) {
+		av_opt_set_int(ctx, "probesize", 0x80000, AV_OPT_SEARCH_CHILDREN);
+	}
 }
 
 static AVStream* reel_probe_stream_at(AVFormatContext *ctx, int idx) {
@@ -253,6 +260,7 @@ func openInput(path string) (*C.AVFormatContext, error) {
 	if ret := C.avformat_open_input(&fmtCtx, cPath, nil, nil); ret < 0 {
 		return nil, fmt.Errorf("probe: open failed: %s", avError(ret))
 	}
+	C.reel_probe_set_probe_size(fmtCtx)
 	if ret := C.avformat_find_stream_info(fmtCtx, nil); ret < 0 {
 		C.avformat_close_input(&fmtCtx)
 		return nil, fmt.Errorf("probe: stream info failed: %s", avError(ret))
