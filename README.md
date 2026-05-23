@@ -24,13 +24,12 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 
 - Go 1.26+
 - libSvtAv1Enc (SVT-AV1 encoder shared library)
-- FFmpeg executable (for chunk merging and final muxing)
 - libopusenc shared library (for Opus audio encoding)
-- FFmpeg development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
+- FFmpeg/libav development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install ffmpeg libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
+sudo apt-get install libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
 
 # Verify libopusenc is available
 ldconfig -p | grep opusenc

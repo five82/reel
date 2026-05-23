@@ -3,37 +3,11 @@ package chunk
 import (
 	"encoding/binary"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"codeberg.org/five82/reel/internal/video"
 )
-
-func TestEscapeConcatPathEscapesApostrophes(t *testing.T) {
-	got := escapeConcatPath("/tmp/Bob's/movie.ivf")
-	want := "/tmp/Bob'\\''s/movie.ivf"
-	if got != want {
-		t.Fatalf("escapeConcatPath() = %q, want %q", got, want)
-	}
-}
-
-func TestWriteConcatFileEscapesApostrophes(t *testing.T) {
-	dir := t.TempDir()
-	concatPath := filepath.Join(dir, "concat.txt")
-	mediaPath := filepath.Join(dir, "Bob's movie.ivf")
-	if err := writeConcatFile(concatPath, []string{mediaPath}); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(concatPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "Bob'\\''s movie.ivf") {
-		t.Fatalf("concat file did not escape apostrophe: %q", string(data))
-	}
-}
 
 func TestMergeOutputConcatenatesIVFAndRewritesFrameCount(t *testing.T) {
 	workDir := t.TempDir()

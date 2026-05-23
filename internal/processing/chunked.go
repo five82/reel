@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -498,10 +497,5 @@ func parseCropFilter(filter string, srcWidth, srcHeight uint32) (*video.CropRect
 
 // CheckChunkedDependencies verifies that required tools are available.
 func CheckChunkedDependencies() error {
-	// Check for ffmpeg in PATH (used for chunk merging and final muxing)
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return fmt.Errorf("ffmpeg not found in PATH (required for muxing)")
-	}
-
 	return nil
 }
