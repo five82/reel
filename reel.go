@@ -40,12 +40,15 @@ type Encoder struct {
 
 // Result contains the result of a single file encode.
 type Result struct {
-	OutputFile           string
-	OriginalSize         uint64
-	EncodedSize          uint64
-	SizeReductionPercent float64
-	ValidationPassed     bool
-	EncodingSpeed        float32
+	OutputFile                string
+	OriginalSize              uint64
+	EncodedSize               uint64
+	SizeReductionPercent      float64
+	VideoOriginalSize         uint64
+	VideoEncodedSize          uint64
+	VideoSizeReductionPercent float64
+	ValidationPassed          bool
+	EncodingSpeed             float32
 }
 
 // BatchResult contains the result of a batch encode.
@@ -59,6 +62,20 @@ type BatchResult struct {
 
 // Option configures the encoder.
 type Option func(*config.Config)
+
+func resultFromEncodeResult(outputFile string, r processing.EncodeResult) Result {
+	return Result{
+		OutputFile:                outputFile,
+		OriginalSize:              r.InputSize,
+		EncodedSize:               r.OutputSize,
+		SizeReductionPercent:      util.CalculateSizeReduction(r.InputSize, r.OutputSize),
+		VideoOriginalSize:         r.InputVideoSize,
+		VideoEncodedSize:          r.OutputVideoSize,
+		VideoSizeReductionPercent: util.CalculateSizeReduction(r.InputVideoSize, r.OutputVideoSize),
+		ValidationPassed:          r.ValidationPassed,
+		EncodingSpeed:             r.EncodingSpeed,
+	}
+}
 
 // New creates a new Encoder with the given options.
 func New(opts ...Option) (*Encoder, error) {
@@ -129,15 +146,8 @@ func (e *Encoder) EncodeWithReporter(ctx context.Context, input, outputDir strin
 		return nil, fmt.Errorf("no files were encoded")
 	}
 
-	r := results[0]
-	return &Result{
-		OutputFile:           util.ResolveOutputPath(input, outputDir, ""),
-		OriginalSize:         r.InputSize,
-		EncodedSize:          r.OutputSize,
-		SizeReductionPercent: util.CalculateSizeReduction(r.InputSize, r.OutputSize),
-		ValidationPassed:     r.ValidationPassed,
-		EncodingSpeed:        r.EncodingSpeed,
-	}, nil
+	r := resultFromEncodeResult(util.ResolveOutputPath(input, outputDir, ""), results[0])
+	return &r, nil
 }
 
 // Encode encodes a single video file.
@@ -167,15 +177,8 @@ func (e *Encoder) Encode(ctx context.Context, input, outputDir string, handler E
 		return nil, fmt.Errorf("no files were encoded")
 	}
 
-	r := results[0]
-	return &Result{
-		OutputFile:           util.ResolveOutputPath(input, outputDir, ""),
-		OriginalSize:         r.InputSize,
-		EncodedSize:          r.OutputSize,
-		SizeReductionPercent: util.CalculateSizeReduction(r.InputSize, r.OutputSize),
-		ValidationPassed:     r.ValidationPassed,
-		EncodingSpeed:        r.EncodingSpeed,
-	}, nil
+	r := resultFromEncodeResult(util.ResolveOutputPath(input, outputDir, ""), results[0])
+	return &r, nil
 }
 
 // EncodeBatch encodes multiple video files.
@@ -207,14 +210,7 @@ func (e *Encoder) EncodeBatch(ctx context.Context, inputs []string, outputDir st
 
 	var totalInputSize, totalOutputSize uint64
 	for _, r := range results {
-		batch.Results = append(batch.Results, Result{
-			OutputFile:           util.ResolveOutputPath(r.Filename, outputDir, ""),
-			OriginalSize:         r.InputSize,
-			EncodedSize:          r.OutputSize,
-			SizeReductionPercent: util.CalculateSizeReduction(r.InputSize, r.OutputSize),
-			ValidationPassed:     r.ValidationPassed,
-			EncodingSpeed:        r.EncodingSpeed,
-		})
+		batch.Results = append(batch.Results, resultFromEncodeResult(util.ResolveOutputPath(r.Filename, outputDir, ""), r))
 		batch.SuccessfulCount++
 		totalInputSize += r.InputSize
 		totalOutputSize += r.OutputSize
@@ -278,11 +274,14 @@ func (r *eventReporter) ValidationComplete(s reporter.ValidationSummary) {
 
 func (r *eventReporter) EncodingComplete(s reporter.EncodingOutcome) {
 	_ = r.handler(EncodingCompleteEvent{
-		BaseEvent:            BaseEvent{EventType: EventTypeEncodingComplete, Time: NewTimestamp()},
-		OutputFile:           s.OutputFile,
-		OriginalSize:         s.OriginalSize,
-		EncodedSize:          s.EncodedSize,
-		SizeReductionPercent: util.CalculateSizeReduction(s.OriginalSize, s.EncodedSize),
+		BaseEvent:                 BaseEvent{EventType: EventTypeEncodingComplete, Time: NewTimestamp()},
+		OutputFile:                s.OutputFile,
+		OriginalSize:              s.OriginalSize,
+		EncodedSize:               s.EncodedSize,
+		SizeReductionPercent:      util.CalculateSizeReduction(s.OriginalSize, s.EncodedSize),
+		VideoOriginalSize:         s.VideoOriginalSize,
+		VideoEncodedSize:          s.VideoEncodedSize,
+		VideoSizeReductionPercent: util.CalculateSizeReduction(s.VideoOriginalSize, s.VideoEncodedSize),
 	})
 }
 

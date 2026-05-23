@@ -21,6 +21,8 @@ type EncodeResult struct {
 	Duration          time.Duration
 	InputSize         uint64
 	OutputSize        uint64
+	InputVideoSize    uint64
+	OutputVideoSize   uint64
 	VideoDurationSecs float64
 	EncodingSpeed     float32
 	ValidationPassed  bool
@@ -201,6 +203,8 @@ func ProcessVideos(
 
 		inputSize, _ := util.GetFileSize(inputPath)
 		outputSize, _ := util.GetFileSize(outputPath)
+		inputVideoSize := videoStreamBytes(inputPath, "input", rep)
+		outputVideoSize := videoStreamBytes(outputPath, "output", rep)
 		encodingSpeed := float32(videoProps.DurationSecs) / float32(fileElapsedTime.Seconds())
 
 		// Calculate expected dimensions after crop
@@ -243,6 +247,8 @@ func ProcessVideos(
 			Duration:          fileElapsedTime,
 			InputSize:         inputSize,
 			OutputSize:        outputSize,
+			InputVideoSize:    inputVideoSize,
+			OutputVideoSize:   outputVideoSize,
 			VideoDurationSecs: videoProps.DurationSecs,
 			EncodingSpeed:     encodingSpeed,
 			ValidationPassed:  validationPassed,
@@ -265,15 +271,17 @@ func ProcessVideos(
 
 		// Emit encoding complete
 		rep.EncodingComplete(reporter.EncodingOutcome{
-			InputFile:    inputFilename,
-			OutputFile:   util.GetFilename(outputPath),
-			OriginalSize: inputSize,
-			EncodedSize:  outputSize,
-			VideoStream:  fmt.Sprintf("AV1 (libsvtav1), %dx%d", expectedWidth, expectedHeight),
-			AudioStream:  GenerateAudioResultsDescription(audioChannels, audioStreams),
-			TotalTime:    fileElapsedTime,
-			AverageSpeed: encodingSpeed,
-			OutputPath:   outputPath,
+			InputFile:         inputFilename,
+			OutputFile:        util.GetFilename(outputPath),
+			OriginalSize:      inputSize,
+			EncodedSize:       outputSize,
+			VideoOriginalSize: inputVideoSize,
+			VideoEncodedSize:  outputVideoSize,
+			VideoStream:       fmt.Sprintf("AV1 (libsvtav1), %dx%d", expectedWidth, expectedHeight),
+			AudioStream:       GenerateAudioResultsDescription(audioChannels, audioStreams),
+			TotalTime:         fileElapsedTime,
+			AverageSpeed:      encodingSpeed,
+			OutputPath:        outputPath,
 		})
 
 		// Cooldown between encodes
@@ -333,6 +341,15 @@ func ProcessVideos(
 }
 
 // determineQualitySettings returns the CRF quality setting based on video resolution.
+func videoStreamBytes(path, label string, rep reporter.Reporter) uint64 {
+	bytes, err := media.GetVideoStreamBytes(path)
+	if err != nil {
+		rep.Verbose(fmt.Sprintf("Could not calculate %s video stream size: %v", label, err))
+		return 0
+	}
+	return bytes
+}
+
 func determineQualitySettings(props *media.VideoProperties, cfg *config.Config) (uint32, string) {
 	crf := cfg.CRFForWidth(props.Width)
 	return uint32(crf), ""

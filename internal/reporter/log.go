@@ -141,6 +141,13 @@ func (r *LogReporter) EncodingComplete(summary EncodingOutcome) {
 		util.FormatBytesReadable(summary.OriginalSize),
 		util.FormatBytesReadable(summary.EncodedSize),
 		reduction)
+	if summary.VideoOriginalSize > 0 && summary.VideoEncodedSize > 0 {
+		videoReduction := util.CalculateSizeReduction(summary.VideoOriginalSize, summary.VideoEncodedSize)
+		r.log("INFO", "Video size: %s -> %s (%.1f%% reduction)",
+			util.FormatBytesReadable(summary.VideoOriginalSize),
+			util.FormatBytesReadable(summary.VideoEncodedSize),
+			videoReduction)
+	}
 	r.log("INFO", "Video: %s", summary.VideoStream)
 	r.log("INFO", "Audio: %s", summary.AudioStream)
 	r.log("INFO", "Time: %s (avg speed %.1fx)",

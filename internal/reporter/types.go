@@ -72,15 +72,17 @@ type ValidationStep struct {
 
 // EncodingOutcome contains final encoding results.
 type EncodingOutcome struct {
-	InputFile    string
-	OutputFile   string
-	OriginalSize uint64
-	EncodedSize  uint64
-	VideoStream  string
-	AudioStream  string
-	TotalTime    time.Duration
-	AverageSpeed float32
-	OutputPath   string
+	InputFile         string
+	OutputFile        string
+	OriginalSize      uint64
+	EncodedSize       uint64
+	VideoOriginalSize uint64
+	VideoEncodedSize  uint64
+	VideoStream       string
+	AudioStream       string
+	TotalTime         time.Duration
+	AverageSpeed      float32
+	OutputPath        string
 }
 
 // ReporterError contains error information.

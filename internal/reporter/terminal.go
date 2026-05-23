@@ -288,6 +288,13 @@ func (r *TerminalReporter) EncodingComplete(summary EncodingOutcome) {
 		util.FormatBytesReadable(summary.OriginalSize),
 		util.FormatBytesReadable(summary.EncodedSize)))
 	r.printLabel("Reduction:", fmt.Sprintf("%.1f%%", reduction))
+	if summary.VideoOriginalSize > 0 && summary.VideoEncodedSize > 0 {
+		videoReduction := util.CalculateSizeReduction(summary.VideoOriginalSize, summary.VideoEncodedSize)
+		r.printLabel("Video size:", fmt.Sprintf("%s -> %s",
+			util.FormatBytesReadable(summary.VideoOriginalSize),
+			util.FormatBytesReadable(summary.VideoEncodedSize)))
+		r.printLabel("Video reduction:", fmt.Sprintf("%.1f%%", videoReduction))
+	}
 	r.printLabel("Video:", summary.VideoStream)
 	r.printLabel("Audio:", summary.AudioStream)
 	r.printLabel("Time:", fmt.Sprintf("%s (avg speed %.1fx)",

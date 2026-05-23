@@ -75,6 +75,10 @@ static const char* reel_probe_color_space_name(int value) {
 static void reel_probe_strerror(int errnum, char *buf, size_t buflen) {
 	av_strerror(errnum, buf, buflen);
 }
+
+static int reel_probe_averror_eof(void) {
+	return AVERROR_EOF;
+}
 */
 import "C"
 
@@ -248,6 +252,42 @@ func GetVideoCodecName(inputPath string) (string, error) {
 		return "", err
 	}
 	return cString(C.reel_probe_codec_name(stream.codecpar)), nil
+}
+
+// GetVideoStreamBytes returns the total payload bytes in the best video stream.
+func GetVideoStreamBytes(inputPath string) (uint64, error) {
+	fmtCtx, err := openInput(inputPath)
+	if err != nil {
+		return 0, err
+	}
+	defer C.avformat_close_input(&fmtCtx)
+
+	stream, err := bestStream(fmtCtx, C.AVMEDIA_TYPE_VIDEO)
+	if err != nil {
+		return 0, err
+	}
+	streamIndex := int(stream.index)
+
+	pkt := C.av_packet_alloc()
+	if pkt == nil {
+		return 0, fmt.Errorf("probe: packet allocation failed")
+	}
+	defer C.av_packet_free(&pkt)
+
+	var total uint64
+	for {
+		ret := C.av_read_frame(fmtCtx, pkt)
+		if ret < 0 {
+			if ret == C.reel_probe_averror_eof() {
+				return total, nil
+			}
+			return total, fmt.Errorf("probe: read packet failed: %s", avError(ret))
+		}
+		if int(pkt.stream_index) == streamIndex && pkt.size > 0 {
+			total += uint64(pkt.size)
+		}
+		C.av_packet_unref(pkt)
+	}
 }
 
 func openInput(path string) (*C.AVFormatContext, error) {

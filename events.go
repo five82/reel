@@ -64,10 +64,13 @@ type ValidationStep struct {
 // EncodingCompleteEvent represents successful encode completion.
 type EncodingCompleteEvent struct {
 	BaseEvent
-	OutputFile           string  `json:"output_file"`
-	OriginalSize         uint64  `json:"original_size"`
-	EncodedSize          uint64  `json:"encoded_size"`
-	SizeReductionPercent float64 `json:"size_reduction_percent"`
+	OutputFile                string  `json:"output_file"`
+	OriginalSize              uint64  `json:"original_size"`
+	EncodedSize               uint64  `json:"encoded_size"`
+	SizeReductionPercent      float64 `json:"size_reduction_percent"`
+	VideoOriginalSize         uint64  `json:"video_original_size,omitempty"`
+	VideoEncodedSize          uint64  `json:"video_encoded_size,omitempty"`
+	VideoSizeReductionPercent float64 `json:"video_size_reduction_percent,omitempty"`
 }
 
 // WarningEvent represents a warning message.
