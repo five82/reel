@@ -47,7 +47,7 @@ func EnsureDisplayModel(workDir string, inf *video.Info, overridePath string) (s
 func defaultDisplayModel(inf *video.Info) displayModel {
 	model := displayModel{
 		Name:                  "Reel default normal-viewing SDR display",
-		Colorspace:            "sRGB/SDR",
+		Colorspace:            "SDR",
 		Resolution:            [2]int{3840, 2160},
 		MaxLuminance:          200,
 		ViewingDistanceMeters: 1.3,
