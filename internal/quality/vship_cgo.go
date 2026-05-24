@@ -77,6 +77,29 @@ extern Vship_Exception Vship_CVVDPFree(VshipCVVDPHandler handler);
 extern Vship_Exception Vship_ResetCVVDP(VshipCVVDPHandler handler);
 extern Vship_Exception Vship_ComputeCVVDP(VshipCVVDPHandler handler, double* score, const uint8_t *dstp, int64_t dststride, const uint8_t* srcp1[3], const uint8_t* srcp2[3], const int64_t lineSize[3], const int64_t lineSize2[3]);
 extern int Vship_GetDetailedLastError(char* out_message, int len);
+
+static Vship_Exception reel_vship_compute_cvvdp(
+	VshipCVVDPHandler handler,
+	double* score,
+	const uint8_t* src0,
+	const uint8_t* src1,
+	const uint8_t* src2,
+	const uint8_t* dist0,
+	const uint8_t* dist1,
+	const uint8_t* dist2,
+	int64_t src0_stride,
+	int64_t src1_stride,
+	int64_t src2_stride,
+	int64_t dist0_stride,
+	int64_t dist1_stride,
+	int64_t dist2_stride
+) {
+	const uint8_t* srcp1[3] = {src0, src1, src2};
+	const uint8_t* srcp2[3] = {dist0, dist1, dist2};
+	const int64_t lineSize[3] = {src0_stride, src1_stride, src2_stride};
+	const int64_t lineSize2[3] = {dist0_stride, dist1_stride, dist2_stride};
+	return Vship_ComputeCVVDP(handler, score, NULL, 0, srcp1, srcp2, lineSize, lineSize2);
+}
 */
 import "C"
 
@@ -155,27 +178,21 @@ func (p *VshipProcessor) ComputeCVVDP(src, dist FramePlanes) (float32, error) {
 		return 0, fmt.Errorf("CVVDP handler is closed")
 	}
 	var score C.double
-	srcPlanes := [3]*C.uint8_t{
+	ret := C.reel_vship_compute_cvvdp(
+		p.handler,
+		&score,
 		(*C.uint8_t)(unsafe.Pointer(src.Planes[0])),
 		(*C.uint8_t)(unsafe.Pointer(src.Planes[1])),
 		(*C.uint8_t)(unsafe.Pointer(src.Planes[2])),
-	}
-	distPlanes := [3]*C.uint8_t{
 		(*C.uint8_t)(unsafe.Pointer(dist.Planes[0])),
 		(*C.uint8_t)(unsafe.Pointer(dist.Planes[1])),
 		(*C.uint8_t)(unsafe.Pointer(dist.Planes[2])),
-	}
-	srcStrides := [3]C.int64_t{C.int64_t(src.Strides[0]), C.int64_t(src.Strides[1]), C.int64_t(src.Strides[2])}
-	distStrides := [3]C.int64_t{C.int64_t(dist.Strides[0]), C.int64_t(dist.Strides[1]), C.int64_t(dist.Strides[2])}
-	ret := C.Vship_ComputeCVVDP(
-		p.handler,
-		&score,
-		nil,
-		0,
-		(**C.uint8_t)(unsafe.Pointer(&srcPlanes[0])),
-		(**C.uint8_t)(unsafe.Pointer(&distPlanes[0])),
-		(*C.int64_t)(unsafe.Pointer(&srcStrides[0])),
-		(*C.int64_t)(unsafe.Pointer(&distStrides[0])),
+		C.int64_t(src.Strides[0]),
+		C.int64_t(src.Strides[1]),
+		C.int64_t(src.Strides[2]),
+		C.int64_t(dist.Strides[0]),
+		C.int64_t(dist.Strides[1]),
+		C.int64_t(dist.Strides[2]),
 	)
 	if ret != 0 {
 		return 0, fmt.Errorf("Vship_ComputeCVVDP failed: %s", vshipLastError())
