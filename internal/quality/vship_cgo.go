@@ -116,7 +116,7 @@ func NewVshipProcessor(width, height uint32, inf *video.Info, displayPath string
 	fps := C.float(float64(inf.FPSNum) / float64(inf.FPSDen))
 	srcColorspace := createYUVColorspace(width, height, inf)
 	disColorspace := createYUVColorspace(width, height, inf)
-	modelKey := C.CString("xav")
+	modelKey := C.CString(DisplayModelKey)
 	defer C.free(unsafe.Pointer(modelKey))
 	configPath := C.CString(displayPath)
 	defer C.free(unsafe.Pointer(configPath))

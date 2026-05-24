@@ -3,12 +3,13 @@ package quality
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"codeberg.org/five82/reel/internal/video"
 )
 
-func TestEnsureDisplayModelWritesVshipCompatibleSDRColorspace(t *testing.T) {
+func TestEnsureDisplayModelWritesReelDisplayModelWithVshipCompatibleSDRColorspace(t *testing.T) {
 	path, err := EnsureDisplayModel(t.TempDir(), &video.Info{}, "")
 	if err != nil {
 		t.Fatalf("EnsureDisplayModel() error = %v", err)
@@ -45,6 +46,30 @@ func TestEnsureDisplayModelWritesVshipCompatibleHDRColorspaces(t *testing.T) {
 	}
 }
 
+func TestEnsureDisplayModelAcceptsReelOverride(t *testing.T) {
+	path := writeDisplayJSON(t, map[string]displayModel{DisplayModelKey: {Name: "custom"}})
+
+	gotPath, err := EnsureDisplayModel(t.TempDir(), &video.Info{}, path)
+	if err != nil {
+		t.Fatalf("EnsureDisplayModel() error = %v", err)
+	}
+	if gotPath != path {
+		t.Fatalf("display path = %q, want %q", gotPath, path)
+	}
+}
+
+func TestEnsureDisplayModelRejectsOverrideWithoutReelModel(t *testing.T) {
+	path := writeDisplayJSON(t, map[string]displayModel{"xav": {Name: "wrong name"}})
+
+	_, err := EnsureDisplayModel(t.TempDir(), &video.Info{}, path)
+	if err == nil {
+		t.Fatalf("EnsureDisplayModel() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), `"reel" display model`) {
+		t.Fatalf("EnsureDisplayModel() error = %q, want missing reel model", err)
+	}
+}
+
 func readGeneratedDisplayModel(t *testing.T, path string) displayModel {
 	t.Helper()
 
@@ -58,9 +83,23 @@ func readGeneratedDisplayModel(t *testing.T, path string) displayModel {
 		t.Fatalf("failed to decode generated display model: %v", err)
 	}
 
-	model, ok := models["xav"]
+	model, ok := models[DisplayModelKey]
 	if !ok {
-		t.Fatalf("generated display model missing xav key")
+		t.Fatalf("generated display model missing %q key", DisplayModelKey)
 	}
 	return model
+}
+
+func writeDisplayJSON(t *testing.T, models map[string]displayModel) string {
+	t.Helper()
+
+	data, err := json.Marshal(models)
+	if err != nil {
+		t.Fatalf("failed to encode display model: %v", err)
+	}
+	path := t.TempDir() + "/display.json"
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write display model: %v", err)
+	}
+	return path
 }

@@ -397,12 +397,12 @@ func ProcessChunked(
 
 func cvvdpDisplaySummary(cfg *config.Config, inf *video.Info) string {
 	if cfg.CVVDPDisplay != "" {
-		return fmt.Sprintf("CVVDP display model: key=xav, override=%s", cfg.CVVDPDisplay)
+		return fmt.Sprintf("CVVDP display model: model=%s, override=%s", quality.DisplayModelKey, cfg.CVVDPDisplay)
 	}
-	if inf.TransferCharacteristics != nil && (*inf.TransferCharacteristics == 16 || *inf.TransferCharacteristics == 18) {
-		return "CVVDP display model: key=xav, generated HDR normal-viewing model, ppd~75, resolution=3840x2160, peak=1000 nits, contrast=1000000, ambient=10 lux"
+	if inf != nil && inf.TransferCharacteristics != nil && (*inf.TransferCharacteristics == 16 || *inf.TransferCharacteristics == 18) {
+		return fmt.Sprintf("CVVDP display model: model=%s, generated HDR normal-viewing model, ppd~75, resolution=3840x2160, peak=1000 nits, contrast=1000000, ambient=10 lux", quality.DisplayModelKey)
 	}
-	return "CVVDP display model: key=xav, generated SDR normal-viewing model, ppd~75, resolution=3840x2160, peak=200 nits, contrast=1000, ambient=100 lux"
+	return fmt.Sprintf("CVVDP display model: model=%s, generated SDR normal-viewing model, ppd~75, resolution=3840x2160, peak=200 nits, contrast=1000, ambient=100 lux", quality.DisplayModelKey)
 }
 
 func encodePipelineError(parentErr, encodeErr, audioErr error) error {

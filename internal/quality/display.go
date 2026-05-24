@@ -9,6 +9,8 @@ import (
 	"codeberg.org/five82/reel/internal/video"
 )
 
+const DisplayModelKey = "reel"
+
 type displayModel struct {
 	Name                  string  `json:"name"`
 	Colorspace            string  `json:"colorspace,omitempty"`
@@ -25,15 +27,15 @@ type displayModel struct {
 
 func EnsureDisplayModel(workDir string, inf *video.Info, overridePath string) (string, error) {
 	if overridePath != "" {
-		if _, err := os.Stat(overridePath); err != nil {
-			return "", fmt.Errorf("CVVDP display JSON is not readable: %w", err)
+		if err := validateDisplayModel(overridePath); err != nil {
+			return "", err
 		}
 		return overridePath, nil
 	}
 
 	path := filepath.Join(workDir, "cvvdp-display.json")
 	model := defaultDisplayModel(inf)
-	data, err := json.MarshalIndent(map[string]displayModel{"xav": model}, "", "  ")
+	data, err := json.MarshalIndent(map[string]displayModel{DisplayModelKey: model}, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to encode default CVVDP display model: %w", err)
 	}
@@ -42,6 +44,22 @@ func EnsureDisplayModel(workDir string, inf *video.Info, overridePath string) (s
 		return "", fmt.Errorf("failed to write default CVVDP display model: %w", err)
 	}
 	return path, nil
+}
+
+func validateDisplayModel(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("CVVDP display JSON is not readable: %w", err)
+	}
+
+	var models map[string]json.RawMessage
+	if err := json.Unmarshal(data, &models); err != nil {
+		return fmt.Errorf("CVVDP display JSON is not valid JSON: %w", err)
+	}
+	if _, ok := models[DisplayModelKey]; !ok {
+		return fmt.Errorf("CVVDP display JSON must contain a %q display model", DisplayModelKey)
+	}
+	return nil
 }
 
 func defaultDisplayModel(inf *video.Info) displayModel {
