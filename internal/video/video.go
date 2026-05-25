@@ -285,7 +285,7 @@ func Open(path string, threads int) (*Source, error) {
 		startTime = int64(stream.start_time)
 	}
 
-	return &Source{
+	src := &Source{
 		fmtCtx:    fmtCtx,
 		codecCtx:  codecCtx,
 		pkt:       pkt,
@@ -294,7 +294,12 @@ func Open(path string, threads int) (*Source, error) {
 		startTime: startTime,
 		tsMul:     tsMul,
 		tsDiv:     tsDiv,
-	}, nil
+	}
+	if err := src.anchorFrameOrigin(); err != nil {
+		src.Close()
+		return nil, err
+	}
+	return src, nil
 }
 
 // Close releases decoder resources.
@@ -485,6 +490,23 @@ func (s *Source) readRawFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, erro
 		return nil, fmt.Errorf("failed to decode near frame %d", frameIdx)
 	}
 	return frame, nil
+}
+
+func (s *Source) anchorFrameOrigin() error {
+	// Some containers report the video stream start before the first displayable frame
+	// (for example VC-1 in Matroska with an initial decoder-delay frame). Anchor
+	// frame zero to the first decoded frame so timestamp-derived indexes stay exact.
+	frame, _, err := s.decodeOne()
+	if err != nil {
+		if err == io.EOF {
+			return s.seekNear(0)
+		}
+		return fmt.Errorf("decoder: decode first frame failed: %w", err)
+	}
+	if frame.best_effort_timestamp != C.AV_NOPTS_VALUE {
+		s.startTime = int64(frame.best_effort_timestamp)
+	}
+	return s.seekNear(0)
 }
 
 func (s *Source) seekNear(frameIdx int) error {
