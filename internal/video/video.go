@@ -81,6 +81,8 @@ const (
 	svtColorRangeFull        = 1
 	svtChromaPositionLeft    = 1
 	svtChromaPositionTopLeft = 2
+
+	seekPrerollFrames = 30
 )
 
 var initOnce sync.Once
@@ -513,13 +515,17 @@ func (s *Source) seekNear(frameIdx int) error {
 	if s.tsDiv == 0 {
 		return fmt.Errorf("invalid stream time base")
 	}
-	ts := s.startTime + int64(frameIdx)*s.tsMul/s.tsDiv
+	// Seek slightly before the target frame. Some demuxers seek by DTS/keyframe,
+	// so seeking to an exact display timestamp can resume after the requested
+	// frame when B-frames or decoder-delay frames are present.
+	seekFrame := max(0, frameIdx-seekPrerollFrames)
+	ts := s.startTime + int64(seekFrame)*s.tsMul/s.tsDiv
 	if ret := C.av_seek_frame(s.fmtCtx, C.int(s.streamIdx), C.int64_t(ts), C.AVSEEK_FLAG_BACKWARD); ret < 0 {
 		return fmt.Errorf("seek to frame %d failed: %s", frameIdx, avError(ret))
 	}
 	C.avcodec_flush_buffers(s.codecCtx)
 	s.eof = false
-	s.nextFrame = 0
+	s.nextFrame = seekFrame
 	return nil
 }
 
