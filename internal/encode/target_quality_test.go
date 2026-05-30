@@ -45,6 +45,36 @@ func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
 	}
 }
 
+func TestTargetQualitySampleScoreUsesMeanWhenWindowsMatch(t *testing.T) {
+	windows := []quality.ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.5},
+		{Offset: 100, Frames: 48, Score: 9.5},
+		{Offset: 200, Frames: 48, Score: 9.5},
+	}
+	score, meanScore, worstScore, frames := targetQualitySampleScore(windows)
+	if score != 9.5 || meanScore != 9.5 || worstScore != 9.5 || frames != 144 {
+		t.Fatalf("score=%g mean=%g worst=%g frames=%d, want all 9.5 and 144 frames", score, meanScore, worstScore, frames)
+	}
+}
+
+func TestTargetQualitySampleScorePenalizesWeakWindow(t *testing.T) {
+	windows := []quality.ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.65},
+		{Offset: 100, Frames: 48, Score: 9.58},
+		{Offset: 200, Frames: 48, Score: 9.25},
+	}
+	score, meanScore, worstScore, frames := targetQualitySampleScore(windows)
+	if math.Abs(float64(meanScore-9.493333)) > 0.0001 {
+		t.Fatalf("meanScore = %g, want 9.493333", meanScore)
+	}
+	if worstScore != 9.25 || frames != 144 {
+		t.Fatalf("worst=%g frames=%d, want 9.25 and 144", worstScore, frames)
+	}
+	if math.Abs(float64(score-9.371667)) > 0.0001 {
+		t.Fatalf("score = %g, want midpoint of mean and worst", score)
+	}
+}
+
 func TestTargetQualityFullFirstProbeRequiresReliableInitialSource(t *testing.T) {
 	if !targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
 		t.Fatal("neighbor first probe should use full-first probing")

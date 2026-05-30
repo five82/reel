@@ -365,7 +365,7 @@ func encodeTargetQualityChunk(
 			if fullFirst {
 				probeKind = " probe=full_first"
 			}
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -470,8 +470,8 @@ func encodeSampledProbe(
 	}
 
 	var totalSize uint64
-	var encodeSeconds, metricSeconds, weightedScore float64
-	var scoredFrames int
+	var encodeSeconds, metricSeconds float64
+	var windowsScored []quality.ProbeWindow
 	var fullProbePath string
 
 	for sampleIdx, sample := range windows {
@@ -492,8 +492,11 @@ func encodeSampledProbe(
 			return quality.Probe{}, "", err
 		}
 		metricSeconds += metricResult.MetricSeconds
-		weightedScore += float64(metricResult.Score) * float64(metricResult.Frames)
-		scoredFrames += metricResult.Frames
+		windowsScored = append(windowsScored, quality.ProbeWindow{
+			Offset: sample.Offset,
+			Frames: metricResult.Frames,
+			Score:  metricResult.Score,
+		})
 
 		if isFullChunk {
 			fullProbePath = probePath
@@ -501,17 +504,21 @@ func encodeSampledProbe(
 			_ = os.Remove(probePath)
 		}
 	}
+	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
 	if scoredFrames == 0 {
 		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
 	}
 
 	return quality.Probe{
-		CRF:           crf,
-		Score:         float32(weightedScore / float64(scoredFrames)),
-		Size:          totalSize,
-		EncodeSeconds: encodeSeconds,
-		MetricSeconds: metricSeconds,
-		SampleFrames:  scoredFrames,
+		CRF:              crf,
+		Score:            score,
+		MeanScore:        meanScore,
+		WorstWindowScore: worstScore,
+		Size:             totalSize,
+		EncodeSeconds:    encodeSeconds,
+		MetricSeconds:    metricSeconds,
+		SampleFrames:     scoredFrames,
+		Windows:          windowsScored,
 	}, fullProbePath, nil
 }
 
@@ -537,8 +544,8 @@ func encodeFullFirstSampledProbe(
 	}
 	encodeSeconds := time.Since(encodeStart).Seconds()
 
-	var metricSeconds, weightedScore float64
-	var scoredFrames int
+	var metricSeconds float64
+	var windowsScored []quality.ProbeWindow
 	for _, sample := range windows {
 		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
 		metricResult, err := scoreProbeWindow(ctx, metricPool, inputPath, fullProbePath, inf, sampleChunk, cropRect, width, height, sample.Offset)
@@ -546,21 +553,51 @@ func encodeFullFirstSampledProbe(
 			return quality.Probe{}, "", err
 		}
 		metricSeconds += metricResult.MetricSeconds
-		weightedScore += float64(metricResult.Score) * float64(metricResult.Frames)
-		scoredFrames += metricResult.Frames
+		windowsScored = append(windowsScored, quality.ProbeWindow{
+			Offset: sample.Offset,
+			Frames: metricResult.Frames,
+			Score:  metricResult.Score,
+		})
 	}
+	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
 	if scoredFrames == 0 {
 		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
 	}
 
 	return quality.Probe{
-		CRF:           crf,
-		Score:         float32(weightedScore / float64(scoredFrames)),
-		Size:          probeResult.Size,
-		EncodeSeconds: encodeSeconds,
-		MetricSeconds: metricSeconds,
-		SampleFrames:  scoredFrames,
+		CRF:              crf,
+		Score:            score,
+		MeanScore:        meanScore,
+		WorstWindowScore: worstScore,
+		Size:             probeResult.Size,
+		EncodeSeconds:    encodeSeconds,
+		MetricSeconds:    metricSeconds,
+		SampleFrames:     scoredFrames,
+		Windows:          windowsScored,
 	}, fullProbePath, nil
+}
+
+func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, worstScore float32, frames int) {
+	if len(windows) == 0 {
+		return 0, 0, 0, 0
+	}
+	worstScore = windows[0].Score
+	var weightedScore float64
+	for _, window := range windows {
+		if window.Frames <= 0 {
+			continue
+		}
+		if window.Score < worstScore {
+			worstScore = window.Score
+		}
+		weightedScore += float64(window.Score) * float64(window.Frames)
+		frames += window.Frames
+	}
+	if frames == 0 {
+		return 0, 0, 0, 0
+	}
+	meanScore = float32(weightedScore / float64(frames))
+	return (meanScore + worstScore) / 2, meanScore, worstScore, frames
 }
 
 func scoreProbeWindow(

@@ -16,14 +16,24 @@ const (
 	StopNoCandidates  StopReason = "no_candidates"
 )
 
+// ProbeWindow records one sampled metric window within a target-quality probe.
+type ProbeWindow struct {
+	Offset int     `json:"offset"`
+	Frames int     `json:"frames"`
+	Score  float32 `json:"score"`
+}
+
 // Probe records one target-quality probe encode and metric result.
 type Probe struct {
-	CRF           float32 `json:"crf"`
-	Score         float32 `json:"score"`
-	Size          uint64  `json:"size"`
-	EncodeSeconds float64 `json:"encode_seconds,omitempty"`
-	MetricSeconds float64 `json:"metric_seconds,omitempty"`
-	SampleFrames  int     `json:"sample_frames,omitempty"`
+	CRF              float32       `json:"crf"`
+	Score            float32       `json:"score"`
+	MeanScore        float32       `json:"mean_score,omitempty"`
+	WorstWindowScore float32       `json:"worst_window_score,omitempty"`
+	Size             uint64        `json:"size"`
+	EncodeSeconds    float64       `json:"encode_seconds,omitempty"`
+	MetricSeconds    float64       `json:"metric_seconds,omitempty"`
+	SampleFrames     int           `json:"sample_frames,omitempty"`
+	Windows          []ProbeWindow `json:"windows,omitempty"`
 }
 
 // SearchContext configures per-chunk target-quality search.
