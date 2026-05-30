@@ -26,7 +26,7 @@ const (
 	DefaultTargetQualityFullProbeFrames = 256
 
 	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully encode for a reliable first probe.
-	DefaultTargetQualityFullFirstFrames = 600
+	DefaultTargetQualityFullFirstFrames = 720
 )
 
 type TargetQualityConfig struct {

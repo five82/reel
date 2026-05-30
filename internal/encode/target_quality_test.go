@@ -63,8 +63,11 @@ func TestTargetQualityFullFirstProbeOnlyForFirstSampledProbe(t *testing.T) {
 	if targetQualityFullFirstProbe("neighbor", 1, 225, 48, 256) {
 		t.Fatal("chunks already full-probed should not use full-first sampled probing")
 	}
-	if targetQualityFullFirstProbe("neighbor", 1, 650, 48, 256) {
-		t.Fatal("large chunks should not use full-first probing")
+	if !targetQualityFullFirstProbe("neighbor", 1, 650, 48, 256) {
+		t.Fatal("HD-sized chunks should use full-first probing")
+	}
+	if targetQualityFullFirstProbe("neighbor", 1, 721, 48, 256) {
+		t.Fatal("chunks above the full-first cap should not use full-first probing")
 	}
 }
 
