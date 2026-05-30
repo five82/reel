@@ -31,6 +31,9 @@ const (
 
 	// targetQualityScheduleBlockChunks keeps target-quality work near timeline order while balancing chunk sizes.
 	targetQualityScheduleBlockChunks = 32
+
+	// targetQualityUpperGraceJOD avoids extra probes for tiny over-target CVVDP overshoots.
+	targetQualityUpperGraceJOD = 0.02
 )
 
 type TargetQualityConfig struct {
@@ -191,13 +194,14 @@ func EncodeTargetQuality(
 	}
 
 	searchCtx := quality.SearchContext{
-		Target:     tq.Target,
-		Tolerance:  tq.Tolerance,
-		CRFMin:     tq.CRFMin,
-		CRFMax:     tq.CRFMax,
-		MaxProbes:  tq.MaxProbes,
-		InitialCRF: tq.InitialCRF,
-		JODPerCRF:  targetQualityDefaultJODPerCRF,
+		Target:              tq.Target,
+		Tolerance:           tq.Tolerance,
+		UpperToleranceGrace: targetQualityUpperGraceJOD,
+		CRFMin:              tq.CRFMin,
+		CRFMax:              tq.CRFMax,
+		MaxProbes:           tq.MaxProbes,
+		InitialCRF:          tq.InitialCRF,
+		JODPerCRF:           targetQualityDefaultJODPerCRF,
 	}
 	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax)
 	seedTargetQualityPrior(workDir, doneSet, prior)

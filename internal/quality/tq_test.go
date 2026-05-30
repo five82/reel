@@ -19,6 +19,27 @@ func TestSearchConverges(t *testing.T) {
 	}
 }
 
+func TestSearchAcceptsUpperGrace(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.6062})
+	if state.StopReason != StopConverged {
+		t.Fatalf("stop reason = %q, want converged", state.StopReason)
+	}
+}
+
+func TestSearchDoesNotApplyLowerGrace(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.3938})
+	if state.StopReason == StopConverged {
+		t.Fatal("low score should not converge with upper-only grace")
+	}
+	if state.SearchMax != 19.75 {
+		t.Fatalf("SearchMax = %g, want 19.75", state.SearchMax)
+	}
+}
+
 func TestSearchStartsAtInitialCRF(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26}
 	state := NewSearchState(ctx)

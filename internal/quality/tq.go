@@ -38,13 +38,14 @@ type Probe struct {
 
 // SearchContext configures per-chunk target-quality search.
 type SearchContext struct {
-	Target     float32
-	Tolerance  float32
-	CRFMin     float32
-	CRFMax     float32
-	MaxProbes  int
-	InitialCRF float32
-	JODPerCRF  float32
+	Target              float32
+	Tolerance           float32
+	UpperToleranceGrace float32
+	CRFMin              float32
+	CRFMax              float32
+	MaxProbes           int
+	InitialCRF          float32
+	JODPerCRF           float32
 }
 
 // SearchState tracks target-quality search for one chunk.
@@ -117,8 +118,7 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 	s.Probes = append(s.Probes, probe)
 	s.tried[crfKey(probe.CRF)] = true
 
-	delta := probe.Score - ctx.Target
-	if float32(math.Abs(float64(delta))) <= ctx.Tolerance {
+	if targetQualityConverged(ctx, probe.Score) {
 		s.StopReason = StopConverged
 		return
 	}
@@ -152,6 +152,10 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 		}
 	}
 	return best, true
+}
+
+func targetQualityConverged(ctx SearchContext, score float32) bool {
+	return score >= ctx.Target-ctx.Tolerance && score <= ctx.Target+ctx.Tolerance+ctx.UpperToleranceGrace
 }
 
 func initialSearchCRF(ctx SearchContext) float32 {
