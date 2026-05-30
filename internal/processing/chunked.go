@@ -129,6 +129,10 @@ func ProcessChunked(
 	if err != nil {
 		return CropResult{}, fmt.Errorf("shot cut detection failed: %w", err)
 	}
+	if planResult.Frames > 0 && planResult.Frames != vidInf.Frames {
+		rep.Verbose(fmt.Sprintf("Video frame count adjusted after decode: probed %d, decoded %d", vidInf.Frames, planResult.Frames))
+		vidInf.Frames = planResult.Frames
+	}
 	if planResult.MergedWeakCuts > 0 {
 		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, merged %d weak cuts, and added %d balanced splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.MergedWeakCuts, planResult.SyntheticSplits))
 	} else {

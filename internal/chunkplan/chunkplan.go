@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -20,7 +22,7 @@ import (
 
 const (
 	detectorVersion = "reel-luma-shot-scd-v2"
-	metadataVersion = 4
+	metadataVersion = 5
 
 	signatureWidth  = 64
 	signatureHeight = 36
@@ -60,6 +62,7 @@ type Result struct {
 	SyntheticSplits  int
 	MergedShortShots int
 	MergedWeakCuts   int
+	Frames           int
 
 	// MergedScenes is kept for compatibility with older internal callers.
 	MergedScenes int
@@ -77,6 +80,7 @@ type Metadata struct {
 	FPSNum               uint32         `json:"fps_num"`
 	FPSDen               uint32         `json:"fps_den"`
 	Frames               int            `json:"frames"`
+	ActualFrames         int            `json:"actual_frames,omitempty"`
 	Crop                 string         `json:"crop,omitempty"`
 	MaxFrames            int            `json:"max_frames"`
 	MinFrames            int            `json:"min_frames"`
@@ -141,8 +145,9 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	if err != nil {
 		return Result{}, err
 	}
+	frameCount := len(scores)
 	naturalCuts := detectNaturalCuts(scores)
-	plan := planBoundaries(naturalCuts, inf.Frames, maxFrames, minFrames, targetFrames, scores)
+	plan := planBoundaries(naturalCuts, frameCount, maxFrames, minFrames, targetFrames, scores)
 	return Result{
 		Boundaries:       plan.Boundaries,
 		BoundaryKinds:    plan.BoundaryKinds,
@@ -151,6 +156,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 		SyntheticSplits:  plan.SyntheticSplits,
 		MergedShortShots: plan.MergedShortShots,
 		MergedWeakCuts:   plan.MergedWeakCuts,
+		Frames:           frameCount,
 		MergedScenes:     plan.MergedShortShots,
 	}, nil
 }
@@ -171,6 +177,12 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 
 		frame, err := src.ReadLumaFrame(frameIdx, inf)
 		if err != nil {
+			if errors.Is(err, io.EOF) && acceptableTerminalEOF(frameIdx, inf.Frames) {
+				if opts.Progress != nil {
+					opts.Progress(frameIdx, frameIdx)
+				}
+				return scores[:frameIdx], nil
+			}
 			return nil, fmt.Errorf("shot cut detection: read frame %d: %w", frameIdx, err)
 		}
 		sig, err := signatureFromFrame(frame, opts.CropRect)
@@ -191,6 +203,10 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 
 func decoderThreads() int {
 	return min(max(util.PhysicalCores(), 1), 16)
+}
+
+func acceptableTerminalEOF(decodedFrames, expectedFrames int) bool {
+	return decodedFrames > 0 && expectedFrames > 0 && decodedFrames*100 >= expectedFrames*95
 }
 
 func signatureFromFrame(frame *video.LumaFrame, crop *video.CropRect) (*frameSignature, error) {
@@ -683,6 +699,10 @@ func loadCachedResult(inputPath, boundaryFile, metadataFile string, inf *video.I
 	if len(boundaryKinds) != len(boundaries) {
 		boundaryKinds = inferBoundaryKinds(boundaries, meta.NaturalCutFrames)
 	}
+	frames := meta.ActualFrames
+	if frames <= 0 {
+		frames = meta.Frames
+	}
 	return Result{
 		Boundaries:       boundaries,
 		BoundaryKinds:    boundaryKinds,
@@ -691,6 +711,7 @@ func loadCachedResult(inputPath, boundaryFile, metadataFile string, inf *video.I
 		SyntheticSplits:  meta.SyntheticSplits,
 		MergedShortShots: mergedShortShots,
 		MergedWeakCuts:   meta.MergedWeakCuts,
+		Frames:           frames,
 		MergedScenes:     mergedShortShots,
 	}, true
 }
@@ -740,6 +761,7 @@ func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options
 		FPSNum:               inf.FPSNum,
 		FPSDen:               inf.FPSDen,
 		Frames:               inf.Frames,
+		ActualFrames:         result.Frames,
 		Crop:                 cropString(opts.CropRect),
 		MaxFrames:            normalizeMaxFrames(opts.MaxFrames, inf.Frames),
 		MinFrames:            normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)),

@@ -11,6 +11,18 @@ import (
 	"codeberg.org/five82/reel/internal/video"
 )
 
+func TestAcceptableTerminalEOF(t *testing.T) {
+	if !acceptableTerminalEOF(95, 100) {
+		t.Fatal("EOF after 95% of expected frames should be acceptable")
+	}
+	if acceptableTerminalEOF(94, 100) {
+		t.Fatal("EOF before 95% of expected frames should not be acceptable")
+	}
+	if acceptableTerminalEOF(0, 100) {
+		t.Fatal("EOF with no decoded frames should not be acceptable")
+	}
+}
+
 func TestDetectNaturalCutsIncludesZeroAndHardCut(t *testing.T) {
 	scores := make([]float64, 20)
 	scores[10] = 0.9
