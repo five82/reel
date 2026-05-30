@@ -44,6 +44,30 @@ func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
 	}
 }
 
+func TestTargetQualityFullFirstProbeRequiresReliableInitialSource(t *testing.T) {
+	if !targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
+		t.Fatal("neighbor first probe should use full-first probing")
+	}
+	if !targetQualityFullFirstProbe("median", 1, 500, 48, 256) {
+		t.Fatal("median first probe should use full-first probing")
+	}
+	if targetQualityFullFirstProbe("default", 1, 500, 48, 256) {
+		t.Fatal("default first probe should not use full-first probing")
+	}
+}
+
+func TestTargetQualityFullFirstProbeOnlyForFirstSampledProbe(t *testing.T) {
+	if targetQualityFullFirstProbe("neighbor", 2, 500, 48, 256) {
+		t.Fatal("later probes should not use full-first probing")
+	}
+	if targetQualityFullFirstProbe("neighbor", 1, 225, 48, 256) {
+		t.Fatal("chunks already full-probed should not use full-first sampled probing")
+	}
+	if targetQualityFullFirstProbe("neighbor", 1, 650, 48, 256) {
+		t.Fatal("large chunks should not use full-first probing")
+	}
+}
+
 func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
 	prior := newTargetQualityPrior(26, 4.25, 63.75)
 	crf, source := prior.InitialCRF(100)

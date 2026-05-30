@@ -24,6 +24,9 @@ const (
 
 	// DefaultTargetQualityFullProbeFrames is the largest chunk size probed as a whole.
 	DefaultTargetQualityFullProbeFrames = 256
+
+	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully encode for a reliable first probe.
+	DefaultTargetQualityFullFirstFrames = 600
 )
 
 type TargetQualityConfig struct {
@@ -324,7 +327,8 @@ func encodeTargetQualityChunk(
 		if !ok {
 			break
 		}
-		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, metricPool)
+		fullFirst := targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
+		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, metricPool)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
@@ -339,7 +343,11 @@ func encodeTargetQualityChunk(
 			if state.Round == 1 {
 				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
 			}
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			probeKind := ""
+			if fullFirst {
+				probeKind = " probe=full_first"
+			}
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -405,6 +413,21 @@ func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int) []probe
 	}
 }
 
+func targetQualityFullFirstProbe(initialCRFSource string, round int, chunkFrames int, sampleFrames int, fullProbeFrames int) bool {
+	if round != 1 || chunkFrames > DefaultTargetQualityFullFirstFrames {
+		return false
+	}
+	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames)) <= 1 {
+		return false
+	}
+	switch initialCRFSource {
+	case "neighbor", "median":
+		return true
+	default:
+		return false
+	}
+}
+
 func encodeSampledProbe(
 	ctx context.Context,
 	inputPath string,
@@ -417,11 +440,15 @@ func encodeSampledProbe(
 	crf float32,
 	sampleFrames int,
 	fullProbeFrames int,
+	fullFirst bool,
 	metricPool chan *quality.VshipProcessor,
 ) (quality.Probe, string, error) {
 	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames)
 	if len(windows) == 0 {
 		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
+	}
+	if fullFirst && len(windows) > 1 {
+		return encodeFullFirstSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool)
 	}
 
 	var totalSize uint64
@@ -442,32 +469,11 @@ func encodeSampledProbe(
 		encodeSeconds += time.Since(encodeStart).Seconds()
 		totalSize += probeResult.Size
 
-		metricStart := time.Now()
-		var processor *quality.VshipProcessor
-		select {
-		case processor = <-metricPool:
-		case <-ctx.Done():
-			return quality.Probe{}, "", ctx.Err()
-		}
-		metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
-			SourcePath: inputPath,
-			ProbePath:  probePath,
-			Info:       inf,
-			Chunk:      sampleChunk,
-			CropRect:   cropRect,
-			Width:      width,
-			Height:     height,
-			Processor:  processor,
-		})
-		metricPool <- processor
+		metricResult, err := scoreProbeWindow(ctx, metricPool, inputPath, probePath, inf, sampleChunk, cropRect, width, height, 0)
 		if err != nil {
 			return quality.Probe{}, "", err
 		}
-		sampleMetricSeconds := metricResult.MetricSeconds
-		if sampleMetricSeconds == 0 {
-			sampleMetricSeconds = time.Since(metricStart).Seconds()
-		}
-		metricSeconds += sampleMetricSeconds
+		metricSeconds += metricResult.MetricSeconds
 		weightedScore += float64(metricResult.Score) * float64(metricResult.Frames)
 		scoredFrames += metricResult.Frames
 
@@ -489,6 +495,94 @@ func encodeSampledProbe(
 		MetricSeconds: metricSeconds,
 		SampleFrames:  scoredFrames,
 	}, fullProbePath, nil
+}
+
+func encodeFullFirstSampledProbe(
+	ctx context.Context,
+	inputPath string,
+	inf *video.Info,
+	cfg *EncodeConfig,
+	workDir string,
+	cropRect *video.CropRect,
+	width, height uint32,
+	ch chunk.Chunk,
+	crf float32,
+	windows []probeSampleWindow,
+	metricPool chan *quality.VshipProcessor,
+) (quality.Probe, string, error) {
+	fullProbePath := sampledProbePath(workDir, ch.Idx, crf, 0, probeSampleWindow{Frames: ch.Frames()}, true)
+
+	encodeStart := time.Now()
+	probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, fullProbePath, crf)
+	if probeResult.Error != nil {
+		return quality.Probe{}, "", probeResult.Error
+	}
+	encodeSeconds := time.Since(encodeStart).Seconds()
+
+	var metricSeconds, weightedScore float64
+	var scoredFrames int
+	for _, sample := range windows {
+		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
+		metricResult, err := scoreProbeWindow(ctx, metricPool, inputPath, fullProbePath, inf, sampleChunk, cropRect, width, height, sample.Offset)
+		if err != nil {
+			return quality.Probe{}, "", err
+		}
+		metricSeconds += metricResult.MetricSeconds
+		weightedScore += float64(metricResult.Score) * float64(metricResult.Frames)
+		scoredFrames += metricResult.Frames
+	}
+	if scoredFrames == 0 {
+		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
+	}
+
+	return quality.Probe{
+		CRF:           crf,
+		Score:         float32(weightedScore / float64(scoredFrames)),
+		Size:          probeResult.Size,
+		EncodeSeconds: encodeSeconds,
+		MetricSeconds: metricSeconds,
+		SampleFrames:  scoredFrames,
+	}, fullProbePath, nil
+}
+
+func scoreProbeWindow(
+	ctx context.Context,
+	metricPool chan *quality.VshipProcessor,
+	inputPath string,
+	probePath string,
+	inf *video.Info,
+	sampleChunk chunk.Chunk,
+	cropRect *video.CropRect,
+	width, height uint32,
+	probeStartFrame int,
+) (quality.CVVDPResult, error) {
+	var processor *quality.VshipProcessor
+	select {
+	case processor = <-metricPool:
+	case <-ctx.Done():
+		return quality.CVVDPResult{}, ctx.Err()
+	}
+	defer func() { metricPool <- processor }()
+
+	metricStart := time.Now()
+	metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
+		SourcePath:      inputPath,
+		ProbePath:       probePath,
+		ProbeStartFrame: probeStartFrame,
+		Info:            inf,
+		Chunk:           sampleChunk,
+		CropRect:        cropRect,
+		Width:           width,
+		Height:          height,
+		Processor:       processor,
+	})
+	if err != nil {
+		return quality.CVVDPResult{}, err
+	}
+	if metricResult.MetricSeconds == 0 {
+		metricResult.MetricSeconds = time.Since(metricStart).Seconds()
+	}
+	return metricResult, nil
 }
 
 func sampledProbePath(workDir string, chunkIdx int, crf float32, sampleIdx int, sample probeSampleWindow, fullChunk bool) string {
