@@ -24,7 +24,7 @@ const (
 	QualityModeCRF    = "crf"
 
 	// DefaultTargetQuality is the default CVVDP JOD target range.
-	DefaultTargetQuality = "9.45-9.55"
+	DefaultTargetQuality = "9.40-9.60"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
 	DefaultCRFSearchRange = "4.25-63.75"
