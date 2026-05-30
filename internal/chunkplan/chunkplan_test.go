@@ -46,6 +46,39 @@ func TestDetectNaturalCutsSuppressesTwoFrameFlash(t *testing.T) {
 	}
 }
 
+func TestAddSupplementalTransitionCutsAddsGradualTransition(t *testing.T) {
+	scores := make([]float64, 100)
+	for i := 40; i <= 45; i++ {
+		scores[i] = 0.08
+	}
+	scores[43] = 0.11
+
+	got := addSupplementalTransitionCuts(scores, []int{0})
+	want := []int{0, 43}
+	if !reflect.DeepEqual(got.Cuts, want) {
+		t.Fatalf("addSupplementalTransitionCuts() = %v, want %v", got.Cuts, want)
+	}
+	if got.Added != 1 {
+		t.Fatalf("supplemental cuts added = %d, want 1", got.Added)
+	}
+}
+
+func TestAddSupplementalTransitionCutsIgnoresWeakMotion(t *testing.T) {
+	scores := make([]float64, 100)
+	for i := 40; i <= 45; i++ {
+		scores[i] = 0.03
+	}
+
+	got := addSupplementalTransitionCuts(scores, []int{0})
+	want := []int{0}
+	if !reflect.DeepEqual(got.Cuts, want) {
+		t.Fatalf("addSupplementalTransitionCuts() = %v, want %v", got.Cuts, want)
+	}
+	if got.Added != 0 {
+		t.Fatalf("supplemental cuts added = %d, want 0", got.Added)
+	}
+}
+
 func TestRefineBoundariesUsesHighScoreNearBalancedSplit(t *testing.T) {
 	scores := make([]float64, 1000)
 	scores[240] = 0.5
@@ -121,26 +154,26 @@ func TestPlanBoundariesTracksBoundaryKinds(t *testing.T) {
 
 func TestPlanBoundariesPacksWeakCutsTowardTarget(t *testing.T) {
 	scores := make([]float64, 240)
-	scores[40] = 0.20
-	scores[90] = 0.21
-	scores[130] = 0.22
-	plan := planBoundaries([]int{0, 40, 90, 130}, 220, 220, 1, 100, scores)
-	want := []int{0, 130}
-	if !reflect.DeepEqual(plan.Boundaries, want) {
-		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
-	}
-	if plan.MergedWeakCuts != 2 {
-		t.Fatalf("merged weak cuts = %d, want 2", plan.MergedWeakCuts)
-	}
-}
-
-func TestPlanBoundariesPreservesWeakCutsAboveHalfTarget(t *testing.T) {
-	scores := make([]float64, 240)
 	scores[50] = 0.20
 	scores[100] = 0.21
 	scores[150] = 0.22
 	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
-	want := []int{0, 50, 100, 150}
+	want := []int{0}
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
+	}
+	if plan.MergedWeakCuts != 3 {
+		t.Fatalf("merged weak cuts = %d, want 3", plan.MergedWeakCuts)
+	}
+}
+
+func TestPlanBoundariesPreservesStrongCutWhenPackingToTarget(t *testing.T) {
+	scores := make([]float64, 240)
+	scores[50] = 0.20
+	scores[100] = 0.90
+	scores[150] = 0.21
+	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
+	want := []int{0, 100}
 	if !reflect.DeepEqual(plan.Boundaries, want) {
 		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
 	}

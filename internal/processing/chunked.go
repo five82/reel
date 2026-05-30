@@ -95,19 +95,12 @@ func ProcessChunked(
 
 	// Generate shot-aware chunks based on resolution (using config values).
 	chunkDuration := cfg.ChunkDurationForWidth(vidInf.Width)
-	if cfg.QualityMode == config.QualityModeTarget {
-		chunkDuration = math.Min(chunkDuration, 24)
-	}
 	fps := float64(vidInf.FPSNum) / float64(vidInf.FPSDen)
 	maxChunkFrames := int(math.Ceil(fps * chunkDuration))
 	if maxChunkFrames < 1 {
 		maxChunkFrames = 1
 	}
-	minChunkSeconds := 2.0
-	if cfg.QualityMode == config.QualityModeTarget {
-		minChunkSeconds = 1.0
-	}
-	minChunkFrames := int(math.Ceil(fps * minChunkSeconds))
+	minChunkFrames := int(math.Ceil(fps * 2))
 	if minChunkFrames < 1 {
 		minChunkFrames = 1
 	}
@@ -147,10 +140,14 @@ func ProcessChunked(
 		rep.Verbose(fmt.Sprintf("Video frame count adjusted after decode: probed %d, decoded %d", vidInf.Frames, planResult.Frames))
 		vidInf.Frames = planResult.Frames
 	}
+	supplementalCuts := ""
+	if planResult.BlackTransitionCuts > 0 || planResult.GradualCuts > 0 {
+		supplementalCuts = fmt.Sprintf(" (%d black/content transitions, %d gradual transitions)", planResult.BlackTransitionCuts, planResult.GradualCuts)
+	}
 	if planResult.MergedWeakCuts > 0 {
-		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, merged %d weak cuts, and added %d balanced splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.MergedWeakCuts, planResult.SyntheticSplits))
+		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts%s, merged %d short shots, merged %d weak cuts, and added %d balanced splits", planResult.NaturalCuts, supplementalCuts, planResult.MergedShortShots, planResult.MergedWeakCuts, planResult.SyntheticSplits))
 	} else {
-		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, and added %d balanced splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
+		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts%s, merged %d short shots, and added %d balanced splits", planResult.NaturalCuts, supplementalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
 	}
 	retainedNaturalCuts := 0
 	for _, kind := range planResult.BoundaryKinds {
