@@ -6,6 +6,7 @@ import (
 
 	"codeberg.org/five82/reel/internal/chunk"
 	"codeberg.org/five82/reel/internal/quality"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 func TestSampledProbeWindowsUsesFullChunkForShortChunks(t *testing.T) {
@@ -97,6 +98,19 @@ func TestTargetQualitySampleScorePenalizesWeakWindow(t *testing.T) {
 	}
 }
 
+func TestTargetQualityInitialJODPerCRFUsesLowerSlopeForLargeOrHDR(t *testing.T) {
+	hdrTransfer := int32(16)
+	if got := targetQualityInitialJODPerCRF(1920, 1080, &video.Info{}); got != targetQualityDefaultJODPerCRF {
+		t.Fatalf("SDR HD JOD/CRF = %g, want %g", got, targetQualityDefaultJODPerCRF)
+	}
+	if got := targetQualityInitialJODPerCRF(3840, 1600, &video.Info{}); got != targetQualityLargeJODPerCRF {
+		t.Fatalf("large-frame JOD/CRF = %g, want %g", got, targetQualityLargeJODPerCRF)
+	}
+	if got := targetQualityInitialJODPerCRF(1920, 1080, &video.Info{TransferCharacteristics: &hdrTransfer}); got != targetQualityLargeJODPerCRF {
+		t.Fatalf("HDR JOD/CRF = %g, want %g", got, targetQualityLargeJODPerCRF)
+	}
+}
+
 func TestTargetQualityFullFirstProbeRequiresMedianInitialSource(t *testing.T) {
 	if targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
 		t.Fatal("neighbor first probe should not use full-first probing")
@@ -147,7 +161,7 @@ func TestOrderTargetQualityChunksSortsLargestFirstWithinTimelineBlocks(t *testin
 }
 
 func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
 	crf, source := prior.InitialCRF(100)
 	if crf != 26 || source != "default" {
 		t.Fatalf("InitialCRF = %g %q, want 26 default", crf, source)
@@ -155,7 +169,7 @@ func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
 }
 
 func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
 	prior.Add(96, 20)
 	prior.Add(104, 28)
 	crf, source := prior.InitialCRF(100)
@@ -165,7 +179,7 @@ func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
 }
 
 func TestTargetQualityPriorFallsBackToMedianForDistantHistory(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
 	prior.Add(10, 20)
 	prior.Add(20, 30)
 	prior.Add(30, 40)
@@ -176,12 +190,34 @@ func TestTargetQualityPriorFallsBackToMedianForDistantHistory(t *testing.T) {
 }
 
 func TestTargetQualityPriorLearnsJODPerCRF(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
 	prior.AddResult(10, 25, []quality.Probe{
 		{CRF: 20, Score: 9.7},
 		{CRF: 30, Score: 9.3},
 	})
 	if got := prior.JODPerCRF(); math.Abs(float64(got-0.04)) > 0.0001 {
 		t.Fatalf("JODPerCRF = %g, want 0.04", got)
+	}
+}
+
+func TestTargetQualityPriorNormalizesCRFToTarget(t *testing.T) {
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior.AddResult(10, 25, []quality.Probe{
+		{CRF: 20, Score: 9.7},
+		{CRF: 25, Score: 9.58},
+		{CRF: 30, Score: 9.3},
+	})
+	crf, source := prior.InitialCRF(11)
+	if crf != 27 || source != "neighbor" {
+		t.Fatalf("InitialCRF = %g %q, want 27 neighbor", crf, source)
+	}
+}
+
+func TestTargetQualityPriorNormalizesCRFWithAdjustmentCap(t *testing.T) {
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior.AddResult(10, 25, []quality.Probe{{CRF: 25, Score: 9.9}})
+	crf, source := prior.InitialCRF(11)
+	if crf != 28 || source != "neighbor" {
+		t.Fatalf("InitialCRF = %g %q, want 28 neighbor", crf, source)
 	}
 }

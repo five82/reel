@@ -193,7 +193,6 @@ func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
 	const (
 		// CVVDP changes by about 0.04 JOD per CRF on typical probes.
 		defaultJODPerCRF = 0.04
-		maxStep          = 10.0
 	)
 	jodPerCRF := ctx.JODPerCRF
 	if jodPerCRF <= 0 {
@@ -201,7 +200,7 @@ func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
 	}
 	delta := probe.Score - ctx.Target
 	step := float32(math.Abs(float64(delta / jodPerCRF)))
-	if step > maxStep {
+	if maxStep := secondSearchMaxStep(delta); step > maxStep {
 		step = maxStep
 	}
 	if delta > 0 {
@@ -210,6 +209,18 @@ func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
 	}
 	// Quality is too low; lower CRF.
 	return RoundCRFToQuarter(probe.CRF - step)
+}
+
+func secondSearchMaxStep(delta float32) float32 {
+	absDelta := float32(math.Abs(float64(delta)))
+	switch {
+	case absDelta >= 0.40:
+		return 30
+	case absDelta >= 0.25:
+		return 20
+	default:
+		return 10
+	}
 }
 
 func (s *SearchState) firstUntriedInBounds(candidate float32) (float32, bool) {

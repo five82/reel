@@ -193,6 +193,7 @@ func EncodeTargetQuality(
 		return nil
 	}
 
+	initialJODPerCRF := targetQualityInitialJODPerCRF(width, height, inf)
 	searchCtx := quality.SearchContext{
 		Target:              tq.Target,
 		Tolerance:           tq.Tolerance,
@@ -201,9 +202,9 @@ func EncodeTargetQuality(
 		CRFMax:              tq.CRFMax,
 		MaxProbes:           tq.MaxProbes,
 		InitialCRF:          tq.InitialCRF,
-		JODPerCRF:           targetQualityDefaultJODPerCRF,
+		JODPerCRF:           initialJODPerCRF,
 	}
-	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax)
+	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
 	seedTargetQualityPrior(workDir, doneSet, prior)
 
 	var workerWg sync.WaitGroup
@@ -683,23 +684,46 @@ func sampledProbePath(workDir string, chunkIdx int, crf float32, sampleIdx int, 
 const (
 	targetQualityNeighborMaxDistance = 8
 	targetQualityDefaultJODPerCRF    = 0.04
+	targetQualityLargeJODPerCRF      = 0.025
+	targetQualityPriorMaxAdjustment  = 3.0
 )
 
-type targetQualityPrior struct {
-	mu         sync.Mutex
-	crfs       map[int]float32
-	slopes     []float32
-	defaultCRF float32
-	minCRF     float32
-	maxCRF     float32
+func targetQualityInitialJODPerCRF(width, height uint32, inf *video.Info) float32 {
+	if targetQualityIsHDR(inf) || width >= 3000 || height >= 1600 {
+		return targetQualityLargeJODPerCRF
+	}
+	return targetQualityDefaultJODPerCRF
 }
 
-func newTargetQualityPrior(defaultCRF, minCRF, maxCRF float32) *targetQualityPrior {
+func targetQualityIsHDR(inf *video.Info) bool {
+	if inf == nil || inf.TransferCharacteristics == nil {
+		return false
+	}
+	return *inf.TransferCharacteristics == 16 || *inf.TransferCharacteristics == 18
+}
+
+type targetQualityPrior struct {
+	mu            sync.Mutex
+	crfs          map[int]float32
+	slopes        []float32
+	defaultCRF    float32
+	minCRF        float32
+	maxCRF        float32
+	target        float32
+	defaultJODCRF float32
+}
+
+func newTargetQualityPrior(defaultCRF, minCRF, maxCRF, target, defaultJODPerCRF float32) *targetQualityPrior {
+	if defaultJODPerCRF <= 0 {
+		defaultJODPerCRF = targetQualityDefaultJODPerCRF
+	}
 	return &targetQualityPrior{
-		crfs:       make(map[int]float32),
-		defaultCRF: clampCRF(defaultCRF, minCRF, maxCRF),
-		minCRF:     minCRF,
-		maxCRF:     maxCRF,
+		crfs:          make(map[int]float32),
+		defaultCRF:    clampCRF(defaultCRF, minCRF, maxCRF),
+		minCRF:        minCRF,
+		maxCRF:        maxCRF,
+		target:        target,
+		defaultJODCRF: defaultJODPerCRF,
 	}
 }
 
@@ -728,17 +752,47 @@ func (p *targetQualityPrior) AddResult(chunkIdx int, crf float32, probes []quali
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.crfs[chunkIdx] = clampCRF(crf, p.minCRF, p.maxCRF)
 	p.slopes = append(p.slopes, probeSlopes(probes)...)
+	p.crfs[chunkIdx] = p.normalizedCRF(crf, probes)
 }
 
 func (p *targetQualityPrior) JODPerCRF() float32 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.jodPerCRFLocked()
+}
+
+func (p *targetQualityPrior) jodPerCRFLocked() float32 {
 	if len(p.slopes) == 0 {
-		return targetQualityDefaultJODPerCRF
+		return p.defaultJODCRF
 	}
 	return medianFloat32(append([]float32(nil), p.slopes...))
+}
+
+func (p *targetQualityPrior) normalizedCRF(crf float32, probes []quality.Probe) float32 {
+	normalized := crf
+	if score, ok := probeScoreAtCRF(probes, crf); ok {
+		if slope := p.jodPerCRFLocked(); slope > 0 {
+			adjust := (score - p.target) / slope
+			if adjust > targetQualityPriorMaxAdjustment {
+				adjust = targetQualityPriorMaxAdjustment
+			} else if adjust < -targetQualityPriorMaxAdjustment {
+				adjust = -targetQualityPriorMaxAdjustment
+			}
+			normalized = crf + adjust
+		}
+	}
+	return clampCRF(normalized, p.minCRF, p.maxCRF)
+}
+
+func probeScoreAtCRF(probes []quality.Probe, crf float32) (float32, bool) {
+	want := quality.RoundCRFToQuarter(crf)
+	for _, probe := range probes {
+		if quality.RoundCRFToQuarter(probe.CRF) == want {
+			return probe.Score, true
+		}
+	}
+	return 0, false
 }
 
 func (p *targetQualityPrior) InitialCRF(chunkIdx int) (float32, string) {

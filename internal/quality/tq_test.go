@@ -103,6 +103,32 @@ func TestSearchSecondProbeUsesEstimatedStep(t *testing.T) {
 	}
 }
 
+func TestSearchSecondProbeUsesLargerStepForLargeMiss(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26, JODPerCRF: 0.04}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 26, Score: 9.1})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no second CRF")
+	}
+	if crf != 16 {
+		t.Fatalf("second CRF = %g, want 16", crf)
+	}
+}
+
+func TestSearchSecondProbeCapsExtremeMiss(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26, JODPerCRF: 0.02}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 26, Score: 10.1})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no second CRF")
+	}
+	if crf != 56 {
+		t.Fatalf("second CRF = %g, want 56", crf)
+	}
+}
+
 func TestSearchBoundsUpdateForCVVDP(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
