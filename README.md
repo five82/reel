@@ -76,7 +76,7 @@ Required:
 
 Quality Settings:
   --quality-mode MODE  target by default; crf by default in no_vship builds
-  --target-quality R   CVVDP JOD target range (default 9.40-9.60)
+  --target-quality R   CVVDP JOD target range (default 9.25-9.50)
   --crf-range R        Target-quality CRF search range (default 4.25-63.75)
   --cvvdp-display PATH Optional VSHIP/CVVDP display JSON override
   --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 4)
