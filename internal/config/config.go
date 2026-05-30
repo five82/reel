@@ -30,7 +30,7 @@ const (
 	DefaultCRFSearchRange = "4.25-63.75"
 
 	// DefaultMetricWorkers limits concurrent VSHIP/CUDA scoring by default.
-	DefaultMetricWorkers = 3
+	DefaultMetricWorkers = 4
 
 	// DefaultTargetQualityMaxProbes caps per-chunk target-quality probes.
 	DefaultTargetQualityMaxProbes = 6

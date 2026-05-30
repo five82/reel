@@ -849,9 +849,17 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	if verbose == nil || len(logs) == 0 {
 		return
 	}
+	sort.Slice(logs, func(i, j int) bool { return logs[i].ChunkIdx < logs[j].ChunkIdx })
+
 	var minScore, maxScore, sumScore, sumAbsErr float32
 	var probes int
 	crfCounts := make(map[float32]int)
+	probeCounts := make(map[int]int)
+	stopCounts := make(map[quality.StopReason]int)
+	sourceCounts := make(map[string]int)
+	var windowSpreads []float32
+	var fullFirstAttempted, fullFirstReused int
+	var maxProbeChunks []int
 	for i, log := range logs {
 		if i == 0 || log.FinalScore < minScore {
 			minScore = log.FinalScore
@@ -865,8 +873,26 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 		} else {
 			sumAbsErr += log.Target - log.FinalScore
 		}
-		probes += len(log.Probes)
+		probeCount := len(log.Probes)
+		probes += probeCount
+		probeCounts[probeCount]++
+		stopCounts[log.StopReason]++
+		if log.InitialCRFSource != "" {
+			sourceCounts[log.InitialCRFSource]++
+		}
 		crfCounts[log.FinalCRF]++
+		if probe, ok := finalProbe(log); ok {
+			windowSpreads = append(windowSpreads, targetQualityWindowSpread(probe.Windows))
+		}
+		if targetQualityFullFirstProbe(log.InitialCRFSource, 1, log.Frames, log.ProbeSampleFrames, log.ProbeFullThreshold) {
+			fullFirstAttempted++
+			if probeCount == 1 {
+				fullFirstReused++
+			}
+		}
+		if log.StopReason == quality.StopMaxProbes {
+			maxProbeChunks = append(maxProbeChunks, log.ChunkIdx)
+		}
 	}
 	meanScore := sumScore / float32(len(logs))
 	meanErr := sumAbsErr / float32(len(logs))
@@ -878,7 +904,101 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			commonCount = count
 		}
 	}
-	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d sampled_jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
+	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d probes_per_chunk=%.2f sampled_jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, float64(probes)/float64(len(logs)), minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
+	verbose(fmt.Sprintf("TQ decisions stops=%s probe_counts=%s initial_sources=%s full_first=%d reused=%d missed=%d", formatStopCounts(stopCounts), formatIntCounts(probeCounts), formatStringCounts(sourceCounts), fullFirstAttempted, fullFirstReused, fullFirstAttempted-fullFirstReused))
+	if len(windowSpreads) > 0 {
+		verbose(fmt.Sprintf("TQ window_spread p90=%.4f max=%.4f", percentileFloat32(windowSpreads, 0.90), percentileFloat32(windowSpreads, 1)))
+	}
+	if len(maxProbeChunks) > 0 {
+		verbose(fmt.Sprintf("TQ max-probe chunks: %s", formatChunkList(maxProbeChunks, 12)))
+	}
+}
+
+func finalProbe(log chunkTargetLog) (quality.Probe, bool) {
+	for _, probe := range log.Probes {
+		if quality.RoundCRFToQuarter(probe.CRF) == quality.RoundCRFToQuarter(log.FinalCRF) {
+			return probe, true
+		}
+	}
+	return quality.Probe{}, false
+}
+
+func percentileFloat32(values []float32, p float64) float32 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float32(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	idx := int(p * float64(len(sorted)-1))
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+func formatIntCounts(counts map[int]int) string {
+	if len(counts) == 0 {
+		return "{}"
+	}
+	keys := make([]int, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Ints(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%d:%d", key, counts[key]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func formatStringCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func formatStopCounts(counts map[quality.StopReason]int) string {
+	stringsCounts := make(map[string]int, len(counts))
+	for reason, count := range counts {
+		key := string(reason)
+		if key == "" {
+			key = "none"
+		}
+		stringsCounts[key] = count
+	}
+	return formatStringCounts(stringsCounts)
+}
+
+func formatChunkList(chunks []int, limit int) string {
+	if len(chunks) == 0 {
+		return "[]"
+	}
+	sort.Ints(chunks)
+	if limit <= 0 || limit > len(chunks) {
+		limit = len(chunks)
+	}
+	parts := make([]string, 0, limit+1)
+	for _, chunkIdx := range chunks[:limit] {
+		parts = append(parts, fmt.Sprintf("%04d", chunkIdx))
+	}
+	if limit < len(chunks) {
+		parts = append(parts, fmt.Sprintf("+%d more", len(chunks)-limit))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 func writeChunkTargetLog(workDir string, log chunkTargetLog) error {

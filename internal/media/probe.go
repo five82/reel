@@ -84,6 +84,7 @@ import "C"
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -327,13 +328,38 @@ func mediaTypeName(mediaType C.enum_AVMediaType) string {
 }
 
 func durationSecs(fmtCtx *C.AVFormatContext, stream *C.AVStream) float64 {
+	if stream != nil {
+		if duration := parseDurationTag(metadata(stream, "DURATION")); duration > 0 {
+			return duration
+		}
+		if stream.duration > 0 && stream.time_base.num > 0 && stream.time_base.den > 0 {
+			return float64(stream.duration) * float64(stream.time_base.num) / float64(stream.time_base.den)
+		}
+	}
 	if fmtCtx.duration > 0 {
 		return float64(fmtCtx.duration) / avTimeBase
 	}
-	if stream != nil && stream.duration > 0 && stream.time_base.den > 0 {
-		return float64(stream.duration) * float64(stream.time_base.num) / float64(stream.time_base.den)
-	}
 	return 0
+}
+
+func parseDurationTag(value string) float64 {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || hours < 0 {
+		return 0
+	}
+	minutes, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil || minutes < 0 || minutes >= 60 {
+		return 0
+	}
+	seconds, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil || seconds < 0 || seconds >= 60 {
+		return 0
+	}
+	return hours*3600 + minutes*60 + seconds
 }
 
 func sampleAspectRatio(stream *C.AVStream, par *C.AVCodecParameters) (uint32, uint32) {

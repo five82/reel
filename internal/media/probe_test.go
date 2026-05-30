@@ -2,6 +2,19 @@ package media
 
 import "testing"
 
+func TestParseDurationTag(t *testing.T) {
+	got := parseDurationTag("01:02:03.500000000")
+	if got != 3723.5 {
+		t.Fatalf("parseDurationTag() = %g, want 3723.5", got)
+	}
+	if got := parseDurationTag("bad"); got != 0 {
+		t.Fatalf("parseDurationTag(bad) = %g, want 0", got)
+	}
+	if got := parseDurationTag("00:61:00"); got != 0 {
+		t.Fatalf("parseDurationTag(invalid minutes) = %g, want 0", got)
+	}
+}
+
 func TestDetectHDR(t *testing.T) {
 	tests := []struct {
 		name      string
