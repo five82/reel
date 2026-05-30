@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"codeberg.org/five82/reel/internal/chunk"
 	"codeberg.org/five82/reel/internal/quality"
 )
 
@@ -68,6 +69,28 @@ func TestTargetQualityFullFirstProbeOnlyForFirstSampledProbe(t *testing.T) {
 	}
 	if targetQualityFullFirstProbe("neighbor", 1, 721, 48, 256) {
 		t.Fatal("chunks above the full-first cap should not use full-first probing")
+	}
+}
+
+func TestOrderTargetQualityChunksSortsLargestFirstWithinTimelineBlocks(t *testing.T) {
+	chunks := []chunk.Chunk{
+		{Idx: 3, Start: 0, End: 10},
+		{Idx: 0, Start: 0, End: 20},
+		{Idx: 1, Start: 0, End: 40},
+		{Idx: 2, Start: 0, End: 30},
+		{Idx: 4, Start: 0, End: 60},
+		{Idx: 5, Start: 0, End: 50},
+	}
+	ordered := orderTargetQualityChunks(chunks, 3)
+	got := make([]int, len(ordered))
+	for i, ch := range ordered {
+		got[i] = ch.Idx
+	}
+	want := []int{1, 2, 0, 4, 5, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
 	}
 }
 

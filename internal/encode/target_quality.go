@@ -27,6 +27,9 @@ const (
 
 	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully encode for a reliable first probe.
 	DefaultTargetQualityFullFirstFrames = 720
+
+	// targetQualityScheduleBlockChunks keeps target-quality work near timeline order while balancing chunk sizes.
+	targetQualityScheduleBlockChunks = 32
 )
 
 type TargetQualityConfig struct {
@@ -123,9 +126,7 @@ func EncodeTargetQuality(
 	if len(remainingChunks) == 0 {
 		return MaxAdaptiveWorkers(), nil
 	}
-	sort.SliceStable(remainingChunks, func(i, j int) bool {
-		return remainingChunks[i].Frames() > remainingChunks[j].Frames()
-	})
+	remainingChunks = orderTargetQualityChunks(remainingChunks, targetQualityScheduleBlockChunks)
 
 	if cropRect != nil {
 		if err := video.ValidateCropRect(inf, *cropRect); err != nil {
@@ -287,6 +288,23 @@ func EncodeTargetQuality(
 	writeAggregateTargetLog(workDir, logs, tq)
 	logTargetAggregate(logs, tq.Verbose)
 	return maxWorkers, getError()
+}
+
+func orderTargetQualityChunks(chunks []chunk.Chunk, blockSize int) []chunk.Chunk {
+	ordered := append([]chunk.Chunk(nil), chunks...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Idx < ordered[j].Idx
+	})
+	if blockSize <= 0 {
+		blockSize = len(ordered)
+	}
+	for start := 0; start < len(ordered); start += blockSize {
+		end := min(start+blockSize, len(ordered))
+		sort.SliceStable(ordered[start:end], func(i, j int) bool {
+			return ordered[start+i].Frames() > ordered[start+j].Frames()
+		})
+	}
+	return ordered
 }
 
 func encodeTargetQualityChunk(
