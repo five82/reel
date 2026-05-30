@@ -55,7 +55,7 @@ type chunkTargetLog struct {
 	ProbeFullThreshold int                `json:"probe_full_threshold"`
 	Probes             []quality.Probe    `json:"probes"`
 	FinalCRF           float32            `json:"final_crf"`
-	FinalScore         float32            `json:"final_score"`
+	FinalScore         float32            `json:"final_sample_score"`
 	FinalSize          uint64             `json:"final_size"`
 	FinalEncodeSeconds float64            `json:"final_encode_seconds,omitempty"`
 	StopReason         quality.StopReason `json:"stop_reason"`
@@ -352,7 +352,7 @@ func encodeTargetQualityChunk(
 	log.CompletedAt = time.Now()
 	_ = writeChunkTargetLog(workDir, log)
 	if verbose != nil {
-		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
+		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s sampled_cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
 	}
 	return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Frames: ch.Frames(), Size: uint64(stat.Size())}, Log: log}
 }
