@@ -312,7 +312,7 @@ func ProcessChunked(
 			finishAudioStep()
 			return CropResult{}, err
 		}
-		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, sampled probes 3x%d frames (full <=%d), metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, encode.DefaultTargetQualitySampleFrames, encode.DefaultTargetQualityFullProbeFrames, cfg.MetricWorkers, displayPath))
+		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, sampled probes 3x%d frames (full <=%d), metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), encode.DefaultTargetQualitySampleFrames, encode.DefaultTargetQualityFullProbeFrames, cfg.MetricWorkers, displayPath))
 		rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
 		_, encodeErr = encode.EncodeTargetQuality(
 			encodeCtx,
@@ -331,6 +331,7 @@ func ProcessChunked(
 				MaxProbes:       cfg.TargetQualityMaxProbes,
 				MetricWorkers:   cfg.MetricWorkers,
 				DisplayPath:     displayPath,
+				InitialCRF:      qualitySetting,
 				SampleFrames:    encode.DefaultTargetQualitySampleFrames,
 				FullProbeFrames: encode.DefaultTargetQualityFullProbeFrames,
 				Verbose: func(message string) {

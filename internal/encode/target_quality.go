@@ -34,6 +34,7 @@ type TargetQualityConfig struct {
 	MaxProbes       int
 	MetricWorkers   int
 	DisplayPath     string
+	InitialCRF      float32
 	SampleFrames    int
 	FullProbeFrames int
 	Verbose         func(string)
@@ -53,6 +54,8 @@ type chunkTargetLog struct {
 	CRFMax             float32            `json:"crf_max"`
 	ProbeSampleFrames  int                `json:"probe_sample_frames"`
 	ProbeFullThreshold int                `json:"probe_full_threshold"`
+	InitialCRF         float32            `json:"initial_crf"`
+	InitialCRFSource   string             `json:"initial_crf_source"`
 	Probes             []quality.Probe    `json:"probes"`
 	FinalCRF           float32            `json:"final_crf"`
 	FinalScore         float32            `json:"final_sample_score"`
@@ -85,6 +88,9 @@ func EncodeTargetQuality(
 	}
 	if tq.FullProbeFrames < 1 {
 		tq.FullProbeFrames = DefaultTargetQualityFullProbeFrames
+	}
+	if tq.InitialCRF <= 0 {
+		tq.InitialCRF = (tq.CRFMin + tq.CRFMax) / 2
 	}
 	if err := chunk.EnsureEncodeDir(workDir); err != nil {
 		return 0, fmt.Errorf("failed to create encode directory: %w", err)
@@ -180,12 +186,16 @@ func EncodeTargetQuality(
 	}
 
 	searchCtx := quality.SearchContext{
-		Target:    tq.Target,
-		Tolerance: tq.Tolerance,
-		CRFMin:    tq.CRFMin,
-		CRFMax:    tq.CRFMax,
-		MaxProbes: tq.MaxProbes,
+		Target:     tq.Target,
+		Tolerance:  tq.Tolerance,
+		CRFMin:     tq.CRFMin,
+		CRFMax:     tq.CRFMax,
+		MaxProbes:  tq.MaxProbes,
+		InitialCRF: tq.InitialCRF,
+		JODPerCRF:  targetQualityDefaultJODPerCRF,
 	}
+	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax)
+	seedTargetQualityPrior(workDir, doneSet, prior)
 
 	var workerWg sync.WaitGroup
 	for i := 0; i < maxWorkers; i++ {
@@ -204,7 +214,11 @@ func EncodeTargetQuality(
 					limiter.release()
 					continue
 				}
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, searchCtx, metricPool, tq.SampleFrames, tq.FullProbeFrames, tq.Verbose)
+				initialCRF, initialCRFSource := prior.InitialCRF(ch.Idx)
+				chunkSearchCtx := searchCtx
+				chunkSearchCtx.InitialCRF = initialCRF
+				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, prior, tq.SampleFrames, tq.FullProbeFrames, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -283,8 +297,10 @@ func encodeTargetQualityChunk(
 	ch chunk.Chunk,
 	searchCtx quality.SearchContext,
 	metricPool chan *quality.VshipProcessor,
+	prior *targetQualityPrior,
 	sampleFrames int,
 	fullProbeFrames int,
+	initialCRFSource string,
 	verbose func(string),
 ) targetQualityResult {
 	log := chunkTargetLog{
@@ -296,6 +312,8 @@ func encodeTargetQualityChunk(
 		CRFMax:             searchCtx.CRFMax,
 		ProbeSampleFrames:  sampleFrames,
 		ProbeFullThreshold: fullProbeFrames,
+		InitialCRF:         searchCtx.InitialCRF,
+		InitialCRFSource:   initialCRFSource,
 		StartedAt:          time.Now(),
 	}
 	state := quality.NewSearchState(searchCtx)
@@ -317,7 +335,11 @@ func encodeTargetQualityChunk(
 		log.Probes = append(log.Probes, probe)
 		if verbose != nil {
 			fps := float64(probe.SampleFrames) / probe.MetricSeconds
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			initial := ""
+			if state.Round == 1 {
+				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
+			}
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -328,6 +350,7 @@ func encodeTargetQualityChunk(
 	if !ok {
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("no target-quality probes completed for chunk %04d", ch.Idx)}, Log: log}
 	}
+	prior.AddResult(ch.Idx, best.CRF, log.Probes)
 	finalPath := chunk.IVFPath(workDir, ch.Idx)
 	if bestPath := fullProbePaths[quality.FormatCRF(best.CRF)]; bestPath != "" {
 		if err := copyFile(bestPath, finalPath); err != nil {
@@ -475,6 +498,162 @@ func sampledProbePath(workDir string, chunkIdx int, crf float32, sampleIdx int, 
 	return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s_s%d_%d_%d.ivf", chunkIdx, quality.FormatCRF(crf), sampleIdx, sample.Offset, sample.Frames))
 }
 
+const (
+	targetQualityNeighborMaxDistance = 8
+	targetQualityDefaultJODPerCRF    = 0.04
+)
+
+type targetQualityPrior struct {
+	mu         sync.Mutex
+	crfs       map[int]float32
+	slopes     []float32
+	defaultCRF float32
+	minCRF     float32
+	maxCRF     float32
+}
+
+func newTargetQualityPrior(defaultCRF, minCRF, maxCRF float32) *targetQualityPrior {
+	return &targetQualityPrior{
+		crfs:       make(map[int]float32),
+		defaultCRF: clampCRF(defaultCRF, minCRF, maxCRF),
+		minCRF:     minCRF,
+		maxCRF:     maxCRF,
+	}
+}
+
+func seedTargetQualityPrior(workDir string, doneSet map[int]bool, prior *targetQualityPrior) {
+	for idx := range doneSet {
+		path := filepath.Join(workDir, "tq", fmt.Sprintf("%04d.json", idx))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var log chunkTargetLog
+		if err := json.Unmarshal(data, &log); err != nil {
+			continue
+		}
+		prior.AddResult(idx, log.FinalCRF, log.Probes)
+	}
+}
+
+func (p *targetQualityPrior) Add(chunkIdx int, crf float32) {
+	p.AddResult(chunkIdx, crf, nil)
+}
+
+func (p *targetQualityPrior) AddResult(chunkIdx int, crf float32, probes []quality.Probe) {
+	if crf <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.crfs[chunkIdx] = clampCRF(crf, p.minCRF, p.maxCRF)
+	p.slopes = append(p.slopes, probeSlopes(probes)...)
+}
+
+func (p *targetQualityPrior) JODPerCRF() float32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.slopes) == 0 {
+		return targetQualityDefaultJODPerCRF
+	}
+	return medianFloat32(append([]float32(nil), p.slopes...))
+}
+
+func (p *targetQualityPrior) InitialCRF(chunkIdx int) (float32, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.crfs) == 0 {
+		return p.defaultCRF, "default"
+	}
+
+	lowerIdx, upperIdx := 0, 0
+	lowerCRF, upperCRF := float32(0), float32(0)
+	lowerOK, upperOK := false, false
+	values := make([]float32, 0, len(p.crfs))
+	for idx, crf := range p.crfs {
+		values = append(values, crf)
+		switch {
+		case idx == chunkIdx:
+			return crf, "same"
+		case idx < chunkIdx && (!lowerOK || idx > lowerIdx):
+			lowerIdx, lowerCRF, lowerOK = idx, crf, true
+		case idx > chunkIdx && (!upperOK || idx < upperIdx):
+			upperIdx, upperCRF, upperOK = idx, crf, true
+		}
+	}
+
+	lowerDist, upperDist := targetQualityNeighborMaxDistance+1, targetQualityNeighborMaxDistance+1
+	if lowerOK {
+		lowerDist = chunkIdx - lowerIdx
+	}
+	if upperOK {
+		upperDist = upperIdx - chunkIdx
+	}
+	lowerNear := lowerOK && lowerDist <= targetQualityNeighborMaxDistance
+	upperNear := upperOK && upperDist <= targetQualityNeighborMaxDistance
+	switch {
+	case lowerNear && upperNear:
+		crf := (lowerCRF*float32(upperDist) + upperCRF*float32(lowerDist)) / float32(lowerDist+upperDist)
+		return clampCRF(crf, p.minCRF, p.maxCRF), "neighbor"
+	case lowerNear:
+		return clampCRF(lowerCRF, p.minCRF, p.maxCRF), "neighbor"
+	case upperNear:
+		return clampCRF(upperCRF, p.minCRF, p.maxCRF), "neighbor"
+	default:
+		return medianCRF(values, p.minCRF, p.maxCRF), "median"
+	}
+}
+
+func probeSlopes(probes []quality.Probe) []float32 {
+	if len(probes) < 2 {
+		return nil
+	}
+	probes = append([]quality.Probe(nil), probes...)
+	sort.Slice(probes, func(i, j int) bool { return probes[i].CRF < probes[j].CRF })
+	slopes := make([]float32, 0, len(probes)-1)
+	for i := 0; i < len(probes)-1; i++ {
+		left := probes[i]
+		right := probes[i+1]
+		crfDelta := right.CRF - left.CRF
+		scoreDelta := right.Score - left.Score
+		if crfDelta <= 0 || scoreDelta >= 0 {
+			continue
+		}
+		slope := -scoreDelta / crfDelta
+		if slope >= 0.005 && slope <= 0.2 {
+			slopes = append(slopes, slope)
+		}
+	}
+	return slopes
+}
+
+func medianCRF(values []float32, minCRF, maxCRF float32) float32 {
+	if len(values) == 0 {
+		return clampCRF(0, minCRF, maxCRF)
+	}
+	return clampCRF(medianFloat32(values), minCRF, maxCRF)
+}
+
+func medianFloat32(values []float32) float32 {
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	mid := len(values) / 2
+	if len(values)%2 == 1 {
+		return values[mid]
+	}
+	return (values[mid-1] + values[mid]) / 2
+}
+
+func clampCRF(crf, minCRF, maxCRF float32) float32 {
+	crf = quality.RoundCRFToQuarter(crf)
+	if crf < minCRF {
+		return quality.RoundCRFToQuarter(minCRF)
+	}
+	if crf > maxCRF {
+		return quality.RoundCRFToQuarter(maxCRF)
+	}
+	return crf
+}
+
 func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32) worker.EncodeResult {
 	src, err := video.Open(inputPath, 1)
 	if err != nil {
@@ -538,6 +717,7 @@ func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQua
 		CRFMin             float32          `json:"crf_min"`
 		CRFMax             float32          `json:"crf_max"`
 		MetricWorkers      int              `json:"metric_workers"`
+		DefaultInitialCRF  float32          `json:"default_initial_crf"`
 		ProbeSampleFrames  int              `json:"probe_sample_frames"`
 		ProbeFullThreshold int              `json:"probe_full_threshold"`
 		Chunks             []chunkTargetLog `json:"chunks"`
@@ -547,6 +727,7 @@ func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQua
 		CRFMin:             tq.CRFMin,
 		CRFMax:             tq.CRFMax,
 		MetricWorkers:      tq.MetricWorkers,
+		DefaultInitialCRF:  tq.InitialCRF,
 		ProbeSampleFrames:  tq.SampleFrames,
 		ProbeFullThreshold: tq.FullProbeFrames,
 		Chunks:             logs,

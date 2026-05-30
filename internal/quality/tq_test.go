@@ -19,6 +19,31 @@ func TestSearchConverges(t *testing.T) {
 	}
 }
 
+func TestSearchStartsAtInitialCRF(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26}
+	state := NewSearchState(ctx)
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no first CRF")
+	}
+	if crf != 26 {
+		t.Fatalf("first CRF = %g, want 26", crf)
+	}
+}
+
+func TestSearchSecondProbeUsesEstimatedStep(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 26, Score: 9.3})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no second CRF")
+	}
+	if crf != 21 {
+		t.Fatalf("second CRF = %g, want 21", crf)
+	}
+}
+
 func TestSearchBoundsUpdateForCVVDP(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)

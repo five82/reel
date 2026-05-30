@@ -28,11 +28,13 @@ type Probe struct {
 
 // SearchContext configures per-chunk target-quality search.
 type SearchContext struct {
-	Target    float32
-	Tolerance float32
-	CRFMin    float32
-	CRFMax    float32
-	MaxProbes int
+	Target     float32
+	Tolerance  float32
+	CRFMin     float32
+	CRFMax     float32
+	MaxProbes  int
+	InitialCRF float32
+	JODPerCRF  float32
 }
 
 // SearchState tracks target-quality search for one chunk.
@@ -67,9 +69,12 @@ func (s *SearchState) NextCRF(ctx SearchContext) (float32, bool) {
 	}
 
 	var candidate float32
-	if len(s.Probes) < 2 {
-		candidate = RoundCRFToQuarter((s.SearchMin + s.SearchMax) / 2)
-	} else {
+	switch len(s.Probes) {
+	case 0:
+		candidate = initialSearchCRF(ctx)
+	case 1:
+		candidate = secondSearchCRF(ctx, s.Probes[0])
+	default:
 		candidate = InterpolateCRF(s.Probes, ctx.Target, s.Round)
 		if candidate < s.SearchMin || candidate > s.SearchMax || math.IsNaN(float64(candidate)) || math.IsInf(float64(candidate), 0) {
 			candidate = RoundCRFToQuarter((s.SearchMin + s.SearchMax) / 2)
@@ -137,6 +142,36 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 		}
 	}
 	return best, true
+}
+
+func initialSearchCRF(ctx SearchContext) float32 {
+	if ctx.InitialCRF > 0 {
+		return RoundCRFToQuarter(ctx.InitialCRF)
+	}
+	return RoundCRFToQuarter((ctx.CRFMin + ctx.CRFMax) / 2)
+}
+
+func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
+	const (
+		// CVVDP changes by about 0.04 JOD per CRF on typical probes.
+		defaultJODPerCRF = 0.04
+		maxStep          = 10.0
+	)
+	jodPerCRF := ctx.JODPerCRF
+	if jodPerCRF <= 0 {
+		jodPerCRF = defaultJODPerCRF
+	}
+	delta := probe.Score - ctx.Target
+	step := float32(math.Abs(float64(delta / jodPerCRF)))
+	if step > maxStep {
+		step = maxStep
+	}
+	if delta > 0 {
+		// Quality is higher than needed; raise CRF.
+		return RoundCRFToQuarter(probe.CRF + step)
+	}
+	// Quality is too low; lower CRF.
+	return RoundCRFToQuarter(probe.CRF - step)
 }
 
 func (s *SearchState) firstUntriedInBounds(candidate float32) (float32, bool) {
