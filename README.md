@@ -13,7 +13,8 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 
 ## Features
 
-- Parallel chunked encoding with fixed-length chunks
+- Parallel chunked encoding with shot-aware chunk planning
+- Default CVVDP target-quality mode with sampled probes and adaptive CRF search
 - Automatic black bar crop detection
 - HDR10/HLG metadata preservation
 - Multi-track audio transcoding to Opus
@@ -26,6 +27,7 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 - libSvtAv1Enc (SVT-AV1 encoder shared library)
 - libopusenc shared library (for Opus audio encoding)
 - FFmpeg/libav development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
+- libvship + CUDA for the default CVVDP target-quality build, or build with `-tags no_vship` for fixed-CRF-only use
 
 ```bash
 # Ubuntu/Debian
@@ -61,9 +63,9 @@ reel encode -i input.mkv -o output/
 reel encode -i /videos/ -o /encoded/
 ```
 
-Reel splits each video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
+Reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
 
-Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
+Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores sampled CVVDP windows, starts from adaptive CRF priors, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
 ### Options
 
@@ -78,6 +80,7 @@ Quality Settings:
   --crf-range R        Target-quality CRF search range (default 4.25-63.75)
   --cvvdp-display PATH Optional VSHIP/CVVDP display JSON override
   --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 3)
+  --max-probes N       Maximum target-quality probes per chunk (default 6)
   --crf <VALUE>        Fixed CRF mode, 1-70 in 0.25 steps
                          Defaults in CRF mode: SD=24, HD=26, UHD=26
                          Single value: --crf 25.25

@@ -36,6 +36,7 @@ reel encode -v -i input.mkv -o output/
 - `--crf-range <LOW-HIGH>`: target-quality search bounds (default `4.25-63.75`)
 - `--cvvdp-display <PATH>`: optional VSHIP/CVVDP display JSON; otherwise Reel generates a normal-viewing `reel` model. Custom JSON must contain a top-level `reel` model.
 - `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (default `3`)
+- `--max-probes <N>`: maximum target-quality probes per chunk (default `6`)
 - `--crf <VALUE>`: fixed CRF, `1-70` in `0.25` increments. Supplying `--crf` without `--quality-mode` selects `crf` mode for compatibility.
   - Single value: `--crf 26.25` (use for all resolutions)
   - Triple: `--crf 24,26.25,26.5` (SD,HD,UHD)
@@ -51,11 +52,21 @@ reel encode -v -i input.mkv -o output/
 
 ## Parallel Chunked Encoding
 
-Reel splits video into fixed-length chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, chapters, and metadata. Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure.
+Reel splits video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded chunks, then muxes video with Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing to reduce chunk count while keeping CRF decisions visually coherent.
+
+Worker count adapts during encoding: Reel starts conservatively, tests higher concurrency by recent throughput, and backs off on RAM or swap pressure. Target-quality chunks are scheduled in timeline blocks, largest-first within each block, so nearby completed chunks can seed adaptive CRF priors without creating a long-tail of large chunks.
 
 Target-quality mode is enabled in the default build and requires a working `libvship`/CUDA install. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
 Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
+
+## Target-Quality Scoring
+
+By default, target-quality mode searches for CVVDP scores in the `9.40-9.60` range. Reel scores three 48-frame windows for larger chunks; chunks up to 256 frames are scored as a whole. When the first adaptive CRF prior is likely reliable, chunks up to 720 frames may be encoded fully for the first probe so that a converged probe can be reused as final output.
+
+The sampled score is intentionally conservative: Reel logs the window mean and worst window, then uses the midpoint of those two values for the search decision. Scores slightly above the upper bound, up to `+0.02` JOD, are accepted so Reel does not spend extra probes shrinking already-excellent chunks. There is no matching lower-side grace.
+
+Verbose output includes each sampled window score and `window_spread`; large spreads are a useful signal that a chunk may contain mixed visual complexity and may deserve closer inspection.
 
 ## HDR Support
 
