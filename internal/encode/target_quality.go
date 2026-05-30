@@ -18,15 +18,25 @@ import (
 	"codeberg.org/five82/reel/internal/worker"
 )
 
+const (
+	// DefaultTargetQualitySampleFrames is the per-window probe length for target-quality search.
+	DefaultTargetQualitySampleFrames = 48
+
+	// DefaultTargetQualityFullProbeFrames is the largest chunk size probed as a whole.
+	DefaultTargetQualityFullProbeFrames = 256
+)
+
 type TargetQualityConfig struct {
-	Target        float32
-	Tolerance     float32
-	CRFMin        float32
-	CRFMax        float32
-	MaxProbes     int
-	MetricWorkers int
-	DisplayPath   string
-	Verbose       func(string)
+	Target          float32
+	Tolerance       float32
+	CRFMin          float32
+	CRFMax          float32
+	MaxProbes       int
+	MetricWorkers   int
+	DisplayPath     string
+	SampleFrames    int
+	FullProbeFrames int
+	Verbose         func(string)
 }
 
 type targetQualityResult struct {
@@ -35,19 +45,22 @@ type targetQualityResult struct {
 }
 
 type chunkTargetLog struct {
-	ChunkIdx    int                `json:"chunk_idx"`
-	Frames      int                `json:"frames"`
-	Target      float32            `json:"target"`
-	Tolerance   float32            `json:"tolerance"`
-	CRFMin      float32            `json:"crf_min"`
-	CRFMax      float32            `json:"crf_max"`
-	Probes      []quality.Probe    `json:"probes"`
-	FinalCRF    float32            `json:"final_crf"`
-	FinalScore  float32            `json:"final_score"`
-	FinalSize   uint64             `json:"final_size"`
-	StopReason  quality.StopReason `json:"stop_reason"`
-	StartedAt   time.Time          `json:"started_at"`
-	CompletedAt time.Time          `json:"completed_at"`
+	ChunkIdx           int                `json:"chunk_idx"`
+	Frames             int                `json:"frames"`
+	Target             float32            `json:"target"`
+	Tolerance          float32            `json:"tolerance"`
+	CRFMin             float32            `json:"crf_min"`
+	CRFMax             float32            `json:"crf_max"`
+	ProbeSampleFrames  int                `json:"probe_sample_frames"`
+	ProbeFullThreshold int                `json:"probe_full_threshold"`
+	Probes             []quality.Probe    `json:"probes"`
+	FinalCRF           float32            `json:"final_crf"`
+	FinalScore         float32            `json:"final_score"`
+	FinalSize          uint64             `json:"final_size"`
+	FinalEncodeSeconds float64            `json:"final_encode_seconds,omitempty"`
+	StopReason         quality.StopReason `json:"stop_reason"`
+	StartedAt          time.Time          `json:"started_at"`
+	CompletedAt        time.Time          `json:"completed_at"`
 }
 
 func EncodeTargetQuality(
@@ -66,6 +79,12 @@ func EncodeTargetQuality(
 	}
 	if tq.MaxProbes < 1 {
 		tq.MaxProbes = 1
+	}
+	if tq.SampleFrames < 1 {
+		tq.SampleFrames = DefaultTargetQualitySampleFrames
+	}
+	if tq.FullProbeFrames < 1 {
+		tq.FullProbeFrames = DefaultTargetQualityFullProbeFrames
 	}
 	if err := chunk.EnsureEncodeDir(workDir); err != nil {
 		return 0, fmt.Errorf("failed to create encode directory: %w", err)
@@ -185,7 +204,7 @@ func EncodeTargetQuality(
 					limiter.release()
 					continue
 				}
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, searchCtx, metricPool, tq.Verbose)
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, searchCtx, metricPool, tq.SampleFrames, tq.FullProbeFrames, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -264,63 +283,41 @@ func encodeTargetQualityChunk(
 	ch chunk.Chunk,
 	searchCtx quality.SearchContext,
 	metricPool chan *quality.VshipProcessor,
+	sampleFrames int,
+	fullProbeFrames int,
 	verbose func(string),
 ) targetQualityResult {
 	log := chunkTargetLog{
-		ChunkIdx:  ch.Idx,
-		Frames:    ch.Frames(),
-		Target:    searchCtx.Target,
-		Tolerance: searchCtx.Tolerance,
-		CRFMin:    searchCtx.CRFMin,
-		CRFMax:    searchCtx.CRFMax,
-		StartedAt: time.Now(),
+		ChunkIdx:           ch.Idx,
+		Frames:             ch.Frames(),
+		Target:             searchCtx.Target,
+		Tolerance:          searchCtx.Tolerance,
+		CRFMin:             searchCtx.CRFMin,
+		CRFMax:             searchCtx.CRFMax,
+		ProbeSampleFrames:  sampleFrames,
+		ProbeFullThreshold: fullProbeFrames,
+		StartedAt:          time.Now(),
 	}
 	state := quality.NewSearchState(searchCtx)
+	fullProbePaths := make(map[string]string)
 
 	for {
 		crf, ok := state.NextCRF(searchCtx)
 		if !ok {
 			break
 		}
-		probePath := filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s.ivf", ch.Idx, quality.FormatCRF(crf)))
-		encodeStart := time.Now()
-		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, probePath, crf)
-		if probeResult.Error != nil {
-			return targetQualityResult{EncodeResult: probeResult, Log: log}
-		}
-		encodeSeconds := time.Since(encodeStart).Seconds()
-
-		metricStart := time.Now()
-		var processor *quality.VshipProcessor
-		select {
-		case processor = <-metricPool:
-		case <-ctx.Done():
-			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: ctx.Err()}, Log: log}
-		}
-		metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
-			SourcePath: inputPath,
-			ProbePath:  probePath,
-			Info:       inf,
-			Chunk:      ch,
-			CropRect:   cropRect,
-			Width:      width,
-			Height:     height,
-			Processor:  processor,
-		})
-		metricPool <- processor
+		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, metricPool)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
-		metricSeconds := metricResult.MetricSeconds
-		if metricSeconds == 0 {
-			metricSeconds = time.Since(metricStart).Seconds()
+		if fullProbePath != "" {
+			fullProbePaths[quality.FormatCRF(probe.CRF)] = fullProbePath
 		}
-		probe := quality.Probe{CRF: crf, Score: metricResult.Score, Size: probeResult.Size, EncodeSeconds: encodeSeconds, MetricSeconds: metricSeconds}
 		state.AddProbe(searchCtx, probe)
 		log.Probes = append(log.Probes, probe)
 		if verbose != nil {
-			fps := float64(metricResult.Frames) / metricSeconds
-			verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s cvvdp=%.4f delta=%+.4f size=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), probe.Score, probe.Score-searchCtx.Target, probe.Size, encodeSeconds, metricSeconds, fps))
+			fps := float64(probe.SampleFrames) / probe.MetricSeconds
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s cvvdp=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -331,10 +328,18 @@ func encodeTargetQualityChunk(
 	if !ok {
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("no target-quality probes completed for chunk %04d", ch.Idx)}, Log: log}
 	}
-	bestPath := filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s.ivf", ch.Idx, quality.FormatCRF(best.CRF)))
 	finalPath := chunk.IVFPath(workDir, ch.Idx)
-	if err := copyFile(bestPath, finalPath); err != nil {
-		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
+	if bestPath := fullProbePaths[quality.FormatCRF(best.CRF)]; bestPath != "" {
+		if err := copyFile(bestPath, finalPath); err != nil {
+			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
+		}
+	} else {
+		encodeStart := time.Now()
+		finalResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, finalPath, best.CRF)
+		if finalResult.Error != nil {
+			return targetQualityResult{EncodeResult: finalResult, Log: log}
+		}
+		log.FinalEncodeSeconds = time.Since(encodeStart).Seconds()
 	}
 	stat, err := os.Stat(finalPath)
 	if err != nil {
@@ -350,6 +355,124 @@ func encodeTargetQualityChunk(
 		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
 	}
 	return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Frames: ch.Frames(), Size: uint64(stat.Size())}, Log: log}
+}
+
+type probeSampleWindow struct {
+	Offset int
+	Frames int
+}
+
+func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int) []probeSampleWindow {
+	if chunkFrames <= 0 {
+		return nil
+	}
+	if sampleFrames <= 0 {
+		return []probeSampleWindow{{Frames: chunkFrames}}
+	}
+	fullThreshold := max(fullProbeFrames, 3*sampleFrames)
+	if chunkFrames <= fullThreshold {
+		return []probeSampleWindow{{Frames: chunkFrames}}
+	}
+
+	middle := (chunkFrames - sampleFrames) / 2
+	return []probeSampleWindow{
+		{Offset: 0, Frames: sampleFrames},
+		{Offset: middle, Frames: sampleFrames},
+		{Offset: chunkFrames - sampleFrames, Frames: sampleFrames},
+	}
+}
+
+func encodeSampledProbe(
+	ctx context.Context,
+	inputPath string,
+	inf *video.Info,
+	cfg *EncodeConfig,
+	workDir string,
+	cropRect *video.CropRect,
+	width, height uint32,
+	ch chunk.Chunk,
+	crf float32,
+	sampleFrames int,
+	fullProbeFrames int,
+	metricPool chan *quality.VshipProcessor,
+) (quality.Probe, string, error) {
+	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames)
+	if len(windows) == 0 {
+		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
+	}
+
+	var totalSize uint64
+	var encodeSeconds, metricSeconds, weightedScore float64
+	var scoredFrames int
+	var fullProbePath string
+
+	for sampleIdx, sample := range windows {
+		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
+		isFullChunk := len(windows) == 1 && sample.Offset == 0 && sample.Frames == ch.Frames()
+		probePath := sampledProbePath(workDir, ch.Idx, crf, sampleIdx, sample, isFullChunk)
+
+		encodeStart := time.Now()
+		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, sampleChunk, probePath, crf)
+		if probeResult.Error != nil {
+			return quality.Probe{}, "", probeResult.Error
+		}
+		encodeSeconds += time.Since(encodeStart).Seconds()
+		totalSize += probeResult.Size
+
+		metricStart := time.Now()
+		var processor *quality.VshipProcessor
+		select {
+		case processor = <-metricPool:
+		case <-ctx.Done():
+			return quality.Probe{}, "", ctx.Err()
+		}
+		metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
+			SourcePath: inputPath,
+			ProbePath:  probePath,
+			Info:       inf,
+			Chunk:      sampleChunk,
+			CropRect:   cropRect,
+			Width:      width,
+			Height:     height,
+			Processor:  processor,
+		})
+		metricPool <- processor
+		if err != nil {
+			return quality.Probe{}, "", err
+		}
+		sampleMetricSeconds := metricResult.MetricSeconds
+		if sampleMetricSeconds == 0 {
+			sampleMetricSeconds = time.Since(metricStart).Seconds()
+		}
+		metricSeconds += sampleMetricSeconds
+		weightedScore += float64(metricResult.Score) * float64(metricResult.Frames)
+		scoredFrames += metricResult.Frames
+
+		if isFullChunk {
+			fullProbePath = probePath
+		} else {
+			_ = os.Remove(probePath)
+		}
+	}
+	if scoredFrames == 0 {
+		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
+	}
+
+	return quality.Probe{
+		CRF:           crf,
+		Score:         float32(weightedScore / float64(scoredFrames)),
+		Size:          totalSize,
+		EncodeSeconds: encodeSeconds,
+		MetricSeconds: metricSeconds,
+		SampleFrames:  scoredFrames,
+	}, fullProbePath, nil
+}
+
+func sampledProbePath(workDir string, chunkIdx int, crf float32, sampleIdx int, sample probeSampleWindow, fullChunk bool) string {
+	if fullChunk {
+		return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s.ivf", chunkIdx, quality.FormatCRF(crf)))
+	}
+	return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s_s%d_%d_%d.ivf", chunkIdx, quality.FormatCRF(crf), sampleIdx, sample.Offset, sample.Frames))
 }
 
 func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32) worker.EncodeResult {
@@ -394,7 +517,7 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			commonCount = count
 		}
 	}
-	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d final_jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
+	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d sampled_jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
 }
 
 func writeChunkTargetLog(workDir string, log chunkTargetLog) error {
@@ -410,19 +533,23 @@ func writeChunkTargetLog(workDir string, log chunkTargetLog) error {
 func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQualityConfig) {
 	sort.Slice(logs, func(i, j int) bool { return logs[i].ChunkIdx < logs[j].ChunkIdx })
 	data, err := json.MarshalIndent(struct {
-		Target        float32          `json:"target"`
-		Tolerance     float32          `json:"tolerance"`
-		CRFMin        float32          `json:"crf_min"`
-		CRFMax        float32          `json:"crf_max"`
-		MetricWorkers int              `json:"metric_workers"`
-		Chunks        []chunkTargetLog `json:"chunks"`
+		Target             float32          `json:"target"`
+		Tolerance          float32          `json:"tolerance"`
+		CRFMin             float32          `json:"crf_min"`
+		CRFMax             float32          `json:"crf_max"`
+		MetricWorkers      int              `json:"metric_workers"`
+		ProbeSampleFrames  int              `json:"probe_sample_frames"`
+		ProbeFullThreshold int              `json:"probe_full_threshold"`
+		Chunks             []chunkTargetLog `json:"chunks"`
 	}{
-		Target:        tq.Target,
-		Tolerance:     tq.Tolerance,
-		CRFMin:        tq.CRFMin,
-		CRFMax:        tq.CRFMax,
-		MetricWorkers: tq.MetricWorkers,
-		Chunks:        logs,
+		Target:             tq.Target,
+		Tolerance:          tq.Tolerance,
+		CRFMin:             tq.CRFMin,
+		CRFMax:             tq.CRFMax,
+		MetricWorkers:      tq.MetricWorkers,
+		ProbeSampleFrames:  tq.SampleFrames,
+		ProbeFullThreshold: tq.FullProbeFrames,
+		Chunks:             logs,
 	}, "", "  ")
 	if err != nil {
 		return

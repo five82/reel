@@ -23,6 +23,7 @@ type Probe struct {
 	Size          uint64  `json:"size"`
 	EncodeSeconds float64 `json:"encode_seconds,omitempty"`
 	MetricSeconds float64 `json:"metric_seconds,omitempty"`
+	SampleFrames  int     `json:"sample_frames,omitempty"`
 }
 
 // SearchContext configures per-chunk target-quality search.
