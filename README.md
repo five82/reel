@@ -77,7 +77,7 @@ Quality Settings:
   --target-quality R   CVVDP JOD target range (default 9.40-9.60)
   --crf-range R        Target-quality CRF search range (default 4.25-63.75)
   --cvvdp-display PATH Optional VSHIP/CVVDP display JSON override
-  --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 1)
+  --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 3)
   --crf <VALUE>        Fixed CRF mode, 1-70 in 0.25 steps
                          Defaults in CRF mode: SD=24, HD=26, UHD=26
                          Single value: --crf 25.25
