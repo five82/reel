@@ -44,9 +44,16 @@ func ProcessChunked(
 		return CropResult{}, fmt.Errorf("failed to create work directory: %w", err)
 	}
 
-	// Cleanup on completion (unless resuming a failed encode)
+	if cfg.KeepWorkDir {
+		rep.Verbose(fmt.Sprintf("Work directory: %s", workDir))
+	}
+
+	// Cleanup on completion (unless resuming a failed encode or explicitly keeping the work directory).
 	defer func() {
-		// Only cleanup if output was successfully created
+		// Only cleanup if output was successfully created.
+		if cfg.KeepWorkDir {
+			return
+		}
 		if _, err := os.Stat(outputPath); err == nil {
 			_ = chunk.CleanupWorkDir(workDir)
 		}

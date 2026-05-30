@@ -40,6 +40,44 @@ func TestSearchDoesNotApplyLowerGrace(t *testing.T) {
 	}
 }
 
+func TestSearchRequiresSampledWindowFloor(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 24, Score: 9.51, WorstWindowScore: 9.28})
+	if state.StopReason == StopConverged {
+		t.Fatal("probe with weak sampled window should not converge")
+	}
+	if state.SearchMax != 23.75 {
+		t.Fatalf("SearchMax = %g, want 23.75", state.SearchMax)
+	}
+}
+
+func TestBestProbePrefersSampledWindowFloor(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.Probes = []Probe{
+		{CRF: 31.5, Score: 9.5123, WorstWindowScore: 9.2786},
+		{CRF: 27, Score: 9.6577, WorstWindowScore: 9.4947},
+	}
+	best, ok := state.BestProbe(ctx)
+	if !ok || best.CRF != 27 {
+		t.Fatalf("best probe = %+v ok=%v, want CRF 27", best, ok)
+	}
+}
+
+func TestBestProbeFallsBackWhenAllSampledWindowsAreWeak(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.Probes = []Probe{
+		{CRF: 20, Score: 9.7, WorstWindowScore: 9.3},
+		{CRF: 24, Score: 9.52, WorstWindowScore: 9.2},
+	}
+	best, ok := state.BestProbe(ctx)
+	if !ok || best.CRF != 24 {
+		t.Fatalf("best probe = %+v ok=%v, want fallback closest score", best, ok)
+	}
+}
+
 func TestSearchStartsAtInitialCRF(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 26}
 	state := NewSearchState(ctx)

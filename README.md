@@ -65,7 +65,7 @@ reel encode -i /videos/ -o /encoded/
 
 Reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
 
-Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores sampled CVVDP windows, starts from adaptive CRF priors, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
+Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores sampled CVVDP windows, starts from adaptive CRF priors, requires every sampled window to meet the lower quality bound, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
 ### Options
 
@@ -94,6 +94,7 @@ Output Options:
   -l, --log-dir        Log directory (defaults to ~/.local/state/reel/logs)
   -v, --verbose        Verbose output
   --no-log             Disable log file creation
+  --keep-workdir       Keep the .reel work directory after successful encodes
 ```
 
 ## Library Usage

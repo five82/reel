@@ -97,9 +97,9 @@ func TestTargetQualitySampleScorePenalizesWeakWindow(t *testing.T) {
 	}
 }
 
-func TestTargetQualityFullFirstProbeRequiresReliableInitialSource(t *testing.T) {
-	if !targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
-		t.Fatal("neighbor first probe should use full-first probing")
+func TestTargetQualityFullFirstProbeRequiresMedianInitialSource(t *testing.T) {
+	if targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
+		t.Fatal("neighbor first probe should not use full-first probing")
 	}
 	if !targetQualityFullFirstProbe("median", 1, 500, 48, 256) {
 		t.Fatal("median first probe should use full-first probing")
@@ -110,16 +110,16 @@ func TestTargetQualityFullFirstProbeRequiresReliableInitialSource(t *testing.T) 
 }
 
 func TestTargetQualityFullFirstProbeOnlyForFirstSampledProbe(t *testing.T) {
-	if targetQualityFullFirstProbe("neighbor", 2, 500, 48, 256) {
+	if targetQualityFullFirstProbe("median", 2, 500, 48, 256) {
 		t.Fatal("later probes should not use full-first probing")
 	}
-	if targetQualityFullFirstProbe("neighbor", 1, 225, 48, 256) {
+	if targetQualityFullFirstProbe("median", 1, 225, 48, 256) {
 		t.Fatal("chunks already full-probed should not use full-first sampled probing")
 	}
-	if !targetQualityFullFirstProbe("neighbor", 1, 650, 48, 256) {
+	if !targetQualityFullFirstProbe("median", 1, 650, 48, 256) {
 		t.Fatal("HD-sized chunks should use full-first probing")
 	}
-	if targetQualityFullFirstProbe("neighbor", 1, 721, 48, 256) {
+	if targetQualityFullFirstProbe("median", 1, 721, 48, 256) {
 		t.Fatal("chunks above the full-first cap should not use full-first probing")
 	}
 }

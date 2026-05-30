@@ -118,11 +118,11 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 	s.Probes = append(s.Probes, probe)
 	s.tried[crfKey(probe.CRF)] = true
 
-	if targetQualityConverged(ctx, probe.Score) {
+	if targetQualityProbeConverged(ctx, probe) {
 		s.StopReason = StopConverged
 		return
 	}
-	if probe.Score < ctx.Target-ctx.Tolerance {
+	if targetQualityWindowBelowFloor(ctx, probe) || probe.Score < ctx.Target-ctx.Tolerance {
 		// Quality too low: lower CRF.
 		s.SearchMax = RoundCRFToQuarter(probe.CRF - 0.25)
 	} else if probe.Score > ctx.Target+ctx.Tolerance {
@@ -142,20 +142,44 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 	if len(s.Probes) == 0 {
 		return Probe{}, false
 	}
-	best := s.Probes[0]
-	bestErr := math.Abs(float64(best.Score - ctx.Target))
-	for _, probe := range s.Probes[1:] {
+	best, _, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
+		return !targetQualityWindowBelowFloor(ctx, probe)
+	})
+	if found {
+		return best, true
+	}
+	best, _, _ = bestProbeMatching(ctx, s.Probes, func(Probe) bool { return true })
+	return best, true
+}
+
+func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool) (Probe, float64, bool) {
+	var best Probe
+	bestErr := float64(0)
+	found := false
+	for _, probe := range probes {
+		if !keep(probe) {
+			continue
+		}
 		err := math.Abs(float64(probe.Score - ctx.Target))
-		if err < bestErr {
+		if !found || err < bestErr {
 			best = probe
 			bestErr = err
+			found = true
 		}
 	}
-	return best, true
+	return best, bestErr, found
+}
+
+func targetQualityProbeConverged(ctx SearchContext, probe Probe) bool {
+	return targetQualityConverged(ctx, probe.Score) && !targetQualityWindowBelowFloor(ctx, probe)
 }
 
 func targetQualityConverged(ctx SearchContext, score float32) bool {
 	return score >= ctx.Target-ctx.Tolerance && score <= ctx.Target+ctx.Tolerance+ctx.UpperToleranceGrace
+}
+
+func targetQualityWindowBelowFloor(ctx SearchContext, probe Probe) bool {
+	return probe.WorstWindowScore > 0 && probe.WorstWindowScore < ctx.Target-ctx.Tolerance
 }
 
 func initialSearchCRF(ctx SearchContext) float32 {

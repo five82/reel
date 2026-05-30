@@ -443,12 +443,7 @@ func targetQualityFullFirstProbe(initialCRFSource string, round int, chunkFrames
 	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames)) <= 1 {
 		return false
 	}
-	switch initialCRFSource {
-	case "neighbor", "median":
-		return true
-	default:
-		return false
-	}
+	return initialCRFSource == "median"
 }
 
 func encodeSampledProbe(

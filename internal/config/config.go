@@ -122,7 +122,8 @@ type Config struct {
 	ChunkDurationUHD float64 // Chunk duration for UHD content (>=3840 width)
 
 	// Debug options
-	Verbose bool // Enable verbose output
+	Verbose     bool // Enable verbose output
+	KeepWorkDir bool // Keep .reel work directory after successful encodes
 }
 
 // NewConfig creates a new Config with default values.

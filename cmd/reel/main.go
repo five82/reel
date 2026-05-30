@@ -100,6 +100,7 @@ type encodeArgs struct {
 	preset          uint
 	disableAutocrop bool
 	noLog           bool
+	keepWorkDir     bool
 }
 
 func runEncode(args []string) error {
@@ -137,6 +138,7 @@ Processing Options:
 
 Output Options:
   --no-log               Disable Reel log file creation
+  --keep-workdir         Keep the .reel work directory after successful encodes
 `, appName, qualityModeDefaultHelp(), config.DefaultTargetQuality, config.DefaultCRFSearchRange, config.DefaultMetricWorkers, config.DefaultTargetQualityMaxProbes, quality.FormatCRF(config.DefaultCRFSD), quality.FormatCRF(config.DefaultCRFHD), quality.FormatCRF(config.DefaultCRFUHD), config.DefaultSVTAV1Preset)
 	}
 
@@ -172,6 +174,7 @@ Output Options:
 	fs.BoolVar(&ea.disableAutocrop, "disable-autocrop", false, "Disable automatic crop detection")
 	// Output options
 	fs.BoolVar(&ea.noLog, "no-log", false, "Disable log file creation")
+	fs.BoolVar(&ea.keepWorkDir, "keep-workdir", false, "Keep the .reel work directory after successful encodes")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -295,6 +298,7 @@ func executeEncode(ea encodeArgs) error {
 	}
 	// Debug options
 	cfg.Verbose = ea.verbose
+	cfg.KeepWorkDir = ea.keepWorkDir
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
