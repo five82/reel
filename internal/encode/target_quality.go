@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -365,7 +366,7 @@ func encodeTargetQualityChunk(
 			if fullFirst {
 				probeKind = " probe=full_first"
 			}
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f window_spread=%.4f windows=%s delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, targetQualityWindowSpread(probe.Windows), formatProbeWindowScores(probe.Windows), probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -575,6 +576,39 @@ func encodeFullFirstSampledProbe(
 		SampleFrames:     scoredFrames,
 		Windows:          windowsScored,
 	}, fullProbePath, nil
+}
+
+func formatProbeWindowScores(windows []quality.ProbeWindow) string {
+	if len(windows) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, window := range windows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%d:%.4f", window.Offset, window.Score)
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func targetQualityWindowSpread(windows []quality.ProbeWindow) float32 {
+	if len(windows) == 0 {
+		return 0
+	}
+	minScore := windows[0].Score
+	maxScore := windows[0].Score
+	for _, window := range windows[1:] {
+		if window.Score < minScore {
+			minScore = window.Score
+		}
+		if window.Score > maxScore {
+			maxScore = window.Score
+		}
+	}
+	return maxScore - minScore
 }
 
 func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, worstScore float32, frames int) {

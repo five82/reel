@@ -45,6 +45,28 @@ func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
 	}
 }
 
+func TestFormatProbeWindowScoresShowsOffsetAndScore(t *testing.T) {
+	windows := []quality.ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.65},
+		{Offset: 277, Frames: 48, Score: 9.58},
+		{Offset: 554, Frames: 48, Score: 9.25},
+	}
+	if got := formatProbeWindowScores(windows); got != "[0:9.6500,277:9.5800,554:9.2500]" {
+		t.Fatalf("formatProbeWindowScores() = %q", got)
+	}
+}
+
+func TestTargetQualityWindowSpread(t *testing.T) {
+	windows := []quality.ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.65},
+		{Offset: 277, Frames: 48, Score: 9.58},
+		{Offset: 554, Frames: 48, Score: 9.25},
+	}
+	if got := targetQualityWindowSpread(windows); math.Abs(float64(got-0.4)) > 0.0001 {
+		t.Fatalf("targetQualityWindowSpread() = %g, want 0.4", got)
+	}
+}
+
 func TestTargetQualitySampleScoreUsesMeanWhenWindowsMatch(t *testing.T) {
 	windows := []quality.ProbeWindow{
 		{Offset: 0, Frames: 48, Score: 9.5},
