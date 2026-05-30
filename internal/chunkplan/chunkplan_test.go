@@ -121,26 +121,26 @@ func TestPlanBoundariesTracksBoundaryKinds(t *testing.T) {
 
 func TestPlanBoundariesPacksWeakCutsTowardTarget(t *testing.T) {
 	scores := make([]float64, 240)
+	scores[40] = 0.20
+	scores[90] = 0.21
+	scores[130] = 0.22
+	plan := planBoundaries([]int{0, 40, 90, 130}, 220, 220, 1, 100, scores)
+	want := []int{0, 130}
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
+	}
+	if plan.MergedWeakCuts != 2 {
+		t.Fatalf("merged weak cuts = %d, want 2", plan.MergedWeakCuts)
+	}
+}
+
+func TestPlanBoundariesPreservesWeakCutsAboveHalfTarget(t *testing.T) {
+	scores := make([]float64, 240)
 	scores[50] = 0.20
 	scores[100] = 0.21
 	scores[150] = 0.22
 	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
-	want := []int{0}
-	if !reflect.DeepEqual(plan.Boundaries, want) {
-		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
-	}
-	if plan.MergedWeakCuts != 3 {
-		t.Fatalf("merged weak cuts = %d, want 3", plan.MergedWeakCuts)
-	}
-}
-
-func TestPlanBoundariesPreservesStrongCutWhenPackingToTarget(t *testing.T) {
-	scores := make([]float64, 240)
-	scores[50] = 0.20
-	scores[100] = 0.90
-	scores[150] = 0.21
-	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
-	want := []int{0, 100}
+	want := []int{0, 50, 100, 150}
 	if !reflect.DeepEqual(plan.Boundaries, want) {
 		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
 	}
@@ -169,16 +169,16 @@ func TestSignatureFromFrameAppliesCrop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signatureFromFrame returned error: %v", err)
 	}
-	if sig.Mean < 20 || sig.Mean > 50 {
+	if sig.Mean < 80 || sig.Mean > 200 {
 		t.Fatalf("cropped signature mean = %.2f, want in cropped column range", sig.Mean)
 	}
 }
 
-func TestReadLuma8SupportsP010Shift(t *testing.T) {
+func TestReadLuma10SupportsP010Shift(t *testing.T) {
 	data := make([]byte, 2)
 	binary.LittleEndian.PutUint16(data, 512<<6)
-	if got := readLuma8(data, 0, 0, true, 8); got != 128 {
-		t.Fatalf("readLuma8() = %d, want 128", got)
+	if got := readLuma10(data, 0, 0, true, 8); got != 512 {
+		t.Fatalf("readLuma10() = %d, want 512", got)
 	}
 }
 

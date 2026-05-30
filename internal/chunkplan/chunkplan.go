@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	detectorVersion = "reel-luma-shot-scd-v2"
-	metadataVersion = 5
+	detectorVersion = "reel-luma-shot-scd-v3"
+	metadataVersion = 6
 
 	signatureWidth  = 64
 	signatureHeight = 36
@@ -96,7 +96,7 @@ type Metadata struct {
 }
 
 type frameSignature struct {
-	Samples [signaturePixels]uint8
+	Samples [signaturePixels]uint16
 	Hist    [histogramBins]uint32
 	Mean    float64
 }
@@ -239,10 +239,10 @@ func signatureFromFrame(frame *video.LumaFrame, crop *video.CropRect) (*frameSig
 			if srcX >= x+width {
 				srcX = x + width - 1
 			}
-			value := readLuma8(frame.Data, rowOff, srcX, frame.Is10Bit, frame.LumaShift)
+			value := readLuma10(frame.Data, rowOff, srcX, frame.Is10Bit, frame.LumaShift)
 			idx := gy*signatureWidth + gx
 			sig.Samples[idx] = value
-			sig.Hist[int(value)*histogramBins/256]++
+			sig.Hist[int(value)*histogramBins/1024]++
 			sum += uint64(value)
 		}
 	}
@@ -265,15 +265,16 @@ func analysisRect(frame *video.LumaFrame, crop *video.CropRect) (x, y, width, he
 	return x, y, width, height, nil
 }
 
-func readLuma8(data []byte, rowOff, col int, is10Bit bool, lumaShift int) uint8 {
+func readLuma10(data []byte, rowOff, col int, is10Bit bool, lumaShift int) uint16 {
 	if !is10Bit {
-		return data[rowOff+col]
+		return uint16(data[rowOff+col]) << 2
 	}
 	if lumaShift == 0 {
 		lumaShift = 2
 	}
-	sample := binary.LittleEndian.Uint16(data[rowOff+col*2:])
-	return uint8(min(sample>>lumaShift, 255))
+	shift := max(0, lumaShift-2)
+	sample := binary.LittleEndian.Uint16(data[rowOff+col*2:]) >> shift
+	return uint16(min(sample, 1023))
 }
 
 func signatureChange(previous, current *frameSignature) float64 {
@@ -281,14 +282,14 @@ func signatureChange(previous, current *frameSignature) float64 {
 	for i := range previous.Samples {
 		pixelDelta += uint64(absInt(int(previous.Samples[i]) - int(current.Samples[i])))
 	}
-	pixelScore := float64(pixelDelta) / (signaturePixels * 255)
+	pixelScore := float64(pixelDelta) / (signaturePixels * 1023)
 
 	var histDelta uint64
 	for i := range previous.Hist {
 		histDelta += uint64(absInt(int(previous.Hist[i]) - int(current.Hist[i])))
 	}
 	histScore := float64(histDelta) / (2 * signaturePixels)
-	meanScore := math.Abs(previous.Mean-current.Mean) / 255
+	meanScore := math.Abs(previous.Mean-current.Mean) / 1023
 
 	return 0.65*pixelScore + 0.30*histScore + 0.05*meanScore
 }
@@ -502,7 +503,8 @@ func weakTargetBoundaryToRemove(cuts []int, totalFrames, maxFrames, targetFrames
 		}
 		leftFrames := boundary - leftStart
 		rightFrames := rightEnd - boundary
-		if leftFrames >= targetFrames && rightFrames >= targetFrames {
+		weakMergeFloor := max(1, targetFrames/2)
+		if leftFrames >= weakMergeFloor && rightFrames >= weakMergeFloor {
 			continue
 		}
 		score := cutScore(scores, boundary)
