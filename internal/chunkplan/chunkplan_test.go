@@ -46,136 +46,72 @@ func TestDetectNaturalCutsSuppressesTwoFrameFlash(t *testing.T) {
 	}
 }
 
-func TestAddSupplementalTransitionCutsAddsGradualTransition(t *testing.T) {
-	scores := make([]float64, 100)
-	for i := 40; i <= 45; i++ {
-		scores[i] = 0.08
+func TestPlanBoundariesSplitsAtMaxFrames(t *testing.T) {
+	plan := planBoundaries([]int{0}, 520, 300, 1, nil)
+	want := []int{0, 300}
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("planBoundaries() = %v, want %v", plan.Boundaries, want)
 	}
-	scores[43] = 0.11
-
-	got := addSupplementalTransitionCuts(scores, []int{0})
-	want := []int{0, 43}
-	if !reflect.DeepEqual(got.Cuts, want) {
-		t.Fatalf("addSupplementalTransitionCuts() = %v, want %v", got.Cuts, want)
+	if plan.SyntheticSplits != 1 {
+		t.Fatalf("synthetic splits = %d, want 1", plan.SyntheticSplits)
 	}
-	if got.Added != 1 {
-		t.Fatalf("supplemental cuts added = %d, want 1", got.Added)
+	if plan.MergedShortShots != 0 {
+		t.Fatalf("merged short shots = %d, want 0", plan.MergedShortShots)
 	}
 }
 
-func TestAddSupplementalTransitionCutsIgnoresWeakMotion(t *testing.T) {
-	scores := make([]float64, 100)
-	for i := 40; i <= 45; i++ {
-		scores[i] = 0.03
+func TestPlanBoundariesSplitsRepeatedlyUnderMax(t *testing.T) {
+	plan := planBoundaries([]int{0}, 1000, 300, 1, nil)
+	want := []int{0, 300, 600, 900}
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("planBoundaries() = %v, want %v", plan.Boundaries, want)
 	}
-
-	got := addSupplementalTransitionCuts(scores, []int{0})
-	want := []int{0}
-	if !reflect.DeepEqual(got.Cuts, want) {
-		t.Fatalf("addSupplementalTransitionCuts() = %v, want %v", got.Cuts, want)
+	if plan.SyntheticSplits != 3 {
+		t.Fatalf("synthetic splits = %d, want 3", plan.SyntheticSplits)
 	}
-	if got.Added != 0 {
-		t.Fatalf("supplemental cuts added = %d, want 0", got.Added)
+	if plan.MergedShortShots != 0 {
+		t.Fatalf("merged short shots = %d, want 0", plan.MergedShortShots)
 	}
 }
 
-func TestRefineBoundariesUsesHighScoreNearBalancedSplit(t *testing.T) {
-	scores := make([]float64, 1000)
-	scores[240] = 0.5
-	scores[250] = 0.2
-
-	boundaries, synthetic, merged := refineBoundaries([]int{0}, 520, 300, 1, scores)
-	want := []int{0, 240}
-	if !reflect.DeepEqual(boundaries, want) {
-		t.Fatalf("refineBoundaries() = %v, want %v", boundaries, want)
-	}
-	if synthetic != 1 {
-		t.Fatalf("synthetic splits = %d, want 1", synthetic)
-	}
-	if merged != 0 {
-		t.Fatalf("merged short shots = %d, want 0", merged)
-	}
-}
-
-func TestRefineBoundariesSplitsRepeatedlyUnderMax(t *testing.T) {
-	boundaries, synthetic, merged := refineBoundaries([]int{0}, 1000, 300, 1, nil)
-	want := []int{0, 250, 500, 750}
-	if !reflect.DeepEqual(boundaries, want) {
-		t.Fatalf("refineBoundaries() = %v, want %v", boundaries, want)
-	}
-	if synthetic != 3 {
-		t.Fatalf("synthetic splits = %d, want 3", synthetic)
-	}
-	if merged != 0 {
-		t.Fatalf("merged short shots = %d, want 0", merged)
-	}
-}
-
-func TestRefineBoundariesPacksShortShotsAcrossWeakCut(t *testing.T) {
+func TestPlanBoundariesPacksShortShots(t *testing.T) {
 	scores := make([]float64, 200)
 	scores[60] = 0.9
 	scores[70] = 0.2
 
-	boundaries, synthetic, merged := refineBoundaries([]int{0, 60, 70, 130}, 150, 80, 48, scores)
+	plan := planBoundaries([]int{0, 60, 70, 130}, 150, 80, 48, scores)
 	want := []int{0, 60, 130}
-	if !reflect.DeepEqual(boundaries, want) {
-		t.Fatalf("refineBoundaries() = %v, want %v", boundaries, want)
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("planBoundaries() = %v, want %v", plan.Boundaries, want)
 	}
-	if synthetic != 0 {
-		t.Fatalf("synthetic splits = %d, want 0", synthetic)
+	if plan.SyntheticSplits != 0 {
+		t.Fatalf("synthetic splits = %d, want 0", plan.SyntheticSplits)
 	}
-	if merged != 1 {
-		t.Fatalf("merged short shots = %d, want 1", merged)
+	if plan.MergedShortShots != 1 {
+		t.Fatalf("merged short shots = %d, want 1", plan.MergedShortShots)
 	}
 }
 
-func TestRefineBoundariesDoesNotPackBeyondMaxFrames(t *testing.T) {
-	boundaries, _, merged := refineBoundaries([]int{0, 70, 80}, 150, 75, 48, nil)
+func TestPlanBoundariesDoesNotPackBeyondMaxFrames(t *testing.T) {
+	plan := planBoundaries([]int{0, 70, 80}, 150, 75, 48, nil)
 	want := []int{0, 70, 80}
-	if !reflect.DeepEqual(boundaries, want) {
-		t.Fatalf("refineBoundaries() = %v, want %v", boundaries, want)
+	if !reflect.DeepEqual(plan.Boundaries, want) {
+		t.Fatalf("planBoundaries() = %v, want %v", plan.Boundaries, want)
 	}
-	if merged != 0 {
-		t.Fatalf("merged short shots = %d, want 0", merged)
+	if plan.MergedShortShots != 0 {
+		t.Fatalf("merged short shots = %d, want 0", plan.MergedShortShots)
 	}
 }
 
 func TestPlanBoundariesTracksBoundaryKinds(t *testing.T) {
-	plan := planBoundaries([]int{0, 70}, 220, 100, 1, 0, nil)
-	wantBoundaries := []int{0, 70, 145}
+	plan := planBoundaries([]int{0, 70}, 220, 100, 1, nil)
+	wantBoundaries := []int{0, 70, 170}
 	if !reflect.DeepEqual(plan.Boundaries, wantBoundaries) {
 		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, wantBoundaries)
 	}
 	wantKinds := []BoundaryKind{BoundaryKindStart, BoundaryKindNaturalShotCut, BoundaryKindSyntheticSplit}
 	if !reflect.DeepEqual(plan.BoundaryKinds, wantKinds) {
 		t.Fatalf("plan boundary kinds = %v, want %v", plan.BoundaryKinds, wantKinds)
-	}
-}
-
-func TestPlanBoundariesPacksWeakCutsTowardTarget(t *testing.T) {
-	scores := make([]float64, 240)
-	scores[50] = 0.20
-	scores[100] = 0.21
-	scores[150] = 0.22
-	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
-	want := []int{0}
-	if !reflect.DeepEqual(plan.Boundaries, want) {
-		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
-	}
-	if plan.MergedWeakCuts != 3 {
-		t.Fatalf("merged weak cuts = %d, want 3", plan.MergedWeakCuts)
-	}
-}
-
-func TestPlanBoundariesPreservesStrongCutWhenPackingToTarget(t *testing.T) {
-	scores := make([]float64, 240)
-	scores[50] = 0.20
-	scores[100] = 0.90
-	scores[150] = 0.21
-	plan := planBoundaries([]int{0, 50, 100, 150}, 220, 220, 1, 100, scores)
-	want := []int{0, 100}
-	if !reflect.DeepEqual(plan.Boundaries, want) {
-		t.Fatalf("plan boundaries = %v, want %v", plan.Boundaries, want)
 	}
 }
 

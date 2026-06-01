@@ -104,10 +104,6 @@ func ProcessChunked(
 	if minChunkFrames < 1 {
 		minChunkFrames = 1
 	}
-	targetChunkFrames := 0
-	if cfg.QualityMode == config.QualityModeTarget {
-		targetChunkFrames = int(math.Ceil(fps * 6))
-	}
 	rep.StageProgress(reporter.StageProgress{Stage: "Chunking", Message: "Detecting shot cuts"})
 	chunkPlanFile := filepath.Join(workDir, "chunk-plan.txt")
 	chunkPlanMetadataFile := filepath.Join(workDir, "chunk-plan.json")
@@ -115,10 +111,9 @@ func ProcessChunked(
 	lastPlanPercent := -1
 	finishStep = startVerboseStep(rep, "Shot cut detection")
 	planResult, err := chunkplan.PlanToFileIfNeeded(ctx, inputPath, chunkPlanFile, chunkPlanMetadataFile, vidInf, chunkplan.Options{
-		MaxFrames:    maxChunkFrames,
-		MinFrames:    minChunkFrames,
-		TargetFrames: targetChunkFrames,
-		CropRect:     cropRect,
+		MaxFrames: maxChunkFrames,
+		MinFrames: minChunkFrames,
+		CropRect:  cropRect,
 		Progress: func(current, total int) {
 			if total <= 0 {
 				return
@@ -140,22 +135,14 @@ func ProcessChunked(
 		rep.Verbose(fmt.Sprintf("Video frame count adjusted after decode: probed %d, decoded %d", vidInf.Frames, planResult.Frames))
 		vidInf.Frames = planResult.Frames
 	}
-	supplementalCuts := ""
-	if planResult.BlackTransitionCuts > 0 || planResult.GradualCuts > 0 {
-		supplementalCuts = fmt.Sprintf(" (%d black/content transitions, %d gradual transitions)", planResult.BlackTransitionCuts, planResult.GradualCuts)
-	}
-	if planResult.MergedWeakCuts > 0 {
-		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts%s, merged %d short shots, merged %d weak cuts, and added %d balanced splits", planResult.NaturalCuts, supplementalCuts, planResult.MergedShortShots, planResult.MergedWeakCuts, planResult.SyntheticSplits))
-	} else {
-		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts%s, merged %d short shots, and added %d balanced splits", planResult.NaturalCuts, supplementalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
-	}
+	rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, and added %d duration splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
 	retainedNaturalCuts := 0
 	for _, kind := range planResult.BoundaryKinds {
 		if kind == chunkplan.BoundaryKindNaturalShotCut {
 			retainedNaturalCuts++
 		}
 	}
-	rep.Verbose(fmt.Sprintf("Chunk boundaries: %d natural shot cuts, %d balanced splits", retainedNaturalCuts, planResult.SyntheticSplits))
+	rep.Verbose(fmt.Sprintf("Chunk boundaries: %d natural shot cuts, %d duration splits", retainedNaturalCuts, planResult.SyntheticSplits))
 
 	// Load planned chunk boundaries
 	finishStep = startVerboseStep(rep, "Chunk planning")
