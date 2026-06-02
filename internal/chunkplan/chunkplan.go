@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	detectorVersion = "reel-luma-shot-scd-v4"
-	metadataVersion = 9
+	detectorVersion = "reel-luma-shot-scd-v5"
+	metadataVersion = 10
 
 	signatureWidth  = 64
 	signatureHeight = 36
@@ -37,10 +37,11 @@ const (
 
 // Options controls shot-cut detection and content-aware chunk planning.
 type Options struct {
-	MaxFrames int
-	MinFrames int
-	CropRect  *video.CropRect
-	Progress  func(current, total int)
+	MaxFrames    int
+	MinFrames    int
+	TargetFrames int
+	CropRect     *video.CropRect
+	Progress     func(current, total int)
 }
 
 // BoundaryKind explains why a planned chunk boundary exists.
@@ -60,6 +61,7 @@ type Result struct {
 	NaturalCutFrames []int
 	SyntheticSplits  int
 	MergedShortShots int
+	MergedWeakCuts   int
 	Frames           int
 
 	// MergedScenes is kept for compatibility with older internal callers.
@@ -82,10 +84,12 @@ type Metadata struct {
 	Crop                 string         `json:"crop,omitempty"`
 	MaxFrames            int            `json:"max_frames"`
 	MinFrames            int            `json:"min_frames"`
+	TargetFrames         int            `json:"target_frames,omitempty"`
 	Boundaries           int            `json:"boundaries"`
 	NaturalCuts          int            `json:"natural_cuts"`
 	SyntheticSplits      int            `json:"synthetic_splits"`
 	MergedShortShots     int            `json:"merged_short_shots"`
+	MergedWeakCuts       int            `json:"merged_weak_cuts,omitempty"`
 	MergedScenes         int            `json:"merged_scenes"`
 	NaturalCutFrames     []int          `json:"natural_cut_frames,omitempty"`
 	BoundaryKinds        []BoundaryKind `json:"boundary_kinds,omitempty"`
@@ -135,6 +139,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	}
 	maxFrames := normalizeMaxFrames(opts.MaxFrames, inf.Frames)
 	minFrames := normalizeMinFrames(opts.MinFrames, maxFrames)
+	targetFrames := normalizeTargetFrames(opts.TargetFrames, minFrames, maxFrames)
 
 	scores, err := scoreVideo(ctx, inputPath, inf, opts)
 	if err != nil {
@@ -142,7 +147,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	}
 	frameCount := len(scores)
 	naturalCuts := detectNaturalCuts(scores)
-	plan := planBoundaries(naturalCuts, frameCount, maxFrames, minFrames, scores)
+	plan := planBoundaries(naturalCuts, frameCount, maxFrames, minFrames, targetFrames, scores)
 	return Result{
 		Boundaries:       plan.Boundaries,
 		BoundaryKinds:    plan.BoundaryKinds,
@@ -150,6 +155,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 		NaturalCutFrames: naturalCutFrames(naturalCuts),
 		SyntheticSplits:  plan.SyntheticSplits,
 		MergedShortShots: plan.MergedShortShots,
+		MergedWeakCuts:   plan.MergedWeakCuts,
 		Frames:           frameCount,
 		MergedScenes:     plan.MergedShortShots,
 	}, nil
@@ -352,16 +358,19 @@ type boundaryPlan struct {
 	BoundaryKinds    []BoundaryKind
 	SyntheticSplits  int
 	MergedShortShots int
+	MergedWeakCuts   int
 }
 
-func planBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, scores []float64) boundaryPlan {
+func planBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames, targetFrames int, scores []float64) boundaryPlan {
 	if totalFrames <= 0 {
 		return boundaryPlan{Boundaries: []int{0}, BoundaryKinds: []BoundaryKind{BoundaryKindStart}}
 	}
 	maxFrames = normalizeMaxFrames(maxFrames, totalFrames)
 	minFrames = normalizeMinFrames(minFrames, maxFrames)
+	targetFrames = normalizeTargetFrames(targetFrames, minFrames, maxFrames)
 
 	cuts, mergedShortShots := packShortShots(normalizedNaturalCuts(naturalCuts, totalFrames), totalFrames, maxFrames, minFrames, scores)
+	cuts, mergedWeakCuts := packWeakCutsToTarget(cuts, totalFrames, maxFrames, targetFrames, scores)
 	plan := boundaryPlan{
 		Boundaries:    make([]int, 0, len(cuts)),
 		BoundaryKinds: make([]BoundaryKind, 0, len(cuts)),
@@ -407,6 +416,7 @@ func planBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames int, sc
 		plan.BoundaryKinds = append([]BoundaryKind{BoundaryKindStart}, plan.BoundaryKinds...)
 	}
 	plan.MergedShortShots = mergedShortShots
+	plan.MergedWeakCuts = mergedWeakCuts
 	return plan
 }
 
@@ -489,6 +499,74 @@ func shortShotBoundaryToRemove(cuts []int, totalFrames, maxFrames int, scores []
 	}
 }
 
+func packWeakCutsToTarget(cuts []int, totalFrames, maxFrames, targetFrames int, scores []float64) ([]int, int) {
+	if targetFrames <= 0 || len(cuts) <= 1 {
+		return cuts, 0
+	}
+	strongThreshold := strongCutThreshold(cuts, scores)
+	packed := append([]int(nil), cuts...)
+	merged := 0
+	for {
+		removeIdx := weakTargetBoundaryToRemove(packed, totalFrames, maxFrames, targetFrames, strongThreshold, scores)
+		if removeIdx <= 0 || removeIdx >= len(packed) {
+			return packed, merged
+		}
+		packed = append(packed[:removeIdx], packed[removeIdx+1:]...)
+		merged++
+	}
+}
+
+func weakTargetBoundaryToRemove(cuts []int, totalFrames, maxFrames, targetFrames int, strongThreshold float64, scores []float64) int {
+	bestIdx := -1
+	bestScore := math.MaxFloat64
+	bestPressure := -1
+	for i := 1; i < len(cuts); i++ {
+		leftStart := cuts[i-1]
+		boundary := cuts[i]
+		rightEnd := totalFrames
+		if i+1 < len(cuts) {
+			rightEnd = cuts[i+1]
+		}
+		mergedFrames := rightEnd - leftStart
+		if mergedFrames > maxFrames {
+			continue
+		}
+		leftFrames := boundary - leftStart
+		rightFrames := rightEnd - boundary
+		if leftFrames >= targetFrames && rightFrames >= targetFrames {
+			continue
+		}
+		score := cutScore(scores, boundary)
+		if strongThreshold > 0 && score >= strongThreshold {
+			continue
+		}
+		pressure := max(0, targetFrames-leftFrames) + max(0, targetFrames-rightFrames)
+		if score < bestScore || (score == bestScore && pressure > bestPressure) {
+			bestIdx = i
+			bestScore = score
+			bestPressure = pressure
+		}
+	}
+	return bestIdx
+}
+
+func strongCutThreshold(cuts []int, scores []float64) float64 {
+	if len(scores) == 0 || len(cuts) <= 2 {
+		return 0
+	}
+	values := make([]float64, 0, len(cuts)-1)
+	for _, cut := range cuts[1:] {
+		if score := cutScore(scores, cut); score > 0 {
+			values = append(values, score)
+		}
+	}
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Float64s(values)
+	return maxFloat(percentileSorted(values, 0.90), minimumStrongCutScore)
+}
+
 func cutScore(scores []float64, cut int) float64 {
 	if cut <= 0 || cut >= len(scores) {
 		return 0
@@ -551,6 +629,13 @@ func normalizeMinFrames(minFrames, maxFrames int) int {
 	return min(max(minFrames, defaultMinimumFrames), maxFrames)
 }
 
+func normalizeTargetFrames(targetFrames, minFrames, maxFrames int) int {
+	if targetFrames <= minFrames {
+		return 0
+	}
+	return min(targetFrames, maxFrames)
+}
+
 func loadCachedResult(inputPath, boundaryFile, metadataFile string, inf *video.Info, opts Options) (Result, bool) {
 	data, err := os.ReadFile(metadataFile)
 	if err != nil {
@@ -586,6 +671,7 @@ func loadCachedResult(inputPath, boundaryFile, metadataFile string, inf *video.I
 		NaturalCutFrames: meta.NaturalCutFrames,
 		SyntheticSplits:  meta.SyntheticSplits,
 		MergedShortShots: mergedShortShots,
+		MergedWeakCuts:   meta.MergedWeakCuts,
 		Frames:           frames,
 		MergedScenes:     mergedShortShots,
 	}, true
@@ -608,7 +694,8 @@ func metadataMatches(inputPath string, inf *video.Info, opts Options, meta Metad
 		meta.Frames == inf.Frames &&
 		meta.Crop == cropString(opts.CropRect) &&
 		meta.MaxFrames == normalizeMaxFrames(opts.MaxFrames, inf.Frames) &&
-		meta.MinFrames == normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames))
+		meta.MinFrames == normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)) &&
+		meta.TargetFrames == normalizeTargetFrames(opts.TargetFrames, normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)), normalizeMaxFrames(opts.MaxFrames, inf.Frames))
 }
 
 func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options, result Result) error {
@@ -639,10 +726,12 @@ func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options
 		Crop:             cropString(opts.CropRect),
 		MaxFrames:        normalizeMaxFrames(opts.MaxFrames, inf.Frames),
 		MinFrames:        normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
+		TargetFrames:     normalizeTargetFrames(opts.TargetFrames, normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)), normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
 		Boundaries:       len(result.Boundaries),
 		NaturalCuts:      result.NaturalCuts,
 		SyntheticSplits:  result.SyntheticSplits,
 		MergedShortShots: mergedShortShots,
+		MergedWeakCuts:   result.MergedWeakCuts,
 		MergedScenes:     mergedShortShots,
 		NaturalCutFrames: result.NaturalCutFrames,
 		BoundaryKinds:    boundaryKinds,

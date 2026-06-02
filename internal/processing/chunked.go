@@ -104,6 +104,10 @@ func ProcessChunked(
 	if minChunkFrames < 1 {
 		minChunkFrames = 1
 	}
+	targetChunkFrames := 0
+	if cfg.QualityMode == config.QualityModeTarget {
+		targetChunkFrames = int(math.Ceil(fps * 6))
+	}
 	rep.StageProgress(reporter.StageProgress{Stage: "Chunking", Message: "Detecting shot cuts"})
 	chunkPlanFile := filepath.Join(workDir, "chunk-plan.txt")
 	chunkPlanMetadataFile := filepath.Join(workDir, "chunk-plan.json")
@@ -111,9 +115,10 @@ func ProcessChunked(
 	lastPlanPercent := -1
 	finishStep = startVerboseStep(rep, "Shot cut detection")
 	planResult, err := chunkplan.PlanToFileIfNeeded(ctx, inputPath, chunkPlanFile, chunkPlanMetadataFile, vidInf, chunkplan.Options{
-		MaxFrames: maxChunkFrames,
-		MinFrames: minChunkFrames,
-		CropRect:  cropRect,
+		MaxFrames:    maxChunkFrames,
+		MinFrames:    minChunkFrames,
+		TargetFrames: targetChunkFrames,
+		CropRect:     cropRect,
 		Progress: func(current, total int) {
 			if total <= 0 {
 				return
@@ -135,7 +140,11 @@ func ProcessChunked(
 		rep.Verbose(fmt.Sprintf("Video frame count adjusted after decode: probed %d, decoded %d", vidInf.Frames, planResult.Frames))
 		vidInf.Frames = planResult.Frames
 	}
-	rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, and added %d duration splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
+	if planResult.MergedWeakCuts > 0 {
+		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, merged %d weak cuts, and added %d duration splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.MergedWeakCuts, planResult.SyntheticSplits))
+	} else {
+		rep.Verbose(fmt.Sprintf("Detected %d natural shot cuts, merged %d short shots, and added %d duration splits", planResult.NaturalCuts, planResult.MergedShortShots, planResult.SyntheticSplits))
+	}
 	retainedNaturalCuts := 0
 	for _, kind := range planResult.BoundaryKinds {
 		if kind == chunkplan.BoundaryKindNaturalShotCut {
