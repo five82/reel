@@ -18,6 +18,7 @@ import (
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/util"
+	"github.com/fatih/color"
 )
 
 const (
@@ -101,6 +102,7 @@ type encodeArgs struct {
 	disableAutocrop bool
 	noLog           bool
 	keepWorkDir     bool
+	colorMode       string
 }
 
 func runEncode(args []string) error {
@@ -118,6 +120,7 @@ Required:
 Options:
   -l, --log-dir <PATH>   Log directory (defaults to ~/.local/state/reel/logs)
   -v, --verbose          Enable verbose output for troubleshooting
+  --color <MODE>         Color output: auto, always, or never. Default: auto
 
 Quality Settings:
   --quality-mode <MODE>  Quality mode: target or crf. Default: %s
@@ -175,6 +178,7 @@ Output Options:
 	// Output options
 	fs.BoolVar(&ea.noLog, "no-log", false, "Disable log file creation")
 	fs.BoolVar(&ea.keepWorkDir, "keep-workdir", false, "Keep the .reel work directory after successful encodes")
+	fs.StringVar(&ea.colorMode, "color", "auto", "Color output mode: auto, always, never")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -317,6 +321,14 @@ func executeEncode(ea encodeArgs) error {
 		logger.Info("SVT-AV1 preset: %d", cfg.SVTAV1Preset)
 		logger.Info("Crop mode: %s", cfg.CropMode)
 		logger.Info("Adaptive encoding enabled")
+	}
+
+	// Configure color output
+	switch ea.colorMode {
+	case "always":
+		color.NoColor = false
+	case "never":
+		color.NoColor = true
 	}
 
 	// Create reporters
