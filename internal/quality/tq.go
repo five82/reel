@@ -153,6 +153,7 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 }
 
 func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool) (Probe, float64, bool) {
+	const errEpsilon = 0.001
 	var best Probe
 	bestErr := float64(0)
 	found := false
@@ -161,7 +162,7 @@ func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool)
 			continue
 		}
 		err := math.Abs(float64(probe.Score - ctx.Target))
-		if !found || err < bestErr {
+		if !found || err < bestErr-errEpsilon || (math.Abs(err-bestErr) <= errEpsilon && probe.WorstWindowScore > best.WorstWindowScore) {
 			best = probe
 			bestErr = err
 			found = true
