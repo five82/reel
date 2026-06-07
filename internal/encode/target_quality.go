@@ -34,6 +34,9 @@ const (
 
 	// targetQualityUpperGraceJOD avoids extra probes for tiny over-target CVVDP overshoots.
 	targetQualityUpperGraceJOD = 0.02
+
+	// targetQualityExtraWindowSpread enables denser sampling on later probes for high-variance chunks.
+	targetQualityExtraWindowSpread = 0.30
 )
 
 type TargetQualityConfig struct {
@@ -345,6 +348,7 @@ func encodeTargetQualityChunk(
 	}
 	state := quality.NewSearchState(searchCtx)
 	fullProbePaths := make(map[string]string)
+	extraWindows := false
 
 	for {
 		crf, ok := state.NextCRF(searchCtx)
@@ -352,7 +356,7 @@ func encodeTargetQualityChunk(
 			break
 		}
 		fullFirst := targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
-		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, metricPool)
+		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, extraWindows, metricPool)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
@@ -370,8 +374,13 @@ func encodeTargetQualityChunk(
 			probeKind := ""
 			if fullFirst {
 				probeKind = " probe=full_first"
+			} else if extraWindows {
+				probeKind = " probe=extra_windows"
 			}
 			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f window_spread=%.4f windows=%s delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, targetQualityWindowSpread(probe.Windows), formatProbeWindowScores(probe.Windows), probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+		}
+		if targetQualityWindowSpread(probe.Windows) > targetQualityExtraWindowSpread {
+			extraWindows = true
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -417,31 +426,39 @@ type probeSampleWindow struct {
 	Frames int
 }
 
-func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int) []probeSampleWindow {
+func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int, extraWindows bool) []probeSampleWindow {
 	if chunkFrames <= 0 {
 		return nil
 	}
 	if sampleFrames <= 0 {
 		return []probeSampleWindow{{Frames: chunkFrames}}
 	}
-	fullThreshold := max(fullProbeFrames, 3*sampleFrames)
+	windowCount := 3
+	if extraWindows {
+		windowCount = 5
+	}
+	fullThreshold := max(fullProbeFrames, windowCount*sampleFrames)
 	if chunkFrames <= fullThreshold {
 		return []probeSampleWindow{{Frames: chunkFrames}}
 	}
 
-	middle := (chunkFrames - sampleFrames) / 2
-	return []probeSampleWindow{
-		{Offset: 0, Frames: sampleFrames},
-		{Offset: middle, Frames: sampleFrames},
-		{Offset: chunkFrames - sampleFrames, Frames: sampleFrames},
+	lastOffset := chunkFrames - sampleFrames
+	windows := make([]probeSampleWindow, 0, windowCount)
+	for i := 0; i < windowCount; i++ {
+		offset := 0
+		if windowCount > 1 {
+			offset = (lastOffset*i + (windowCount-1)/2) / (windowCount - 1)
+		}
+		windows = append(windows, probeSampleWindow{Offset: offset, Frames: sampleFrames})
 	}
+	return windows
 }
 
 func targetQualityFullFirstProbe(initialCRFSource string, round int, chunkFrames int, sampleFrames int, fullProbeFrames int) bool {
 	if round != 1 || chunkFrames > DefaultTargetQualityFullFirstFrames {
 		return false
 	}
-	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames)) <= 1 {
+	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames, false)) <= 1 {
 		return false
 	}
 	return initialCRFSource == "median"
@@ -460,9 +477,10 @@ func encodeSampledProbe(
 	sampleFrames int,
 	fullProbeFrames int,
 	fullFirst bool,
+	extraWindows bool,
 	metricPool chan *quality.VshipProcessor,
 ) (quality.Probe, string, error) {
-	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames)
+	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames, extraWindows)
 	if len(windows) == 0 {
 		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
 	}
@@ -641,8 +659,8 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 		maxWeight       = 0.70
 	)
 	// Weight more toward worst when within-chunk variance is high.
-	// At spread == 0: weight == 0   (pure mean, like old formula for low spread).
-	// At spread == 0.15: weight == 0.5 (same as old formula).
+	// At spread == 0: weight == 0 (pure mean).
+	// At spread == 0.15: weight == 0.5.
 	// At spread >= 0.21: weight == maxWeight (strongly worst-driven).
 	spread := bestScore - worstScore
 	weight := float32(0)
