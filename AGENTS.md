@@ -24,6 +24,7 @@ Single-developer hobby project - avoid over-engineering.
 ## Critical Expectations
 
 - Prefer simple, maintainable solutions over clever abstractions.
+- Prefer opinionated defaults over exposing more user-facing knobs. Add configuration only when there is a clear recurring need that cannot be handled well by Reel's default behavior.
 - Keep the library-first design suitable for Spindle embedding.
 - Coordinate major trade-offs with the user; never unilaterally defer functionality.
 - Keep edits ASCII unless the file already uses extended characters.
@@ -76,7 +77,7 @@ This means the accuracy ceiling is determined by the **probe sampling strategy**
 When considering changes, prefer interventions in this order:
 
 1.  **Smarter sampling:** Add conditional extra windows or targeted full probes for chunks where window spread exceeds a threshold. This targets uncertainty directly without paying full-probe cost for every chunk.
-2.  **Metric aggregation:** Tie-break among converged probes by preferring higher worst-window scores, or expose configurable aggregation (e.g., mean vs percentile) like xav's `p1.25` option.
+2.  **Metric aggregation:** Tune Reel's internal CVVDP aggregation toward the best default behavior (for example, tie-break among converged probes by preferring higher worst-window scores). Avoid exposing mean/percentile/worst knobs unless evidence shows one default cannot work well across common content.
 3.  **Probe density:** Scale window count with chunk length so longer chunks get proportionally more coverage.
 4.  **Avoid:** Adding more scene-detection heuristics, transition detectors, or chunk-boundary refinement. These layers have shown poor ROI relative to their complexity.
 
