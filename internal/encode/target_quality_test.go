@@ -10,7 +10,7 @@ import (
 )
 
 func TestSampledProbeWindowsUsesFullChunkForShortChunks(t *testing.T) {
-	windows := sampledProbeWindows(225, 48, 256, 3)
+	windows := sampledProbeWindows(225, 48, 256, false)
 	if len(windows) != 1 {
 		t.Fatalf("len(windows) = %d, want 1", len(windows))
 	}
@@ -20,7 +20,7 @@ func TestSampledProbeWindowsUsesFullChunkForShortChunks(t *testing.T) {
 }
 
 func TestSampledProbeWindowsUsesStartMiddleEndForLongChunks(t *testing.T) {
-	windows := sampledProbeWindows(602, 48, 256, 3)
+	windows := sampledProbeWindows(602, 48, 256, false)
 	want := []probeSampleWindow{
 		{Offset: 0, Frames: 48},
 		{Offset: 277, Frames: 48},
@@ -37,7 +37,7 @@ func TestSampledProbeWindowsUsesStartMiddleEndForLongChunks(t *testing.T) {
 }
 
 func TestSampledProbeWindowsUsesFiveWindowsWhenExtraSampling(t *testing.T) {
-	windows := sampledProbeWindows(602, 48, 256, 5)
+	windows := sampledProbeWindows(602, 48, 256, true)
 	want := []probeSampleWindow{
 		{Offset: 0, Frames: 48},
 		{Offset: 139, Frames: 48},
@@ -56,7 +56,7 @@ func TestSampledProbeWindowsUsesFiveWindowsWhenExtraSampling(t *testing.T) {
 }
 
 func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
-	windows := sampledProbeWindows(144, 48, 0, 3)
+	windows := sampledProbeWindows(144, 48, 0, false)
 	if len(windows) != 1 {
 		t.Fatalf("len(windows) = %d, want 1", len(windows))
 	}
@@ -66,36 +66,12 @@ func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
 }
 
 func TestSampledProbeWindowsFullProbesWhenExtraSamplesWouldOverlap(t *testing.T) {
-	windows := sampledProbeWindows(220, 48, 0, 5)
+	windows := sampledProbeWindows(220, 48, 0, true)
 	if len(windows) != 1 {
 		t.Fatalf("len(windows) = %d, want 1", len(windows))
 	}
 	if windows[0].Offset != 0 || windows[0].Frames != 220 {
 		t.Fatalf("window = %+v, want full 220-frame chunk", windows[0])
-	}
-}
-
-func TestBaseWindowCountScalesWithChunkLength(t *testing.T) {
-	cases := []struct {
-		frames   int
-		wantBase int
-	}{
-		{100, 3}, // short -> 3 (will be full anyway)
-		{256, 3}, // at boundary -> 3 (will be full)
-		{257, 5}, // just above full threshold -> 5
-		{300, 5},
-		{336, 5}, // at 5-window boundary -> 5
-		{337, 7}, // crosses to 7-window tier
-		{400, 7},
-		{432, 7}, // at 7-window boundary -> 7
-		{433, 9}, // crosses to 9-window tier
-		{1000, 9},
-	}
-	for _, c := range cases {
-		got := baseWindowCount(c.frames, 48, 256)
-		if got != c.wantBase {
-			t.Fatalf("baseWindowCount(%d,48,256) = %d, want %d", c.frames, got, c.wantBase)
-		}
 	}
 }
 
@@ -185,28 +161,28 @@ func TestTargetQualityInitialJODPerCRFUsesLowerSlopeForLargeOrHDR(t *testing.T) 
 }
 
 func TestTargetQualityFullFirstProbeRequiresMedianInitialSource(t *testing.T) {
-	if targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256, 3) {
+	if targetQualityFullFirstProbe("neighbor", 1, 500, 48, 256) {
 		t.Fatal("neighbor first probe should not use full-first probing")
 	}
-	if !targetQualityFullFirstProbe("median", 1, 500, 48, 256, 3) {
+	if !targetQualityFullFirstProbe("median", 1, 500, 48, 256) {
 		t.Fatal("median first probe should use full-first probing")
 	}
-	if targetQualityFullFirstProbe("default", 1, 500, 48, 256, 3) {
+	if targetQualityFullFirstProbe("default", 1, 500, 48, 256) {
 		t.Fatal("default first probe should not use full-first probing")
 	}
 }
 
 func TestTargetQualityFullFirstProbeOnlyForFirstSampledProbe(t *testing.T) {
-	if targetQualityFullFirstProbe("median", 2, 500, 48, 256, 3) {
+	if targetQualityFullFirstProbe("median", 2, 500, 48, 256) {
 		t.Fatal("later probes should not use full-first probing")
 	}
-	if targetQualityFullFirstProbe("median", 1, 225, 48, 256, 3) {
+	if targetQualityFullFirstProbe("median", 1, 225, 48, 256) {
 		t.Fatal("chunks already full-probed should not use full-first sampled probing")
 	}
-	if !targetQualityFullFirstProbe("median", 1, 650, 48, 256, 3) {
+	if !targetQualityFullFirstProbe("median", 1, 650, 48, 256) {
 		t.Fatal("HD-sized chunks should use full-first probing")
 	}
-	if targetQualityFullFirstProbe("median", 1, 721, 48, 256, 3) {
+	if targetQualityFullFirstProbe("median", 1, 721, 48, 256) {
 		t.Fatal("chunks above the full-first cap should not use full-first probing")
 	}
 }
