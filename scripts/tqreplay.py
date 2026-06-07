@@ -9,10 +9,11 @@ Usage:
     python3 scripts/tqreplay.py <workdir> [options]
 
 Options:
-    --score-formula {mean_worst|mean|worst}
+    --score-formula {mean_worst|mean|worst|adaptive}
         mean_worst: (mean + worst) / 2   (default, current behavior)
         mean:       use mean_score only
         worst:      use worst_window_score only
+        adaptive:   weight toward worst as spread increases (new behavior)
 
     --tie-break {mean|worst}
         mean:  pick probe closest to target mean (old behavior)
@@ -26,7 +27,7 @@ Examples:
     python3 scripts/tqreplay.py ~/testing/.reel-soms-e0c9b46af397 --tie-break mean
 
     # Replay with worst-only scoring
-    python3 scripts/tqreplay.py ~/testing/.reel-sully-29fa06f8601f --score-formula worst
+    python3 scripts/tqreplay.py ~/testing/.reel-sully-29fa06f8601f --score-formula adaptive
 """
 
 import argparse
@@ -53,6 +54,18 @@ def compute_probe_score(probe: dict, formula: str) -> float:
         return mean
     if formula == "worst":
         return worst if worst > 0 else mean
+    if formula == "adaptive":
+        if worst <= 0:
+            return mean
+        windows = probe.get("windows", [])
+        if not windows:
+            return (mean + worst) / 2.0
+        scores = [w["score"] for w in windows]
+        spread = max(scores) - min(scores)
+        threshold = 0.30
+        max_weight = 0.70
+        weight = min(spread / threshold, max_weight) if spread > 0 else 0
+        return mean * (1 - weight) + worst * weight
     # mean_worst: current behavior
     if worst > 0:
         return (mean + worst) / 2.0
@@ -149,7 +162,7 @@ def replay_chunk(chunk: dict, args) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Replay TQ decisions from logs")
     parser.add_argument("workdir", help="Path to .reel-* work directory")
-    parser.add_argument("--score-formula", choices=["mean_worst", "mean", "worst"], default="mean_worst")
+    parser.add_argument("--score-formula", choices=["mean_worst", "mean", "worst", "adaptive"], default="mean_worst")
     parser.add_argument("--tie-break", choices=["mean", "worst"], default="worst")
     parser.add_argument("--tolerance", type=float, default=None, help="Override tolerance")
     parser.add_argument("--show-diffs-only", action="store_true", help="Only show chunks where selection changed")

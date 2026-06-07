@@ -93,8 +93,28 @@ func TestTargetQualitySampleScorePenalizesWeakWindow(t *testing.T) {
 	if worstScore != 9.25 || frames != 144 {
 		t.Fatalf("worst=%g frames=%d, want 9.25 and 144", worstScore, frames)
 	}
-	if math.Abs(float64(score-9.371667)) > 0.0001 {
-		t.Fatalf("score = %g, want midpoint of mean and worst", score)
+	// Spread = 0.40, weight = min(0.40/0.30, 0.70) = 0.70
+	// score = mean*0.30 + worst*0.70 = 9.4933*0.30 + 9.25*0.70 = 9.323
+	wantScore := float32(9.493333*0.30 + 9.25*0.70)
+	if math.Abs(float64(score-wantScore)) > 0.0001 {
+		t.Fatalf("score = %g, want %g (weighted toward worst for high spread)", score, wantScore)
+	}
+}
+
+func TestTargetQualitySampleScoreUsesMeanForLowSpread(t *testing.T) {
+	windows := []quality.ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.50},
+		{Offset: 100, Frames: 48, Score: 9.48},
+		{Offset: 200, Frames: 48, Score: 9.46},
+	}
+	score, meanScore, worstScore, frames := targetQualitySampleScore(windows)
+	if frames != 144 {
+		t.Fatalf("frames = %d, want 144", frames)
+	}
+	// Spread = 0.04, weight = 0.04/0.30 = 0.133
+	// score should be close to mean, not strongly pulled toward worst
+	if score <= worstScore || score >= meanScore {
+		t.Fatalf("score = %g, want between worst=%g and mean=%g for low spread", score, worstScore, meanScore)
 	}
 }
 

@@ -616,6 +616,7 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 		return 0, 0, 0, 0
 	}
 	worstScore = windows[0].Score
+	bestScore := windows[0].Score
 	var weightedScore float64
 	for _, window := range windows {
 		if window.Frames <= 0 {
@@ -624,6 +625,9 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 		if window.Score < worstScore {
 			worstScore = window.Score
 		}
+		if window.Score > bestScore {
+			bestScore = window.Score
+		}
 		weightedScore += float64(window.Score) * float64(window.Frames)
 		frames += window.Frames
 	}
@@ -631,7 +635,25 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 		return 0, 0, 0, 0
 	}
 	meanScore = float32(weightedScore / float64(frames))
-	return (meanScore + worstScore) / 2, meanScore, worstScore, frames
+
+	const (
+		spreadThreshold = 0.30
+		maxWeight       = 0.70
+	)
+	// Weight more toward worst when within-chunk variance is high.
+	// At spread == 0: weight == 0   (pure mean, like old formula for low spread).
+	// At spread == 0.15: weight == 0.5 (same as old formula).
+	// At spread >= 0.21: weight == maxWeight (strongly worst-driven).
+	spread := bestScore - worstScore
+	weight := float32(0)
+	if spread > 0 {
+		weight = spread / spreadThreshold
+		if weight > maxWeight {
+			weight = maxWeight
+		}
+	}
+	score = meanScore*(1-weight) + worstScore*weight
+	return score, meanScore, worstScore, frames
 }
 
 func scoreProbeWindow(
