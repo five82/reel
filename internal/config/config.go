@@ -74,6 +74,9 @@ const (
 	DefaultChunkDurationHD  float64 = 30.0 // 1080p: balanced
 	DefaultChunkDurationUHD float64 = 45.0 // 4K: slower encode, needs longer warmup
 
+	// DefaultTargetQualityMaxChunkDuration caps chunks in target-quality mode.
+	// Shorter chunks reduce sampled-probe misses in gradual or high-variance scenes.
+	DefaultTargetQualityMaxChunkDuration float64 = 12.0
 )
 
 // Config holds all configuration for video processing.
@@ -267,4 +270,9 @@ func (c *Config) ChunkDurationForWidth(width uint32) float64 {
 		return c.ChunkDurationHD
 	}
 	return c.ChunkDurationSD
+}
+
+// TargetQualityChunkDurationForWidth returns the chunk duration cap for target-quality mode.
+func (c *Config) TargetQualityChunkDurationForWidth(width uint32) float64 {
+	return min(c.ChunkDurationForWidth(width), DefaultTargetQualityMaxChunkDuration)
 }

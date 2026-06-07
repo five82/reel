@@ -182,3 +182,35 @@ func TestChunkDurationForWidth(t *testing.T) {
 		})
 	}
 }
+
+func TestTargetQualityChunkDurationForWidthCapsDefaults(t *testing.T) {
+	cfg := NewConfig("/input", "/output", "/log")
+
+	tests := []struct {
+		width    uint32
+		expected float64
+	}{
+		{width: 1280, expected: DefaultTargetQualityMaxChunkDuration},
+		{width: 1920, expected: DefaultTargetQualityMaxChunkDuration},
+		{width: 3840, expected: DefaultTargetQualityMaxChunkDuration},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			got := cfg.TargetQualityChunkDurationForWidth(tt.width)
+			if got != tt.expected {
+				t.Errorf("TargetQualityChunkDurationForWidth(%d) = %f, want %f", tt.width, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTargetQualityChunkDurationForWidthKeepsShorterConfig(t *testing.T) {
+	cfg := NewConfig("/input", "/output", "/log")
+	cfg.ChunkDurationSD = 8.0
+
+	got := cfg.TargetQualityChunkDurationForWidth(1280)
+	if got != 8.0 {
+		t.Errorf("TargetQualityChunkDurationForWidth() = %f, want 8.0", got)
+	}
+}

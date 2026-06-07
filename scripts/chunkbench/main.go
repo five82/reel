@@ -32,7 +32,7 @@ func main() {
 	}
 
 	cfg := config.NewConfig("", "", "")
-	chunkDuration := cfg.ChunkDurationForWidth(inf.Width)
+	chunkDuration := cfg.TargetQualityChunkDurationForWidth(inf.Width)
 	fps := float64(inf.FPSNum) / float64(inf.FPSDen)
 	if fps <= 0 {
 		fps = 24
@@ -65,7 +65,7 @@ func main() {
 	fmt.Printf("FPS:       %.2f\n", fps)
 	fmt.Printf("Frames:    %d\n", inf.Frames)
 	fmt.Printf("Chunking:  max=%ds (%d frames), min=%ds (%d frames), target=%ds (%d frames)\n",
-		int(chunkDuration*2), maxFrames, int(2), minFrames, int(chunkDuration), targetFrames)
+		int(chunkDuration), maxFrames, int(2), minFrames, int(6), targetFrames)
 	fmt.Println()
 
 	start := time.Now()

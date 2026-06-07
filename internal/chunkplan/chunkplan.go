@@ -22,7 +22,7 @@ import (
 
 const (
 	detectorVersion = "reel-luma-shot-scd-v5"
-	metadataVersion = 10
+	metadataVersion = 11
 
 	signatureWidth  = 64
 	signatureHeight = 36
@@ -396,18 +396,15 @@ func planBoundaries(naturalCuts []int, totalFrames, maxFrames, minFrames, target
 		if i+1 < len(cuts) {
 			end = cuts[i+1]
 		}
-		if end <= start {
+		frames := end - start
+		if frames <= 0 {
 			continue
 		}
 		appendBoundary(start, BoundaryKindNaturalShotCut)
-		currentStart := start
-		for end-currentStart > maxFrames {
-			split := maxFrames
-			if split <= 0 {
-				split = (end - currentStart) / 2
-			}
-			currentStart += split
-			appendBoundary(currentStart, BoundaryKindSyntheticSplit)
+		chunkCount := int(math.Ceil(float64(frames) / float64(maxFrames)))
+		for n := 1; n < chunkCount; n++ {
+			split := start + (frames*n)/chunkCount
+			appendBoundary(split, BoundaryKindSyntheticSplit)
 			plan.SyntheticSplits++
 		}
 	}
@@ -712,29 +709,29 @@ func writeMetadata(inputPath, metadataFile string, inf *video.Info, opts Options
 		boundaryKinds = inferBoundaryKinds(result.Boundaries, result.NaturalCutFrames)
 	}
 	meta := Metadata{
-		Version:          metadataVersion,
-		Detector:         detectorVersion,
-		InputPath:        id.Path,
-		InputSize:        id.Size,
+		Version:              metadataVersion,
+		Detector:             detectorVersion,
+		InputPath:            id.Path,
+		InputSize:            id.Size,
 		InputModTimeUnixNano: id.ModTimeUnixNano,
-		Width:            inf.Width,
-		Height:           inf.Height,
-		FPSNum:           inf.FPSNum,
-		FPSDen:           inf.FPSDen,
-		Frames:           inf.Frames,
-		ActualFrames:     result.Frames,
-		Crop:             cropString(opts.CropRect),
-		MaxFrames:        normalizeMaxFrames(opts.MaxFrames, inf.Frames),
-		MinFrames:        normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
-		TargetFrames:     normalizeTargetFrames(opts.TargetFrames, normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)), normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
-		Boundaries:       len(result.Boundaries),
-		NaturalCuts:      result.NaturalCuts,
-		SyntheticSplits:  result.SyntheticSplits,
-		MergedShortShots: mergedShortShots,
-		MergedWeakCuts:   result.MergedWeakCuts,
-		MergedScenes:     mergedShortShots,
-		NaturalCutFrames: result.NaturalCutFrames,
-		BoundaryKinds:    boundaryKinds,
+		Width:                inf.Width,
+		Height:               inf.Height,
+		FPSNum:               inf.FPSNum,
+		FPSDen:               inf.FPSDen,
+		Frames:               inf.Frames,
+		ActualFrames:         result.Frames,
+		Crop:                 cropString(opts.CropRect),
+		MaxFrames:            normalizeMaxFrames(opts.MaxFrames, inf.Frames),
+		MinFrames:            normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
+		TargetFrames:         normalizeTargetFrames(opts.TargetFrames, normalizeMinFrames(opts.MinFrames, normalizeMaxFrames(opts.MaxFrames, inf.Frames)), normalizeMaxFrames(opts.MaxFrames, inf.Frames)),
+		Boundaries:           len(result.Boundaries),
+		NaturalCuts:          result.NaturalCuts,
+		SyntheticSplits:      result.SyntheticSplits,
+		MergedShortShots:     mergedShortShots,
+		MergedWeakCuts:       result.MergedWeakCuts,
+		MergedScenes:         mergedShortShots,
+		NaturalCutFrames:     result.NaturalCutFrames,
+		BoundaryKinds:        boundaryKinds,
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {

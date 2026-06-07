@@ -95,6 +95,9 @@ func ProcessChunked(
 
 	// Generate shot-aware chunks based on resolution (using config values).
 	chunkDuration := cfg.ChunkDurationForWidth(vidInf.Width)
+	if cfg.QualityMode == config.QualityModeTarget {
+		chunkDuration = cfg.TargetQualityChunkDurationForWidth(vidInf.Width)
+	}
 	fps := float64(vidInf.FPSNum) / float64(vidInf.FPSDen)
 	maxChunkFrames := int(math.Ceil(fps * chunkDuration))
 	if maxChunkFrames < 1 {

@@ -63,7 +63,7 @@ Interrupted runs can be resumed by running the same command again. Completed chu
 
 ## Target-Quality Scoring
 
-By default, target-quality mode searches for CVVDP scores in the `9.25-9.50` range. Reel scores three 48-frame windows for larger chunks; chunks up to 256 frames are scored as a whole. When the first adaptive CRF prior comes from the title median, chunks up to 720 frames may be encoded fully for the first probe so that a converged probe can be reused as final output.
+By default, target-quality mode searches for CVVDP scores in the `9.25-9.50` range and caps planned chunks at 12 seconds. Reel scores three 48-frame windows for larger chunks; chunks up to 256 frames are scored as a whole. When the first adaptive CRF prior comes from the title median, chunks up to 720 frames may be encoded fully for the first probe so that a converged probe can be reused as final output.
 
 The sampled score is intentionally conservative: Reel logs the window mean and worst window, then uses the midpoint of those two values for the search decision. Scores slightly above the upper bound, up to `+0.02` JOD, are accepted so Reel does not spend extra probes shrinking already-excellent chunks. There is no matching lower-side grace, and a probe does not converge if any sampled window falls below the lower bound.
 
