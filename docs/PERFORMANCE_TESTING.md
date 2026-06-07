@@ -1,0 +1,197 @@
+# Performance Testing Notes
+
+This is a living log for Reel performance tuning, especially target-quality (TQ) probing and chunk scheduling. Update it when a real encode or replay changes the evidence behind Reel's defaults.
+
+## Why this exists
+
+Performance work has a long feedback loop: real encodes are slow, many plausible changes only help one clip, and git history alone does not capture why a change was kept or reverted. Keep enough notes here that a future maintainer or coding agent can understand what was tried, what worked, what failed, and what should be tested next.
+
+## How to record a test
+
+For each real encode or replay that informs a tuning decision, record:
+
+- Date, machine, input clip, duration, resolution, HDR/SDR.
+- Command or test script used.
+- Git commit or working-tree change being tested.
+- Total wall time and video encoding time.
+- TQ summary: chunks, total probes, probes/chunk, probe-count histogram, stop reasons.
+- Accuracy summary: sampled JOD min/mean/max, mean absolute error, outside-tolerance count if available.
+- Tail behavior: max-probe chunks, chunks with >=3 probes, p90/max window spread.
+- Conclusion: keep, revert, retest, or investigate.
+
+Useful artifacts:
+
+- Human log: `*-reellog*`
+- Aggregate TQ log: `.reel-*/target-quality.json`
+- Per-chunk TQ logs: `.reel-*/tq/*.json`
+- Chunk plan: `.reel-*/chunk-plan.txt` and `.reel-*/chunk-plan.json`
+
+## Current target-quality strategy
+
+As of this document:
+
+- Chunks are scheduled in timeline blocks of 32 and sorted largest-first within each block.
+- TQ probes use sampled windows: normally 3x48 frames, with 5 windows on later probes after high spread.
+- Chunks at or below the full-probe threshold are probed whole.
+- Search uses adaptive CRF priors from completed chunks.
+- Search is bracket-aware after the first two probes:
+  - interpolate only once probes bracket the target,
+  - use a bounded midpoint for unbracketed low probes,
+  - move more aggressively toward high CRF for flat, unbracketed high probes.
+- Scoring is mean/worst blended when sampled-window spread is high.
+- A worst-window floor prevents convergence when any sampled window falls below tolerance.
+
+## What has worked
+
+### Sampled probes instead of full probes
+
+Git reference: `e980b91 Use sampled probes for target quality`
+
+Sampling made TQ practical by avoiding whole-chunk CVVDP probes for every search round. This is the foundation of Reel's speed/accuracy tradeoff. The known cost is that sparse windows can miss worst-case portions of long or gradually varying chunks.
+
+### Adaptive CRF priors
+
+Git reference: `a121653 Use adaptive CRF priors for target quality`
+
+Using nearby completed chunks to seed CRF substantially reduces first-probe misses. Scheduling order matters because priors are only useful after representative neighboring chunks complete.
+
+### Timeline-block scheduling with largest-first inside the block
+
+Git reference: `33b6012 Schedule target-quality chunks in timeline blocks`
+
+This balances two competing needs:
+
+- keep chunks close enough to timeline order that neighboring priors are useful,
+- process larger chunks early enough to reduce the final long tail.
+
+The current block size is 32. A 2026-06-07 test reducing this to 8 made the early priors worse and increased total probes, so 32 was restored.
+
+### Full-first probe reuse for reliable median-start chunks
+
+Git references: `13c8ef4 Reuse reliable first target-quality probes`, `f8cdb6c Expand full-first target-quality probing`
+
+When the first sampled probe would be unreliable and the chunk is small enough, encoding the full chunk first can let Reel reuse that probe as the final encode if it converges. This avoids duplicate work on successful first probes.
+
+### Worst-window protections
+
+Git references: `a3d481b Penalize weak target-quality sample windows`, `7859c21 Prefer higher worst-window score when tie-breaking converged probes`, `4bb7782 Weight TQ score toward worst window as spread increases`
+
+These changes improved tail quality by making high-variance sampled chunks less mean-dominated. They intentionally spend some bits/time to avoid chunks whose mean looks fine but whose worst sampled window is weak.
+
+### Conditional extra windows after high spread
+
+Git reference: `8cd5a35 Use extra TQ windows after high spread probes`
+
+Switching from 3 windows to 5 windows only after high spread directly targets uncertainty without paying the 5-window cost for every probe. Mixed window counts require care: monotonicity checks should not compare probes with different measurement modes.
+
+### Bracket-aware unbracketed search
+
+Git/worktree reference: 2026-06-07 working-tree change after `knives5` testing
+
+The old search could waste rounds when all probes were on the same side of the target:
+
+- Flat high-side chunks would creep toward CRF max over many rounds.
+- All-low chunks could extrapolate too aggressively toward CRF min.
+
+The bracket-aware change keeps interpolation for bracketed probes, uses midpoint for unbracketed low probes, and accelerates flat unbracketed high probes. On `knives-5min`, it improved the specific bad tails (`0002`, `0003`, `0015`) but needs retesting with the restored block size.
+
+## What did not work or was reverted
+
+### Smaller TQ scheduling blocks: 32 -> 8
+
+Test date: 2026-06-07
+
+Input: `knives-5min.mkv`, 5:50, 3840x2160 HDR, crop 3840x2080.
+
+Command: `./run-test-encode.sh knives5`
+
+Compared to the prior 32-block run, block size 8 improved accuracy but hurt speed:
+
+| Metric | 32-block baseline | 8-block test |
+|---|---:|---:|
+| Total probes | 66 | 74 |
+| Probes/chunk | 1.89 | 2.11 |
+| Probe histogram | `{1:17,2:11,3:4,4:1,5:1,6:1}` | `{1:11,2:12,3:9,4:3}` |
+| Stop reasons | `{converged:34,max_probes:1}` | `{converged:35}` |
+| Mean abs error | 0.0738 | 0.0593 |
+| Video encode time | 22m19s | 25m12s |
+| Total time | 23m51s | 26m43s |
+
+Conclusion: restored block size 32. The smaller block started earlier timeline chunks before good priors existed, and bad priors propagated into nearby chunks. The improved accuracy did not justify the extra probes/time.
+
+### Full-probe restart after high spread
+
+Git references: `a7e4701 Restart TQ search with full probes after high spread`, reverted by `17007f7 Revert to mid-switch 5w TQ; skip monotonicity on mixed window counts`
+
+Restarting with full probes after high spread was too expensive. Conditional extra sampled windows were kept instead.
+
+### Scaling window count with chunk length
+
+Git references: `c3951a5 Scale TQ window count with chunk length`, reverted by `a59a6cf Revert "Scale TQ window count with chunk length"`
+
+Uniformly increasing probe density for longer chunks raised cost broadly. Prefer conditional extra sampling or targeted full probes for uncertain chunks instead of increasing density for everything.
+
+### Faster first probe using higher preset on 4K HDR
+
+Git references: `6791905 target-quality: use preset+2 for first probe on 4K HDR content`, reverted by `5258a44 Revert "target-quality: use preset+2 for first probe on 4K HDR content"`
+
+Using a different preset for the first probe changed the measurement mode enough to hurt reliability/reuse. Keep probe encodes representative of final encodes unless evidence clearly supports otherwise.
+
+### More complex chunk-boundary logic
+
+Git references: `d3e7db4 Simplify chunking: remove transitions, weak merges, and score-based splitting`, `f6003cb Restore weak-cut merging in simplified chunking`, `adf4511 Improve target-quality chunk planning`
+
+Experiments with transition detectors, score-based splitting, and more elaborate boundary refinement increased complexity without enough quality gain. Current direction is simple luma-based shot detection plus max-duration splits, with only low-complexity packing/merging where it clearly improves TQ chunk shape.
+
+## 2026-06-07 knives-5min test notes
+
+Environment: local test machine, input `~/testing/knives-5min.mkv`, 5:50, 3840x2160 HDR, crop 3840x2080. Target range 9.25-9.50 JOD.
+
+### Baseline before bracket-aware search
+
+Artifacts: `~/testing/knives5-reellog3`, `.reel-knives-5min-b0cf00328939/target-quality.json` before rerun.
+
+Summary:
+
+- 35 chunks, 66 probes, 1.89 probes/chunk.
+- Probe histogram `{1:17,2:11,3:4,4:1,5:1,6:1}`.
+- Stops `{converged:34,max_probes:1}`.
+- Mean absolute sampled-JOD error 0.0738.
+- p90/max window spread 0.2119/0.6929.
+- Video encoding time 22m19s; total time 23m51s.
+
+Problem chunks:
+
+- `0002`: 6 probes, all high, flat CRF response, stopped at max probes.
+- `0003`: 5 probes, all high until late convergence.
+- `0015`: 4 probes, unbracketed low probes caused an over-aggressive CRF 4.5 probe.
+
+### Bracket-aware search plus block size 8
+
+Artifacts: `~/testing/knives5-reellog4`.
+
+Summary:
+
+- 35 chunks, 74 probes, 2.11 probes/chunk.
+- Probe histogram `{1:11,2:12,3:9,4:3}`.
+- Stops `{converged:35}`.
+- Mean absolute sampled-JOD error 0.0593.
+- p90/max window spread 0.2127/0.6498.
+- Video encoding time 25m12s; total time 26m43s.
+
+Conclusion:
+
+- Search change helped the known tail chunks:
+  - `0002`: 6 -> 4 probes.
+  - `0003`: 5 -> 3 probes.
+  - `0015`: 4 -> 3 probes and avoided CRF 4.5.
+- Scheduling block size 8 hurt overall by worsening early priors and increasing total probes.
+- Keep bracket-aware search; restore block size 32; retest.
+
+## Open questions / next tests
+
+1. Retest `knives5` with bracket-aware search and restored block size 32.
+   - Expected: preserve improvements on `0002`, `0003`, `0015` without the 8-block prior regression.
+2. Compare against at least one other HDR 5-minute clip and one SDR clip before declaring the search change broadly better.
+3. Consider provisional priors from in-progress chunks only if probe-count tails remain after the restored-block retest.
+4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.

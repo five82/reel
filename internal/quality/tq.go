@@ -86,10 +86,7 @@ func (s *SearchState) NextCRF(ctx SearchContext) (float32, bool) {
 	case 1:
 		candidate = secondSearchCRF(ctx, s.Probes[0])
 	default:
-		candidate = InterpolateCRF(s.Probes, ctx.Target, s.Round)
-		if candidate < s.SearchMin || candidate > s.SearchMax || math.IsNaN(float64(candidate)) || math.IsInf(float64(candidate), 0) {
-			candidate = RoundCRFToQuarter((s.SearchMin + s.SearchMax) / 2)
-		}
+		candidate = nextCRFWithHistory(ctx, s)
 	}
 
 	candidate, ok := s.firstUntriedInBounds(candidate)
@@ -195,15 +192,86 @@ func initialSearchCRF(ctx SearchContext) float32 {
 	return RoundCRFToQuarter((ctx.CRFMin + ctx.CRFMax) / 2)
 }
 
-func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
-	const (
-		// CVVDP changes by about 0.04 JOD per CRF on typical probes.
-		defaultJODPerCRF = 0.04
-	)
-	jodPerCRF := ctx.JODPerCRF
-	if jodPerCRF <= 0 {
-		jodPerCRF = defaultJODPerCRF
+func nextCRFWithHistory(ctx SearchContext, state *SearchState) float32 {
+	if probesBracketTarget(ctx, state.Probes) {
+		candidate := InterpolateCRF(state.Probes, ctx.Target, state.Round)
+		if candidate >= state.SearchMin && candidate <= state.SearchMax && !math.IsNaN(float64(candidate)) && !math.IsInf(float64(candidate), 0) {
+			return candidate
+		}
 	}
+	if probesAreAllAboveTarget(ctx, state.Probes) {
+		return unbracketedHighCRF(ctx, state)
+	}
+	return RoundCRFToQuarter((state.SearchMin + state.SearchMax) / 2)
+}
+
+func probesBracketTarget(ctx SearchContext, probes []Probe) bool {
+	below := false
+	above := false
+	for _, probe := range probes {
+		side := probeTargetSide(ctx, probe)
+		below = below || side < 0
+		above = above || side > 0
+	}
+	return below && above
+}
+
+func probesAreAllAboveTarget(ctx SearchContext, probes []Probe) bool {
+	if len(probes) == 0 {
+		return false
+	}
+	for _, probe := range probes {
+		if probeTargetSide(ctx, probe) <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func probeTargetSide(ctx SearchContext, probe Probe) int {
+	if targetQualityWindowBelowFloor(ctx, probe) || probe.Score < ctx.Target {
+		return -1
+	}
+	if probe.Score > ctx.Target {
+		return 1
+	}
+	return 0
+}
+
+func unbracketedHighCRF(ctx SearchContext, state *SearchState) float32 {
+	candidate := (state.SearchMin + state.SearchMax) / 2
+	if slope, ok := highestCRFSlope(state.Probes); ok && slope < searchJODPerCRF(ctx)*0.5 {
+		candidate = state.SearchMin + (state.SearchMax-state.SearchMin)*0.75
+	}
+	return RoundCRFToQuarter(candidate)
+}
+
+func highestCRFSlope(probes []Probe) (float32, bool) {
+	if len(probes) < 2 {
+		return 0, false
+	}
+	probes = append([]Probe(nil), probes...)
+	sort.Slice(probes, func(i, j int) bool { return probes[i].CRF < probes[j].CRF })
+	for i := len(probes) - 1; i > 0; i-- {
+		crfDelta := probes[i].CRF - probes[i-1].CRF
+		scoreDrop := probes[i-1].Score - probes[i].Score
+		if crfDelta > 0 && scoreDrop > 0 {
+			return scoreDrop / crfDelta, true
+		}
+	}
+	return 0, false
+}
+
+func searchJODPerCRF(ctx SearchContext) float32 {
+	const defaultJODPerCRF = 0.04
+	if ctx.JODPerCRF > 0 {
+		return ctx.JODPerCRF
+	}
+	return defaultJODPerCRF
+}
+
+func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
+	jodPerCRF := searchJODPerCRF(ctx)
 	delta := probe.Score - ctx.Target
 	step := float32(math.Abs(float64(delta / jodPerCRF)))
 	if maxStep := secondSearchMaxStep(delta); step > maxStep {

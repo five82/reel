@@ -954,6 +954,7 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	var windowSpreads []float32
 	var fullFirstAttempted, fullFirstReused int
 	var maxProbeChunks []int
+	var multiProbeLogs []chunkTargetLog
 	for i, log := range logs {
 		if i == 0 || log.FinalScore < minScore {
 			minScore = log.FinalScore
@@ -987,6 +988,9 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 		if log.StopReason == quality.StopMaxProbes {
 			maxProbeChunks = append(maxProbeChunks, log.ChunkIdx)
 		}
+		if probeCount >= 3 {
+			multiProbeLogs = append(multiProbeLogs, log)
+		}
 	}
 	meanScore := sumScore / float32(len(logs))
 	meanErr := sumAbsErr / float32(len(logs))
@@ -1002,6 +1006,9 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	verbose(fmt.Sprintf("TQ decisions stops=%s probe_counts=%s initial_sources=%s full_first=%d reused=%d missed=%d", formatStopCounts(stopCounts), formatIntCounts(probeCounts), formatStringCounts(sourceCounts), fullFirstAttempted, fullFirstReused, fullFirstAttempted-fullFirstReused))
 	if len(windowSpreads) > 0 {
 		verbose(fmt.Sprintf("TQ window_spread p90=%.4f max=%.4f", percentileFloat32(windowSpreads, 0.90), percentileFloat32(windowSpreads, 1)))
+	}
+	if len(multiProbeLogs) > 0 {
+		verbose(fmt.Sprintf("TQ multi-probe chunks: %s", formatMultiProbeChunks(multiProbeLogs, 8)))
 	}
 	if len(maxProbeChunks) > 0 {
 		verbose(fmt.Sprintf("TQ max-probe chunks: %s", formatChunkList(maxProbeChunks, 12)))
@@ -1063,6 +1070,32 @@ func formatStringCounts(counts map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func formatMultiProbeChunks(logs []chunkTargetLog, limit int) string {
+	if len(logs) == 0 {
+		return "[]"
+	}
+	logs = append([]chunkTargetLog(nil), logs...)
+	sort.Slice(logs, func(i, j int) bool {
+		if len(logs[i].Probes) != len(logs[j].Probes) {
+			return len(logs[i].Probes) > len(logs[j].Probes)
+		}
+		return logs[i].ChunkIdx < logs[j].ChunkIdx
+	})
+	if limit <= 0 || limit > len(logs) {
+		limit = len(logs)
+	}
+	parts := make([]string, 0, limit+1)
+	for _, log := range logs[:limit] {
+		first := log.Probes[0]
+		last := log.Probes[len(log.Probes)-1]
+		parts = append(parts, fmt.Sprintf("%04d:%d probes crf %s->%s jod %.4f->%.4f stop=%s", log.ChunkIdx, len(log.Probes), quality.FormatCRF(first.CRF), quality.FormatCRF(last.CRF), first.Score, last.Score, log.StopReason))
+	}
+	if limit < len(logs) {
+		parts = append(parts, fmt.Sprintf("+%d more", len(logs)-limit))
+	}
+	return "[" + strings.Join(parts, "; ") + "]"
 }
 
 func formatStopCounts(counts map[quality.StopReason]int) string {

@@ -30,6 +30,7 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 - When troubleshooting, gather evidence and test. Do not blindly guess.
 - Prefer unit tests over real encodes; encoding is slow.
 - When running Reel with a timeout, use at least 120 seconds.
+- When performance tuning, update `docs/PERFORMANCE_TESTING.md` with what was tried, why, measured results, and whether the change was kept or reverted. This gives future agents context beyond git history.
 
 ## Build, Test, Lint
 

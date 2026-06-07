@@ -129,6 +129,48 @@ func TestSearchSecondProbeCapsExtremeMiss(t *testing.T) {
 	}
 }
 
+func TestSearchUsesMidpointForUnbracketedLowProbes(t *testing.T) {
+	ctx := SearchContext{Target: 9.375, Tolerance: 0.125, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 39.75, JODPerCRF: 0.04}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 39.75, Score: 9.1704})
+	state.AddProbe(ctx, Probe{CRF: 34.5, Score: 9.2008})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no third CRF")
+	}
+	if crf != 19.25 {
+		t.Fatalf("third CRF = %g, want bounded midpoint 19.25", crf)
+	}
+}
+
+func TestSearchAcceleratesFlatUnbracketedHighProbes(t *testing.T) {
+	ctx := SearchContext{Target: 9.375, Tolerance: 0.125, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 27, JODPerCRF: 0.025}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 27, Score: 9.9255})
+	state.AddProbe(ctx, Probe{CRF: 41.5, Score: 9.8751})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no third CRF")
+	}
+	if crf != 58.25 {
+		t.Fatalf("third CRF = %g, want aggressive high-side probe 58.25", crf)
+	}
+}
+
+func TestSearchInterpolatesBracketedProbes(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.01, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.8})
+	state.AddProbe(ctx, Probe{CRF: 30, Score: 9.2})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no third CRF")
+	}
+	if crf != 25 {
+		t.Fatalf("third CRF = %g, want interpolated 25", crf)
+	}
+}
+
 func TestSearchBoundsUpdateForCVVDP(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.05, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)

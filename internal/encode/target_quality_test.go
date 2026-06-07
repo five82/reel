@@ -147,6 +147,25 @@ func TestTargetQualitySampleScoreUsesMeanForLowSpread(t *testing.T) {
 	}
 }
 
+func TestFormatMultiProbeChunksShowsFirstAndLastProbe(t *testing.T) {
+	logs := []chunkTargetLog{
+		{
+			ChunkIdx:   2,
+			StopReason: quality.StopMaxProbes,
+			Probes: []quality.Probe{
+				{CRF: 27, Score: 9.9255},
+				{CRF: 41.5, Score: 9.8751},
+				{CRF: 58.5, Score: 9.7},
+			},
+		},
+	}
+	got := formatMultiProbeChunks(logs, 8)
+	want := "[0002:3 probes crf 27->58.5 jod 9.9255->9.7000 stop=max_probes]"
+	if got != want {
+		t.Fatalf("formatMultiProbeChunks() = %q, want %q", got, want)
+	}
+}
+
 func TestTargetQualityInitialJODPerCRFUsesLowerSlopeForLargeOrHDR(t *testing.T) {
 	hdrTransfer := int32(16)
 	if got := targetQualityInitialJODPerCRF(1920, 1080, &video.Info{}); got != targetQualityDefaultJODPerCRF {
