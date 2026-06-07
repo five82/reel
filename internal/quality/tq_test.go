@@ -153,6 +153,19 @@ func TestSearchMonotonicityGuard(t *testing.T) {
 	}
 }
 
+func TestSearchMonotonicitySkippedForDifferentWindowCounts(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.01, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.8, Windows: []ProbeWindow{{Offset: 0, Frames: 48, Score: 9.8}}})
+	state.AddProbe(ctx, Probe{CRF: 30, Score: 9.9, Windows: []ProbeWindow{
+		{Offset: 0, Frames: 48, Score: 9.9},
+		{Offset: 100, Frames: 48, Score: 9.9},
+	}})
+	if state.StopReason != StopNone {
+		t.Fatalf("stop reason = %q, want none when window counts differ", state.StopReason)
+	}
+}
+
 func TestInterpolateCRF(t *testing.T) {
 	probes := []Probe{{CRF: 20, Score: 9.8}, {CRF: 30, Score: 9.2}}
 	got := InterpolateCRF(probes, 9.5, 2)

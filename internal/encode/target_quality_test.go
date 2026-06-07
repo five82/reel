@@ -65,18 +65,6 @@ func TestSampledProbeWindowsAvoidsOverlappingSamples(t *testing.T) {
 	}
 }
 
-func TestPromotedTargetQualityProbeModeUsesFullChunkForModerateChunks(t *testing.T) {
-	if got := promotedTargetQualityProbeMode(602, 48, 256); got != targetQualityProbeModeFullChunk {
-		t.Fatalf("promotedTargetQualityProbeMode() = %v, want full chunk", got)
-	}
-}
-
-func TestPromotedTargetQualityProbeModeUsesDenseSamplingForLargeChunks(t *testing.T) {
-	if got := promotedTargetQualityProbeMode(1080, 48, 256); got != targetQualityProbeModeDenseSampled {
-		t.Fatalf("promotedTargetQualityProbeMode() = %v, want dense sampled", got)
-	}
-}
-
 func TestSampledProbeWindowsFullProbesWhenExtraSamplesWouldOverlap(t *testing.T) {
 	windows := sampledProbeWindows(220, 48, 0, true)
 	if len(windows) != 1 {

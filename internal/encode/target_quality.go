@@ -348,48 +348,40 @@ func encodeTargetQualityChunk(
 	}
 	state := quality.NewSearchState(searchCtx)
 	fullProbePaths := make(map[string]string)
-	probeMode := targetQualityProbeModeSampled
+	extraWindows := false
 
 	for {
 		crf, ok := state.NextCRF(searchCtx)
 		if !ok {
 			break
 		}
-		fullFirst := probeMode == targetQualityProbeModeSampled && targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
-		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, probeMode, metricPool)
+		fullFirst := targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
+		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, extraWindows, metricPool)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
 		if fullProbePath != "" {
 			fullProbePaths[quality.FormatCRF(probe.CRF)] = fullProbePath
 		}
+		state.AddProbe(searchCtx, probe)
 		log.Probes = append(log.Probes, probe)
 		if verbose != nil {
 			fps := float64(probe.SampleFrames) / probe.MetricSeconds
-			logRound := len(log.Probes)
 			initial := ""
-			if logRound == 1 {
+			if state.Round == 1 {
 				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
 			}
 			probeKind := ""
 			if fullFirst {
 				probeKind = " probe=full_first"
-			} else if probeMode == targetQualityProbeModeFullChunk {
-				probeKind = " probe=full_chunk"
-			} else if probeMode == targetQualityProbeModeDenseSampled {
-				probeKind = " probe=dense_windows"
+			} else if extraWindows {
+				probeKind = " probe=extra_windows"
 			}
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f window_spread=%.4f windows=%s delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, logRound, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, targetQualityWindowSpread(probe.Windows), formatProbeWindowScores(probe.Windows), probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f window_spread=%.4f windows=%s delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, targetQualityWindowSpread(probe.Windows), formatProbeWindowScores(probe.Windows), probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
-		if probeMode == targetQualityProbeModeSampled && targetQualityWindowSpread(probe.Windows) > targetQualityExtraWindowSpread {
-			probeMode = promotedTargetQualityProbeMode(ch.Frames(), sampleFrames, fullProbeFrames)
-			if probeMode != targetQualityProbeModeSampled {
-				searchCtx.InitialCRF = probe.CRF
-				state = quality.NewSearchState(searchCtx)
-				continue
-			}
+		if targetQualityWindowSpread(probe.Windows) > targetQualityExtraWindowSpread {
+			extraWindows = true
 		}
-		state.AddProbe(searchCtx, probe)
 		if state.StopReason != quality.StopNone {
 			break
 		}
@@ -399,7 +391,7 @@ func encodeTargetQualityChunk(
 	if !ok {
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("no target-quality probes completed for chunk %04d", ch.Idx)}, Log: log}
 	}
-	prior.AddResult(ch.Idx, best.CRF, state.Probes)
+	prior.AddResult(ch.Idx, best.CRF, log.Probes)
 	finalPath := chunk.IVFPath(workDir, ch.Idx)
 	if bestPath := fullProbePaths[quality.FormatCRF(best.CRF)]; bestPath != "" {
 		if err := copyFile(bestPath, finalPath); err != nil {
@@ -429,27 +421,9 @@ func encodeTargetQualityChunk(
 	return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Frames: ch.Frames(), Size: uint64(stat.Size())}, Log: log}
 }
 
-type targetQualityProbeMode int
-
-const (
-	targetQualityProbeModeSampled targetQualityProbeMode = iota
-	targetQualityProbeModeDenseSampled
-	targetQualityProbeModeFullChunk
-)
-
 type probeSampleWindow struct {
 	Offset int
 	Frames int
-}
-
-func promotedTargetQualityProbeMode(chunkFrames, sampleFrames, fullProbeFrames int) targetQualityProbeMode {
-	if chunkFrames <= DefaultTargetQualityFullFirstFrames {
-		return targetQualityProbeModeFullChunk
-	}
-	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames, true)) > 1 {
-		return targetQualityProbeModeDenseSampled
-	}
-	return targetQualityProbeModeSampled
 }
 
 func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int, extraWindows bool) []probeSampleWindow {
@@ -503,15 +477,15 @@ func encodeSampledProbe(
 	sampleFrames int,
 	fullProbeFrames int,
 	fullFirst bool,
-	probeMode targetQualityProbeMode,
+	extraWindows bool,
 	metricPool chan *quality.VshipProcessor,
 ) (quality.Probe, string, error) {
-	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames, probeMode != targetQualityProbeModeSampled)
+	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames, extraWindows)
 	if len(windows) == 0 {
 		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
 	}
-	if probeMode == targetQualityProbeModeFullChunk || (fullFirst && len(windows) > 1) {
-		return encodeFullChunkSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool)
+	if fullFirst && len(windows) > 1 {
+		return encodeFullFirstSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool)
 	}
 
 	var totalSize uint64
@@ -567,7 +541,7 @@ func encodeSampledProbe(
 	}, fullProbePath, nil
 }
 
-func encodeFullChunkSampledProbe(
+func encodeFullFirstSampledProbe(
 	ctx context.Context,
 	inputPath string,
 	inf *video.Info,

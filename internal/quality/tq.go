@@ -108,6 +108,11 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 			return
 		}
 		if (old.CRF-probe.CRF)*(old.Score-probe.Score) >= 0 {
+			// Probes scored with different window counts are incomparable;
+			// don't flag monotonicity on a measurement-mode change.
+			if len(old.Windows) != len(probe.Windows) {
+				continue
+			}
 			s.Probes = append(s.Probes, probe)
 			s.tried[crfKey(probe.CRF)] = true
 			s.StopReason = StopMonotonicity
