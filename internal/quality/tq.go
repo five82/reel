@@ -240,10 +240,33 @@ func probeTargetSide(ctx SearchContext, probe Probe) int {
 
 func unbracketedHighCRF(ctx SearchContext, state *SearchState) float32 {
 	candidate := (state.SearchMin + state.SearchMax) / 2
-	if slope, ok := highestCRFSlope(state.Probes); ok && slope < searchJODPerCRF(ctx)*0.5 {
+	if shouldUseAggressiveHighCRFJump(ctx, state.Probes) {
 		candidate = state.SearchMin + (state.SearchMax-state.SearchMin)*0.75
 	}
 	return RoundCRFToQuarter(candidate)
+}
+
+func shouldUseAggressiveHighCRFJump(ctx SearchContext, probes []Probe) bool {
+	const minHighSideDelta = 0.30
+	score, ok := highestCRFScore(probes)
+	if !ok || score-ctx.Target < minHighSideDelta {
+		return false
+	}
+	slope, ok := highestCRFSlope(probes)
+	return ok && slope < searchJODPerCRF(ctx)*0.5
+}
+
+func highestCRFScore(probes []Probe) (float32, bool) {
+	if len(probes) == 0 {
+		return 0, false
+	}
+	best := probes[0]
+	for _, probe := range probes[1:] {
+		if probe.CRF > best.CRF {
+			best = probe
+		}
+	}
+	return best.Score, true
 }
 
 func highestCRFSlope(probes []Probe) (float32, bool) {

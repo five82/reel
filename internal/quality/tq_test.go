@@ -157,6 +157,20 @@ func TestSearchAcceleratesFlatUnbracketedHighProbes(t *testing.T) {
 	}
 }
 
+func TestSearchUsesMidpointForMildFlatUnbracketedHighProbes(t *testing.T) {
+	ctx := SearchContext{Target: 9.375, Tolerance: 0.125, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6, InitialCRF: 24.75, JODPerCRF: 0.04}
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 24.75, Score: 9.677})
+	state.AddProbe(ctx, Probe{CRF: 28.75, Score: 9.563})
+	crf, ok := state.NextCRF(ctx)
+	if !ok {
+		t.Fatal("no third CRF")
+	}
+	if crf != 46.5 {
+		t.Fatalf("third CRF = %g, want bounded midpoint 46.5", crf)
+	}
+}
+
 func TestSearchInterpolatesBracketedProbes(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.01, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)

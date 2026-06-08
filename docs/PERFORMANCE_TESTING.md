@@ -37,7 +37,7 @@ As of this document:
 - Search is bracket-aware after the first two probes:
   - interpolate only once probes bracket the target,
   - use a bounded midpoint for unbracketed low probes,
-  - move more aggressively toward high CRF for flat, unbracketed high probes.
+  - move more aggressively toward high CRF for flat, unbracketed high probes only when the highest-CRF probe is still at least 0.30 JOD above target.
 - Scoring is mean/worst blended when sampled-window spread is high.
 - A worst-window floor prevents convergence when any sampled window falls below tolerance.
 
@@ -93,7 +93,7 @@ The old search could waste rounds when all probes were on the same side of the t
 - Flat high-side chunks would creep toward CRF max over many rounds.
 - All-low chunks could extrapolate too aggressively toward CRF min.
 
-The bracket-aware change keeps interpolation for bracketed probes, uses midpoint for unbracketed low probes, and accelerates flat unbracketed high probes. On `knives-5min`, it reduced total probes and wall time after retesting with the restored 32-chunk schedule block.
+The bracket-aware change keeps interpolation for bracketed probes, uses midpoint for unbracketed low probes, and accelerates flat unbracketed high probes. On `knives-5min`, it reduced total probes and wall time after retesting with the restored 32-chunk schedule block. A follow-up change made the flat high-side jump more conservative by requiring the highest-CRF probe to remain at least 0.30 JOD above target before jumping 75% across the remaining range; this targets the 4-probe overshoot pattern seen in later tests.
 
 ## What did not work or was reverted
 
@@ -274,8 +274,9 @@ Conclusion: bracket-aware search looks good on SDR. The remaining opportunity is
 
 ## Open questions / next tests
 
-1. Keep bracket-aware search and block size 32 unless another clip shows a clear regression.
-2. Watch for high-side 4-probe patterns where two high probes are followed by an over-low probe; consider a less aggressive flat high-side jump only if this repeats across clips.
+1. Retest `knives5`, `sully5`, and `soms` after the conservative high-side jump change.
+   - Expected: preserve `knives5` gains while reducing 4-probe high-side overshoots in `sully5` and `soms`.
+2. Keep bracket-aware search and block size 32 unless another clip shows a clear regression.
 3. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
 4. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
 5. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
