@@ -86,14 +86,14 @@ Switching from 3 windows to 5 windows only after high spread directly targets un
 
 ### Bracket-aware unbracketed search
 
-Git/worktree reference: 2026-06-07 working-tree change after `knives5` testing
+Git reference: `a56f241 Improve target-quality probe search`
 
 The old search could waste rounds when all probes were on the same side of the target:
 
 - Flat high-side chunks would creep toward CRF max over many rounds.
 - All-low chunks could extrapolate too aggressively toward CRF min.
 
-The bracket-aware change keeps interpolation for bracketed probes, uses midpoint for unbracketed low probes, and accelerates flat unbracketed high probes. On `knives-5min`, it improved the specific bad tails (`0002`, `0003`, `0015`) but needs retesting with the restored block size.
+The bracket-aware change keeps interpolation for bracketed probes, uses midpoint for unbracketed low probes, and accelerates flat unbracketed high probes. On `knives-5min`, it reduced total probes and wall time after retesting with the restored 32-chunk schedule block.
 
 ## What did not work or was reverted
 
@@ -188,10 +188,94 @@ Conclusion:
 - Scheduling block size 8 hurt overall by worsening early priors and increasing total probes.
 - Keep bracket-aware search; restore block size 32; retest.
 
+### Bracket-aware search with block size restored to 32
+
+Artifacts: `~/testing/knives5-reellog5`.
+
+Summary:
+
+- 35 chunks, 63 probes, 1.80 probes/chunk.
+- Probe histogram `{1:17,2:12,3:3,4:2,5:1}`.
+- Stops `{converged:35}`.
+- Mean absolute sampled-JOD error 0.0729.
+- p90/max window spread 0.2119/0.6929.
+- Video encoding time 21m32s; total time 23m03s.
+
+Compared to the original baseline, this kept the same broad accuracy while reducing probes and time:
+
+| Metric | Original baseline | Bracket-aware, block 32 |
+|---|---:|---:|
+| Total probes | 66 | 63 |
+| Probes/chunk | 1.89 | 1.80 |
+| Probe histogram | `{1:17,2:11,3:4,4:1,5:1,6:1}` | `{1:17,2:12,3:3,4:2,5:1}` |
+| Stop reasons | `{converged:34,max_probes:1}` | `{converged:35}` |
+| Mean abs error | 0.0738 | 0.0729 |
+| Video encode time | 22m19s | 21m32s |
+| Total time | 23m51s | 23m03s |
+
+Tail chunks:
+
+- `0002`: 6 -> 5 probes and converged instead of max-probe stopping.
+- `0003`: 5 -> 4 probes.
+- `0015`: 4 -> 3 probes and avoided the bad CRF 4.5 jump.
+- `0001`: 3 -> 4 probes, a regression caused by the new bounded/bracketed path on a high-spread chunk.
+
+Conclusion: keep bracket-aware search and block size 32. It is a modest but real improvement on this HDR clip. More clips are needed before further tuning.
+
+## 2026-06-07 additional bracket-aware tests
+
+These were run after keeping bracket-aware search and restoring the TQ scheduling block size to 32.
+
+### sully-5min
+
+Environment: local test machine, input `~/testing/sully-5min.mkv`, 5:50, 3840x2160 HDR, crop 3840x1600. Target range 9.25-9.50 JOD.
+
+Artifacts: `~/testing/sully5-reellog1`, `.reel-sully-5min-*/target-quality.json`.
+
+Summary:
+
+- 44 chunks, 86 probes, 1.95 probes/chunk.
+- Probe histogram `{1:16,2:19,3:4,4:5}`.
+- Stops `{converged:44}`.
+- Mean absolute sampled-JOD error 0.0589.
+- p90/max window spread 0.1625/0.5462.
+- Video encoding time 17m44s; total time 19m40s.
+
+Tail chunks:
+
+- Five chunks needed 4 probes: `0000`, `0001`, `0019`, `0020`, `0028`.
+- Several 4-probe chunks were unbracketed high-side searches that overshot low on the third probe, then converged on the fourth.
+- Chunk `0019` was a high-spread/default-start chunk and was the slowest chunk.
+
+Conclusion: acceptable. No max-probe chunks, good mean error, and 1.95 probes/chunk on a difficult 4K HDR clip. Watch the 4-probe high-side overshoot pattern, but do not tune from this single clip alone.
+
+### soms
+
+Environment: local test machine, input `~/testing/soms.mkv`, 29:59, 1920x1080 SDR, crop 1920x1046. Target range 9.25-9.50 JOD.
+
+Artifacts: `~/testing/soms-reellog1`, `.reel-soms-*/target-quality.json`.
+
+Summary:
+
+- 209 chunks, 303 probes, 1.45 probes/chunk.
+- Probe histogram `{1:140,2:52,3:9,4:8}`.
+- Stops `{converged:209}`.
+- Mean absolute sampled-JOD error 0.0571.
+- p90/max window spread 0.1206/0.3237.
+- Video encoding time 23m11s; total time 24m11s.
+
+Tail chunks:
+
+- Eight chunks needed 4 probes: `0000`, `0001`, `0140`, `0148`, `0149`, `0150`, `0151`, `0152`.
+- The 4-probe cluster around `0148`-`0152` suggests a local content regime where priors were consistently too low-CRF/high-quality and the high-side search overshot before converging.
+- Despite the cluster, aggregate performance was strong: 67% of chunks converged in one probe and all chunks converged.
+
+Conclusion: bracket-aware search looks good on SDR. The remaining opportunity is not broad probe reduction; it is handling local clusters of flat/high-side CRF response without adding extra probes elsewhere.
+
 ## Open questions / next tests
 
-1. Retest `knives5` with bracket-aware search and restored block size 32.
-   - Expected: preserve improvements on `0002`, `0003`, `0015` without the 8-block prior regression.
-2. Compare against at least one other HDR 5-minute clip and one SDR clip before declaring the search change broadly better.
-3. Consider provisional priors from in-progress chunks only if probe-count tails remain after the restored-block retest.
-4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
+1. Keep bracket-aware search and block size 32 unless another clip shows a clear regression.
+2. Watch for high-side 4-probe patterns where two high probes are followed by an over-low probe; consider a less aggressive flat high-side jump only if this repeats across clips.
+3. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
+4. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
+5. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
