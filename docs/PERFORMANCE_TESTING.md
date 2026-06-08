@@ -137,6 +137,12 @@ Git references: `6791905 target-quality: use preset+2 for first probe on 4K HDR 
 
 Using a different preset for the first probe changed the measurement mode enough to hurt reliability/reuse. Keep probe encodes representative of final encodes unless evidence clearly supports otherwise.
 
+### Half-resolution target-quality probing
+
+Git reference: not found in reachable history; likely an uncommitted/local experiment.
+
+Half-resolution probing was tried as a way to make TQ probes cheaper by encoding/scoring downscaled samples. It was backed out because the probe became less representative of the final full-resolution encode and full-resolution CVVDP behavior. The apparent speed gain was not worth the risk of learning CRFs from a different resolution/metric regime. Keep TQ probes at final output resolution unless a future experiment records strong per-clip and cross-clip evidence.
+
 ### More complex chunk-boundary logic
 
 Git references: `d3e7db4 Simplify chunking: remove transitions, weak merges, and score-based splitting`, `f6003cb Restore weak-cut merging in simplified chunking`, `adf4511 Improve target-quality chunk planning`
