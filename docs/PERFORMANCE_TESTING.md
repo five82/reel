@@ -278,11 +278,35 @@ Tail chunks:
 
 Conclusion: bracket-aware search looks good on SDR. The remaining opportunity is not broad probe reduction; it is handling local clusters of flat/high-side CRF response without adding extra probes elsewhere.
 
+## 2026-06-07 conservative high-side jump retest
+
+Git reference: `cffa01b Tune unbracketed high-side target search`
+
+This retest required the highest-CRF probe to remain at least 0.30 JOD above target before using the aggressive high-side jump. The goal was to reduce 4-probe high-side overshoots without losing the `knives5` bracket-aware gains.
+
+Artifacts:
+
+- `~/testing/knives5-reellog6`, `.reel-knives-5min-*/target-quality.json`
+- `~/testing/sully5-reellog2`, `.reel-sully-5min-*/target-quality.json`
+- `~/testing/soms-reellog2`, `.reel-soms-*/target-quality.json`
+
+| Clip | Previous probes | Retest probes | Previous time | Retest time | Mean abs error | Probe histogram |
+|---|---:|---:|---:|---:|---:|---|
+| `knives5` | 63 | 63 | 23m03s | 23m10s | 0.0749 | `{1:17,2:12,3:3,4:2,5:1}` |
+| `sully5` | 86 | 81 | 19m40s | 18m49s | 0.0641 | `{1:18,2:17,3:7,4:2}` |
+| `soms` | 303 | 303 | 24m11s | 24m08s | 0.0568 | `{1:138,2:53,3:14,4:3,5:1}` |
+
+Additional details:
+
+- `knives5`: preserved the 63-probe result, all chunks converged, p90/max window spread 0.2463/0.6929. Runtime difference is small enough to treat as noise.
+- `sully5`: improved from 86 to 81 probes and reduced 4-probe chunks from five to two (`0000`, `0019`). This is the clearest win for the conservative gate.
+- `soms`: total probes stayed flat at 303 and time was effectively unchanged. The old 4-probe cluster around `0148`-`0152` shifted rather than disappeared: only `0149` stayed at 4 probes, but `0152` became a 5-probe chunk.
+
+Conclusion: keep the conservative high-side jump gate. It improved `sully5`, preserved `knives5`, and did not materially regress `soms`. Further search tuning should require new evidence from additional clips, because current probe counts are already near the low end for sampled TQ.
+
 ## Open questions / next tests
 
-1. Retest `knives5`, `sully5`, and `soms` after the conservative high-side jump change.
-   - Expected: preserve `knives5` gains while reducing 4-probe high-side overshoots in `sully5` and `soms`.
-2. Keep bracket-aware search and block size 32 unless another clip shows a clear regression.
-3. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
-4. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
-5. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
+1. Keep bracket-aware search, conservative high-side jump gating, and block size 32 unless another clip shows a clear regression.
+2. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
+3. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
+4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
