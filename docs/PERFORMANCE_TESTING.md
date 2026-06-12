@@ -304,6 +304,79 @@ Additional details:
 
 Conclusion: keep the conservative high-side jump gate. It improved `sully5`, preserved `knives5`, and did not materially regress `soms`. Further search tuning should require new evidence from additional clips, because current probe counts are already near the low end for sampled TQ.
 
+## 2026-06-12 metric-worker scaling benchmark
+
+Goal: evaluate whether the current hardcoded 4 CVVDP/VSHIP metric workers should remain fixed for both 1080p and 4K, vary by resolution, or scale like encoding workers. No Reel code changes were made for this test.
+
+Environment: local test machine, AMD Ryzen 9 7950X (32 logical CPUs), NVIDIA GeForce RTX 5060 Ti, 16 GB VRAM, driver 610.43.02.
+
+Artifacts:
+
+- Temporary harness and report: `~/testing/metric-worker-bench/`
+- Raw metric-only data: `results-1080p.csv`, `results-4k.csv`, `results-4k-sully-extra.csv`
+- In-situ Reel smoke logs: `~/testing/metric-worker-bench/reel-smoke-logs/`
+
+Method:
+
+- A temporary Go harness imported Reel internals and repeatedly ran `quality.ComputeChunkCVVDP` with source and probe path set to the same clip. This isolates metric throughput while still exercising Reel's FFmpeg frame decode plus VSHIP/CVVDP path.
+- Each task scored one 48-frame window, matching TQ sample windows.
+- 1080p SDR: `air-5m-1080p-sdr.mkv`, `bts-5m-1080p-sdr.mkv`, 16 windows/pass, 2 passes.
+- 4K HDR: `io-5m-4k-hdr.mkv`, `sully-5m-4k-hdr.mkv`, 12 windows/pass, 2 passes where safe.
+- Also ran short full Reel target-quality smoke tests with `--max-probes 1 --preset 13 --disable-autocrop` to check whether metric-only improvements show up in the adaptive encode pipeline.
+
+Metric-only 1080p results:
+
+| Metric workers | Mean aggregate fps | Speedup vs 1 | Samples |
+|---:|---:|---:|---:|
+| 1 | 13.62 | 1.00x | 4 |
+| 2 | 22.85 | 1.68x | 4 |
+| 3 | 28.13 | 2.06x | 4 |
+| 4 | 31.98 | 2.35x | 4 |
+| 6 | 37.97 | 2.79x | 4 |
+| 8 | 42.93 | 3.15x | 4 |
+| 10 | 42.03 | 3.09x | 4 |
+| 12 | 40.92 | 3.00x | 4 |
+| 16 | 44.20 | 3.24x | 4 |
+
+Metric-only 4K HDR results:
+
+| Metric workers | Mean aggregate fps | Speedup vs 1 | Samples |
+|---:|---:|---:|---:|
+| 1 | 5.29 | 1.00x | 4 |
+| 2 | 9.97 | 1.89x | 4 |
+| 3 | 13.57 | 2.57x | 4 |
+| 4 | 16.97 | 3.21x | 4 |
+| 5 | 17.73 | 3.35x | 4 |
+| 6 | 21.94 | 4.15x | 4 |
+| 7 | 22.28 | 4.21x | 4 |
+| 8 | 22.96 | 4.34x | 3 |
+
+4K stress notes: 10 workers failed with VSHIP `OutOfVRAM`; 8 workers also failed once on `sully-5m-4k-hdr`. On this 16 GB GPU, 7-8 workers are marginal for 4K and 10 is not safe.
+
+In-situ smoke results:
+
+| Clip | Workers | Elapsed | Result |
+|---|---:|---:|---|
+| `air-2m-1080p-sdr` | 4 | 73s | success |
+| `air-2m-1080p-sdr` | 8 | 66s | success, about 10% faster |
+| `io-5m-4k-hdr` | 4 | 512s | success |
+| `io-5m-4k-hdr` | 6 | 512s | success, no wall-time gain |
+
+Interpretation:
+
+- 1080p metric-only throughput improves through 8 workers. Past 8, returns are noisy and not worth the extra workers: 10 and 12 regressed, while 16 only beat 8 by about 3% despite doubling worker count.
+- 4K metric-only throughput improves materially through about 6 workers, but higher counts have diminishing returns and VRAM risk.
+- Full 4K Reel runs did not benefit from 6 workers because the adaptive encoder only sustained about 2-3 active 4K workers in the smoke test. Extra metric processors were not on the critical path.
+
+Conclusion/recommendation:
+
+- Do not scale metric workers like encoding workers. Encoding workers are CPU/memory/adaptive; metric workers are GPU/VRAM-bound VSHIP processors. Scaling metric workers toward logical CPU count can waste memory and can OOM on 4K.
+- Use simple resolution-aware defaults/caps rather than CPU-like scaling:
+  - Below 4K/UHD, including SD/DVD, 720p, 1080p, and 1440p: 8 metric workers. SD/DVD content was not directly tested, but should be safe because frames are cheaper than 1080p and there is no evidence supporting a higher untested default.
+  - 4K/UHD: 4 metric workers as the safe practical default in the current pipeline. 6 is the metric-only saturation point but did not improve the full 4K smoke test and has less VRAM headroom.
+- This recommendation was implemented after the benchmark: automatic metric workers now resolve to 8 below 4K and 4 for 4K/UHD. Explicit `--metric-workers` still overrides the automatic default.
+- If future changes increase sustained 4K encode concurrency, retest full-pipeline 4K at 4 vs 6 workers before raising the 4K default.
+
 ## Open questions / next tests
 
 1. Keep bracket-aware search, conservative high-side jump gating, and block size 32 unless another clip shows a clear regression.

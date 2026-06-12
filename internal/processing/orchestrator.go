@@ -122,8 +122,10 @@ func ProcessVideos(
 			continue
 		}
 
-		// Determine quality settings
-		quality, _ := determineQualitySettings(videoProps, cfg)
+		// Determine per-file settings that depend on video resolution.
+		fileCfg := *cfg
+		fileCfg.MetricWorkers = cfg.MetricWorkersForWidth(videoProps.Width)
+		quality, _ := determineQualitySettings(videoProps, &fileCfg)
 		isHDR := hdrInfo.IsHDR
 
 		// Get audio info
@@ -150,7 +152,7 @@ func ProcessVideos(
 		}
 
 		// Setup encode parameters (for display only)
-		encodeParams := setupEncodeParams(cfg, quality, hdrInfo)
+		encodeParams := setupEncodeParams(&fileCfg, quality, hdrInfo)
 
 		// Format audio description for config display
 		audioDescConfig := FormatAudioDescriptionConfig(audioChannels, audioStreams)
@@ -161,17 +163,17 @@ func ProcessVideos(
 			EncoderVersion:     encoder.SVTVersion(),
 			Preset:             fmt.Sprintf("%d", encodeParams.Preset),
 			Tune:               fmt.Sprintf("%d", encodeParams.Tune),
-			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality, cfg),
+			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality, &fileCfg),
 			PixelFormat:        encodeParams.PixelFormat,
 			MatrixCoefficients: encodeParams.MatrixCoefficients,
 			AudioCodec:         "Opus",
 			AudioDescription:   audioDescConfig,
-			SVTAV1Params:       encoder.SvtParamsDisplay(cfg.SVTAV1ACBias, cfg.SVTAV1EnableVarianceBoost, cfg.SVTAV1Tune),
+			SVTAV1Params:       encoder.SvtParamsDisplay(fileCfg.SVTAV1ACBias, fileCfg.SVTAV1EnableVarianceBoost, fileCfg.SVTAV1Tune),
 		})
 
 		// Run chunked encoding with FFmpeg/libav + SVT-AV1 library
 		finishStep = startVerboseStep(rep, "Chunked encode pipeline")
-		cropResult, encodeError := ProcessChunked(ctx, cfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
+		cropResult, encodeError := ProcessChunked(ctx, &fileCfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
 		finishStep()
 		encodeSuccess := encodeError == nil
 

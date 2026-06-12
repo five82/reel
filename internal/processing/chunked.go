@@ -70,6 +70,11 @@ func ProcessChunked(
 	if err != nil {
 		return CropResult{}, fmt.Errorf("failed to probe video: %w", err)
 	}
+	if cfg.MetricWorkers == 0 {
+		fileCfg := *cfg
+		fileCfg.MetricWorkers = cfg.MetricWorkersForWidth(vidInf.Width)
+		cfg = &fileCfg
+	}
 
 	finishStep = startVerboseStep(rep, "Crop detection")
 	cropResult := DetectCrop(inputPath, vidInf, cfg.CropMode == "none")

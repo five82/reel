@@ -127,7 +127,7 @@ Quality Settings:
   --target-quality <R>   CVVDP JOD target range for target mode. Default: %s
   --crf-range <R>        CRF search range for target mode. Default: %s
   --cvvdp-display <PATH> CVVDP display JSON override. Default: generated normal-viewing model
-  --metric-workers <N>   Concurrent VSHIP/CUDA scoring workers. Default: %d
+  --metric-workers <N>   Concurrent VSHIP/CUDA scoring workers. Default: %d below 4K, %d for 4K
   --max-probes <N>       Maximum target-quality probes per chunk. Default: %d
   --crf <VALUE>          Fixed CRF quality level (1-70, quarter steps). Accepts:
                            Single value: --crf 25.25 (use for all resolutions)
@@ -142,7 +142,7 @@ Processing Options:
 Output Options:
   --no-log               Disable Reel log file creation
   --keep-workdir         Keep the .reel work directory after successful encodes
-`, appName, qualityModeDefaultHelp(), config.DefaultTargetQuality, config.DefaultCRFSearchRange, config.DefaultMetricWorkers, config.DefaultTargetQualityMaxProbes, quality.FormatCRF(config.DefaultCRFSD), quality.FormatCRF(config.DefaultCRFHD), quality.FormatCRF(config.DefaultCRFUHD), config.DefaultSVTAV1Preset)
+`, appName, qualityModeDefaultHelp(), config.DefaultTargetQuality, config.DefaultCRFSearchRange, config.DefaultMetricWorkersBelowUHD, config.DefaultMetricWorkersUHD, config.DefaultTargetQualityMaxProbes, quality.FormatCRF(config.DefaultCRFSD), quality.FormatCRF(config.DefaultCRFHD), quality.FormatCRF(config.DefaultCRFUHD), config.DefaultSVTAV1Preset)
 	}
 
 	var ea encodeArgs

@@ -29,8 +29,15 @@ const (
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
 	DefaultCRFSearchRange = "4.25-63.75"
 
-	// DefaultMetricWorkers limits concurrent VSHIP/CUDA scoring by default.
-	DefaultMetricWorkers = 4
+	// AutoMetricWorkers selects resolution-aware VSHIP/CUDA scoring concurrency.
+	// Use MetricWorkersForWidth to get the effective value.
+	AutoMetricWorkers = 0
+
+	// DefaultMetricWorkersBelowUHD is the default for content below 4K/UHD.
+	DefaultMetricWorkersBelowUHD = 8
+
+	// DefaultMetricWorkersUHD is the default for 4K/UHD content.
+	DefaultMetricWorkersUHD = 4
 
 	// DefaultTargetQualityMaxProbes caps per-chunk target-quality probes.
 	DefaultTargetQualityMaxProbes = 6
@@ -107,7 +114,7 @@ type Config struct {
 	CRFSearchMin           float32 // Parsed target-quality CRF low bound
 	CRFSearchMax           float32 // Parsed target-quality CRF high bound
 	CVVDPDisplay           string  // Optional display JSON override
-	MetricWorkers          int     // Concurrent VSHIP/CUDA scoring workers
+	MetricWorkers          int     // Concurrent VSHIP/CUDA scoring workers; 0 selects resolution-aware default
 	TargetQualityMaxProbes int     // Per-chunk target-quality probe cap
 
 	// Fixed-CRF settings by resolution.
@@ -144,7 +151,7 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 		QualityMode:                 defaultQualityMode(),
 		TargetQuality:               DefaultTargetQuality,
 		CRFSearchRange:              DefaultCRFSearchRange,
-		MetricWorkers:               DefaultMetricWorkers,
+		MetricWorkers:               AutoMetricWorkers,
 		TargetQualityMaxProbes:      DefaultTargetQualityMaxProbes,
 		CRFSD:                       DefaultCRFSD,
 		CRFHD:                       DefaultCRFHD,
@@ -213,8 +220,8 @@ func (c *Config) Validate() error {
 	c.CRFSearchMin = searchMin
 	c.CRFSearchMax = searchMax
 
-	if c.MetricWorkers < 1 {
-		return fmt.Errorf("metric-workers must be >= 1, got %d", c.MetricWorkers)
+	if c.MetricWorkers < 0 {
+		return fmt.Errorf("metric-workers must be >= 1 when set, got %d", c.MetricWorkers)
 	}
 	if c.TargetQualityMaxProbes < 1 {
 		return fmt.Errorf("target-quality-max-probes must be >= 1, got %d", c.TargetQualityMaxProbes)
@@ -259,6 +266,22 @@ func (c *Config) CRFForWidth(width uint32) float32 {
 		return c.CRFHD
 	}
 	return c.CRFSD
+}
+
+// DefaultMetricWorkersForWidth returns the default metric worker count based on video width.
+func DefaultMetricWorkersForWidth(width uint32) int {
+	if width >= UHDWidthThreshold {
+		return DefaultMetricWorkersUHD
+	}
+	return DefaultMetricWorkersBelowUHD
+}
+
+// MetricWorkersForWidth returns the effective metric worker count based on video width.
+func (c *Config) MetricWorkersForWidth(width uint32) int {
+	if c.MetricWorkers > 0 {
+		return c.MetricWorkers
+	}
+	return DefaultMetricWorkersForWidth(width)
 }
 
 // ChunkDurationForWidth returns the appropriate chunk duration based on video width.

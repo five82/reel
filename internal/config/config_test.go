@@ -100,6 +100,16 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "metric-workers automatic default is valid",
+			modify:  func(c *Config) { c.MetricWorkers = 0 },
+			wantErr: false,
+		},
+		{
+			name:    "negative metric-workers is invalid",
+			modify:  func(c *Config) { c.MetricWorkers = -1 },
+			wantErr: true,
+		},
+		{
 			name:    "chunk_duration_sd 0 is invalid",
 			modify:  func(c *Config) { c.ChunkDurationSD = 0 },
 			wantErr: true,
@@ -150,6 +160,42 @@ func TestCRFForWidth(t *testing.T) {
 				t.Errorf("CRFForWidth(%d) = %g, want %g", tt.width, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestMetricWorkersForWidth(t *testing.T) {
+	cfg := NewConfig("/input", "/output", "/log")
+
+	tests := []struct {
+		width    uint32
+		expected int
+	}{
+		{width: 720, expected: DefaultMetricWorkersBelowUHD},
+		{width: 1280, expected: DefaultMetricWorkersBelowUHD},
+		{width: 1920, expected: DefaultMetricWorkersBelowUHD},
+		{width: 3839, expected: DefaultMetricWorkersBelowUHD},
+		{width: 3840, expected: DefaultMetricWorkersUHD},
+		{width: 7680, expected: DefaultMetricWorkersUHD},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			got := cfg.MetricWorkersForWidth(tt.width)
+			if got != tt.expected {
+				t.Errorf("MetricWorkersForWidth(%d) = %d, want %d", tt.width, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMetricWorkersForWidthUsesExplicitOverride(t *testing.T) {
+	cfg := NewConfig("/input", "/output", "/log")
+	cfg.MetricWorkers = 5
+
+	for _, width := range []uint32{720, 1920, 3840, 7680} {
+		if got := cfg.MetricWorkersForWidth(width); got != 5 {
+			t.Errorf("MetricWorkersForWidth(%d) = %d, want explicit override 5", width, got)
+		}
 	}
 }
 
