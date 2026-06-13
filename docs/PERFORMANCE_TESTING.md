@@ -567,6 +567,41 @@ Root cause: the original fullvalidate seeked to `ch.Start` in the **muxed AV1 ou
 
 Caveat for earlier entries: the soms and sully ground-truth numbers recorded under "2026-06-12 concurrency restructure" came from the pre-fix tool. They happened to land clean (0 below range) because those runs' muxed seeks mostly aligned, and re-scoring soms with the fixed tool agrees closely (gap 0.0146 vs 0.0123). Treat any single pre-fix per-chunk full score with suspicion, but the aggregate "0 below range" conclusions held.
 
+## 2026-06-13 4K metric workers 4 vs 6 retest
+
+Goal: open question 7. The 2026-06-12 metric-worker benchmark set the 4K default to 4, noting 6 was the *metric-only* saturation point but did not help the full pipeline because the adaptive encoder only sustained 2-3 active 4K workers. Since then the concurrency restructure (slot release during scoring, async scoring, decode/GPU overlap) plus the 4K bandwidth-aware ramp raised sustained concurrency, and CVVDP now overlaps frame decode with GPU compute. Retest whether 6 metric workers now beats 4 in a real 4K encode.
+
+Environment: same dev machine (32 logical CPUs, RTX 5060 Ti 16 GB VRAM, dual-channel DDR5).
+
+Method: full `reel encode` runs (default preset, autocrop on), `io-5m-4k-hdr` and `sully-5m-4k-hdr`, `--metric-workers 4` vs `--metric-workers 6`, two interleaved rounds each (8 runs). Wall time measured end to end; peak VRAM sampled every 2s via `nvidia-smi`; probe counts from each `target-quality.json`. Harness/artifacts: `~/testing/perf-ab/mw-retest/` (`orchestrate.sh`, `run-one.sh`, `analyze.py`, per-run `.log`/`.vram`/`-tq.json`).
+
+| Run | mw | elapsed | probes | p/chunk | peak VRAM |
+|---|---:|---:|---:|---:|---:|
+| io a | 4 | 525s | 56 | 1.56 | 8248 MiB |
+| io a | 6 | 873s | 82 | 2.28 | 11618 MiB |
+| io b | 4 | 591s | 67 | 1.86 | 7960 MiB |
+| io b | 6 | 584s | 68 | 1.89 | 11906 MiB |
+| sully a | 4 | 666s | 62 | 1.88 | 5976 MiB |
+| sully a | 6 | 765s | 72 | 2.18 | 9074 MiB |
+| sully b | 4 | 494s | 50 | 1.52 | 5976 MiB |
+| sully b | 6 | 643s | 71 | 2.15 | 8946 MiB |
+
+Confound: metric-worker count is not independent of probe count. More metric workers finish scoring sooner, which shifts when chunks complete and therefore the neighbor/median prior cascade, so mw6 runs happened to take more probes. Raw wall time is contaminated by this. Normalize by seconds-per-probe (scoring + encode work per probe):
+
+| | mean s/probe |
+|---|---:|
+| mw4 | 9.70 |
+| mw6 | 9.73 |
+
+Interpretation:
+
+- Throughput-normalized cost is identical (9.70 vs 9.73 s/probe). Extra metric workers add no scoring throughput in the full pipeline.
+- Why: progress logs show the 4K encoder sustains `workers 4->5/32` -- target 5, the `maxWorkers/6` bandwidth cap. Concurrency *did* rise from the old 2-3 to ~5, confirming the retest premise, but it is still capped at 5 by memory bandwidth. With ~5 chunks encoding at once, pending scoring tasks rarely exceed 4, so the 5th and 6th metric workers idle. The metric pool is not on the critical path; the bandwidth-bound encoder is.
+- Raw wall time favored mw4 on average (io 558 vs 728s, sully 580 vs 704s) and mw6 produced the worst single run (io a, 873s/82 probes): more metric workers can occasionally worsen the prior cascade, never speed the encode.
+- VRAM: mw4 peaked ~6-8.2 GiB, mw6 ~9-11.9 GiB. Both safe on 16 GiB, but 6 leaves ~4 GiB headroom vs ~8 GiB -- consistent with the earlier "7-8 marginal" note.
+
+Conclusion: keep the 4K metric-worker default at 4. No code change. The 2026-06-12 recommendation holds under the higher-concurrency pipeline: until sustained 4K encode concurrency rises well above ~5 (which the bandwidth cap prevents on this class of hardware), 4 metric workers already meet scoring demand. Revisit only if the `maxWorkers/6` cap is lifted on higher-bandwidth hardware.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -580,7 +615,7 @@ Search-layer items (carried forward):
 Performance items, in suggested order (use `scripts/fullvalidate` as the accuracy ruler for anything below the line):
 
 6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
-7. Retest 4K metric workers 4 vs 6 now that CVVDP tasks overlap decode with GPU compute and chunk concurrency is higher; 6 was the metric-only saturation point and VRAM-marginal at 7-8.
+7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.
 8. Verify SVT-AV1 `level_of_parallelism` is bitstream-identical across values; if so, scale lp with the current worker target instead of the hardware max (lp=2 on a 32-thread machine starves early 4K probes when only 2-4 encoders are active).
 9. Accuracy-trading knobs, only with fullvalidate evidence: probe windows 3x48 -> 2x48 or 3x32 (cuts the 1080p GPU floor proportionally), the 256-frame full-probe threshold at 4K (nearly every 4K chunk full-probes under the 12s cap; sampling them would cut GPU work ~40% but loses full-first reuse and whole-chunk scoring), and the 12s TQ chunk cap itself.
 10. Overlapping the pre-encode head (crop + shot detection) with the start of encoding is the remaining structural win for long inputs; it needs streaming chunk planning and is not worth it below feature-length inputs.
