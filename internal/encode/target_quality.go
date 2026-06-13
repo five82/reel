@@ -32,25 +32,20 @@ const (
 	// targetQualityScheduleBlockChunks keeps target-quality work near timeline order while balancing chunk sizes.
 	targetQualityScheduleBlockChunks = 32
 
-	// targetQualityUpperGraceJOD avoids extra probes for tiny over-target CVVDP overshoots.
-	targetQualityUpperGraceJOD = 0.02
-
 	// targetQualityExtraWindowSpread enables denser sampling on later probes for high-variance chunks.
 	targetQualityExtraWindowSpread = 0.30
 )
 
 type TargetQualityConfig struct {
-	Target          float32
-	Tolerance       float32
-	CRFMin          float32
-	CRFMax          float32
-	MaxProbes       int
-	MetricWorkers   int
-	DisplayPath     string
-	InitialCRF      float32
-	SampleFrames    int
-	FullProbeFrames int
-	Verbose         func(string)
+	Target        float32
+	Tolerance     float32
+	CRFMin        float32
+	CRFMax        float32
+	MaxProbes     int
+	MetricWorkers int
+	DisplayPath   string
+	InitialCRF    float32
+	Verbose       func(string)
 }
 
 type targetQualityResult struct {
@@ -95,12 +90,6 @@ func EncodeTargetQuality(
 	}
 	if tq.MaxProbes < 1 {
 		tq.MaxProbes = 1
-	}
-	if tq.SampleFrames < 1 {
-		tq.SampleFrames = DefaultTargetQualitySampleFrames
-	}
-	if tq.FullProbeFrames < 1 {
-		tq.FullProbeFrames = DefaultTargetQualityFullProbeFrames
 	}
 	if tq.InitialCRF <= 0 {
 		tq.InitialCRF = (tq.CRFMin + tq.CRFMax) / 2
@@ -198,14 +187,13 @@ func EncodeTargetQuality(
 
 	initialJODPerCRF := targetQualityInitialJODPerCRF(width, height, inf)
 	searchCtx := quality.SearchContext{
-		Target:              tq.Target,
-		Tolerance:           tq.Tolerance,
-		UpperToleranceGrace: targetQualityUpperGraceJOD,
-		CRFMin:              tq.CRFMin,
-		CRFMax:              tq.CRFMax,
-		MaxProbes:           tq.MaxProbes,
-		InitialCRF:          tq.InitialCRF,
-		JODPerCRF:           initialJODPerCRF,
+		Target:     tq.Target,
+		Tolerance:  tq.Tolerance,
+		CRFMin:     tq.CRFMin,
+		CRFMax:     tq.CRFMax,
+		MaxProbes:  tq.MaxProbes,
+		InitialCRF: tq.InitialCRF,
+		JODPerCRF:  initialJODPerCRF,
 	}
 	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
 	seedTargetQualityPrior(workDir, doneSet, prior)
@@ -231,7 +219,7 @@ func EncodeTargetQuality(
 				chunkSearchCtx := searchCtx
 				chunkSearchCtx.InitialCRF = initialCRF
 				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, prior, tq.SampleFrames, tq.FullProbeFrames, initialCRFSource, tq.Verbose)
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, prior, DefaultTargetQualitySampleFrames, DefaultTargetQualityFullProbeFrames, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -782,10 +770,6 @@ func seedTargetQualityPrior(workDir string, doneSet map[int]bool, prior *targetQ
 	}
 }
 
-func (p *targetQualityPrior) Add(chunkIdx int, crf float32) {
-	p.AddResult(chunkIdx, crf, nil)
-}
-
 func (p *targetQualityPrior) AddResult(chunkIdx int, crf float32, probes []quality.Probe) {
 	if crf <= 0 {
 		return
@@ -1157,8 +1141,8 @@ func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQua
 		CRFMax:             tq.CRFMax,
 		MetricWorkers:      tq.MetricWorkers,
 		DefaultInitialCRF:  tq.InitialCRF,
-		ProbeSampleFrames:  tq.SampleFrames,
-		ProbeFullThreshold: tq.FullProbeFrames,
+		ProbeSampleFrames:  DefaultTargetQualitySampleFrames,
+		ProbeFullThreshold: DefaultTargetQualityFullProbeFrames,
 		Chunks:             logs,
 	}, "", "  ")
 	if err != nil {

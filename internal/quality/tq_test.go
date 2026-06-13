@@ -19,21 +19,24 @@ func TestSearchConverges(t *testing.T) {
 	}
 }
 
-func TestSearchAcceptsUpperGrace(t *testing.T) {
-	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+func TestSearchRejectsScoresAboveRange(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
 	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.6062})
-	if state.StopReason != StopConverged {
-		t.Fatalf("stop reason = %q, want converged", state.StopReason)
+	if state.StopReason == StopConverged {
+		t.Fatal("score above range should not converge")
+	}
+	if state.SearchMin != 20.25 {
+		t.Fatalf("SearchMin = %g, want 20.25", state.SearchMin)
 	}
 }
 
-func TestSearchDoesNotApplyLowerGrace(t *testing.T) {
-	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+func TestSearchRejectsScoresBelowRange(t *testing.T) {
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
 	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.3938})
 	if state.StopReason == StopConverged {
-		t.Fatal("low score should not converge with upper-only grace")
+		t.Fatal("score below range should not converge")
 	}
 	if state.SearchMax != 19.75 {
 		t.Fatalf("SearchMax = %g, want 19.75", state.SearchMax)
@@ -41,7 +44,7 @@ func TestSearchDoesNotApplyLowerGrace(t *testing.T) {
 }
 
 func TestSearchRequiresSampledWindowFloor(t *testing.T) {
-	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
 	state.AddProbe(ctx, Probe{CRF: 24, Score: 9.51, WorstWindowScore: 9.28})
 	if state.StopReason == StopConverged {
@@ -53,7 +56,7 @@ func TestSearchRequiresSampledWindowFloor(t *testing.T) {
 }
 
 func TestBestProbePrefersSampledWindowFloor(t *testing.T) {
-	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, UpperToleranceGrace: 0.02, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
+	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
 	state.Probes = []Probe{
 		{CRF: 31.5, Score: 9.5123, WorstWindowScore: 9.2786},
@@ -224,8 +227,48 @@ func TestSearchMonotonicitySkippedForDifferentWindowCounts(t *testing.T) {
 
 func TestInterpolateCRF(t *testing.T) {
 	probes := []Probe{{CRF: 20, Score: 9.8}, {CRF: 30, Score: 9.2}}
-	got := InterpolateCRF(probes, 9.5, 2)
+	got := InterpolateCRF(probes, 9.5)
 	if got != 25 {
 		t.Fatalf("InterpolateCRF = %g, want 25", got)
+	}
+}
+
+func TestInterpolateCRFUsesBracketingSegment(t *testing.T) {
+	// Target 9.375 lies between the 9.3 and 9.7 probes; interpolation must use
+	// that segment, not the lowest-score pair.
+	probes := []Probe{
+		{CRF: 38, Score: 9.1},
+		{CRF: 33, Score: 9.3},
+		{CRF: 25, Score: 9.7},
+	}
+	got := InterpolateCRF(probes, 9.375)
+	// t = (9.375-9.3)/(9.7-9.3) = 0.1875; crf = 33 + 0.1875*(25-33) = 31.5
+	if got != 31.5 {
+		t.Fatalf("InterpolateCRF = %g, want 31.5", got)
+	}
+}
+
+func TestInterpolateCRFExtrapolatesNearestSegment(t *testing.T) {
+	// Target below all scores extrapolates the lowest segment, matching the
+	// prior two-probe linear behavior.
+	probes := []Probe{{CRF: 30, Score: 9.4}, {CRF: 20, Score: 9.6}}
+	got := InterpolateCRF(probes, 9.3)
+	// t = (9.3-9.4)/(9.6-9.4) = -0.5; crf = 30 + (-0.5)*(20-30) = 35
+	if got != 35 {
+		t.Fatalf("InterpolateCRF = %g, want 35", got)
+	}
+}
+
+func TestInterpolateCRFFourProbesUsesLocalSegment(t *testing.T) {
+	probes := []Probe{
+		{CRF: 40, Score: 9.0},
+		{CRF: 35, Score: 9.2},
+		{CRF: 30, Score: 9.45},
+		{CRF: 20, Score: 9.8},
+	}
+	got := InterpolateCRF(probes, 9.375)
+	// Bracketing segment is (9.2, 35) -> (9.45, 30): t = 0.7; crf = 35 - 3.5 = 31.5
+	if got != 31.5 {
+		t.Fatalf("InterpolateCRF = %g, want 31.5", got)
 	}
 }

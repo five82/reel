@@ -38,14 +38,13 @@ type Probe struct {
 
 // SearchContext configures per-chunk target-quality search.
 type SearchContext struct {
-	Target              float32
-	Tolerance           float32
-	UpperToleranceGrace float32
-	CRFMin              float32
-	CRFMax              float32
-	MaxProbes           int
-	InitialCRF          float32
-	JODPerCRF           float32
+	Target     float32
+	Tolerance  float32
+	CRFMin     float32
+	CRFMax     float32
+	MaxProbes  int
+	InitialCRF float32
+	JODPerCRF  float32
 }
 
 // SearchState tracks target-quality search for one chunk.
@@ -144,17 +143,17 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 	if len(s.Probes) == 0 {
 		return Probe{}, false
 	}
-	best, _, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
+	best, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
 		return !targetQualityWindowBelowFloor(ctx, probe)
 	})
 	if found {
 		return best, true
 	}
-	best, _, _ = bestProbeMatching(ctx, s.Probes, func(Probe) bool { return true })
+	best, _ = bestProbeMatching(ctx, s.Probes, func(Probe) bool { return true })
 	return best, true
 }
 
-func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool) (Probe, float64, bool) {
+func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool) (Probe, bool) {
 	const errEpsilon = 0.001
 	var best Probe
 	bestErr := float64(0)
@@ -170,7 +169,7 @@ func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool)
 			found = true
 		}
 	}
-	return best, bestErr, found
+	return best, found
 }
 
 func targetQualityProbeConverged(ctx SearchContext, probe Probe) bool {
@@ -178,7 +177,7 @@ func targetQualityProbeConverged(ctx SearchContext, probe Probe) bool {
 }
 
 func targetQualityConverged(ctx SearchContext, score float32) bool {
-	return score >= ctx.Target-ctx.Tolerance && score <= ctx.Target+ctx.Tolerance+ctx.UpperToleranceGrace
+	return score >= ctx.Target-ctx.Tolerance && score <= ctx.Target+ctx.Tolerance
 }
 
 func targetQualityWindowBelowFloor(ctx SearchContext, probe Probe) bool {
@@ -194,8 +193,8 @@ func initialSearchCRF(ctx SearchContext) float32 {
 
 func nextCRFWithHistory(ctx SearchContext, state *SearchState) float32 {
 	if probesBracketTarget(ctx, state.Probes) {
-		candidate := InterpolateCRF(state.Probes, ctx.Target, state.Round)
-		if candidate >= state.SearchMin && candidate <= state.SearchMax && !math.IsNaN(float64(candidate)) && !math.IsInf(float64(candidate), 0) {
+		candidate := InterpolateCRF(state.Probes, ctx.Target)
+		if candidate >= state.SearchMin && candidate <= state.SearchMax {
 			return candidate
 		}
 	}
@@ -349,125 +348,30 @@ func crfKey(crf float32) int {
 	return int(math.Round(float64(crf * 4)))
 }
 
-func InterpolateCRF(probes []Probe, target float32, round int) float32 {
-	pairs := make([][2]float32, 0, len(probes))
-	for _, p := range probes {
-		pairs = append(pairs, [2]float32{p.Score, p.CRF})
+// InterpolateCRF linearly interpolates a CRF for the target score using the
+// pair of adjacent probes (ordered by score) whose scores bracket the target.
+// If the target falls outside all probe scores, the nearest segment
+// extrapolates, matching the prior linear behavior at two probes.
+func InterpolateCRF(probes []Probe, target float32) float32 {
+	if len(probes) == 0 {
+		return 0
 	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
-	x := make([]float32, len(pairs))
-	y := make([]float32, len(pairs))
-	for i, p := range pairs {
-		x[i] = p[0]
-		y[i] = p[1]
+	if len(probes) == 1 {
+		return RoundCRFToQuarter(probes[0].CRF)
 	}
-
-	var result float32
-	switch {
-	case len(pairs) == 2 || round == 3:
-		result = lerp(x, y, target)
-	case len(pairs) == 3 || round == 4:
-		result = fritschCarlson(x, y, target)
-	default:
-		result = pchip(x, y, target)
-	}
-	return RoundCRFToQuarter(result)
-}
-
-func lerp(x, y []float32, xi float32) float32 {
-	if len(x) < 2 || x[1] == x[0] {
-		return y[0]
-	}
-	t := (xi - x[0]) / (x[1] - x[0])
-	return t*(y[1]-y[0]) + y[0]
-}
-
-func pchip(x, y []float32, xi float32) float32 {
-	n := len(x)
-	if n < 3 {
-		return lerp(x, y, xi)
-	}
-	k := 0
-	for i := 0; i < n-1; i++ {
-		if xi >= x[i] && xi <= x[i+1] {
+	sorted := append([]Probe(nil), probes...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score < sorted[j].Score })
+	k := len(sorted) - 2
+	for i := 0; i < len(sorted)-1; i++ {
+		if target <= sorted[i+1].Score {
 			k = i
 			break
 		}
 	}
-
-	s := make([]float32, n-1)
-	for i := 0; i < n-1; i++ {
-		if x[i+1] == x[i] {
-			s[i] = 0
-		} else {
-			s[i] = (y[i+1] - y[i]) / (x[i+1] - x[i])
-		}
+	lo, hi := sorted[k], sorted[k+1]
+	if hi.Score == lo.Score {
+		return RoundCRFToQuarter((lo.CRF + hi.CRF) / 2)
 	}
-	d := make([]float32, n)
-	d[0] = s[0]
-	d[n-1] = s[n-2]
-	for i := 1; i < n-1; i++ {
-		prev, next := s[i-1], s[i]
-		if prev*next <= 0 {
-			d[i] = 0
-		} else {
-			hPrev := x[i] - x[i-1]
-			hNext := x[i+1] - x[i]
-			w1 := 2*hNext + hPrev
-			w2 := 2*hPrev + hNext
-			d[i] = (w1 + w2) / (w1/prev + w2/next)
-		}
-	}
-	const maxTau2 = 9.0
-	for i := 0; i < n-1; i++ {
-		if s[i] == 0 {
-			d[i], d[i+1] = 0, 0
-			continue
-		}
-		alpha := d[i] / s[i]
-		beta := d[i+1] / s[i]
-		tau := alpha*alpha + beta*beta
-		if tau > maxTau2 {
-			scale := float32(3.0 / math.Sqrt(float64(tau)))
-			d[i] = scale * alpha * s[i]
-			d[i+1] = scale * beta * s[i]
-		}
-	}
-	return cubicHermite(x, y, d, k, xi)
-}
-
-func fritschCarlson(x, y []float32, xi float32) float32 {
-	if len(x) < 3 {
-		return lerp(x, y, xi)
-	}
-	k := 0
-	if xi >= x[1] && xi <= x[2] {
-		k = 1
-	}
-	d0 := (y[1] - y[0]) / (x[1] - x[0])
-	d1 := (y[2] - y[1]) / (x[2] - x[1])
-	m := [3]float32{d0, 0, d1}
-	if d0*d1 > 0 {
-		h0 := x[1] - x[0]
-		h1 := x[2] - x[1]
-		w1 := 2*h1 + h0
-		w2 := 2*h0 + h1
-		m[1] = (w1 + w2) / (w1/d0 + w2/d1)
-	}
-	return cubicHermite(x, y, m[:], k, xi)
-}
-
-func cubicHermite(x, y, d []float32, k int, xi float32) float32 {
-	h := x[k+1] - x[k]
-	if h == 0 {
-		return y[k]
-	}
-	t := (xi - x[k]) / h
-	t2 := t * t
-	t3 := t2 * t
-	h00 := 2*t3 - 3*t2 + 1
-	h10 := t3 - 2*t2 + t
-	h01 := -2*t3 + 3*t2
-	h11 := t3 - t2
-	return h00*y[k] + h10*h*d[k] + h01*y[k+1] + h11*h*d[k+1]
+	t := (target - lo.Score) / (hi.Score - lo.Score)
+	return RoundCRFToQuarter(lo.CRF + t*(hi.CRF-lo.CRF))
 }

@@ -238,8 +238,8 @@ func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
 
 func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
 	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
-	prior.Add(96, 20)
-	prior.Add(104, 28)
+	prior.AddResult(96, 20, nil)
+	prior.AddResult(104, 28, nil)
 	crf, source := prior.InitialCRF(100)
 	if crf != 24 || source != "neighbor" {
 		t.Fatalf("InitialCRF = %g %q, want 24 neighbor", crf, source)
@@ -248,9 +248,9 @@ func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
 
 func TestTargetQualityPriorFallsBackToMedianForDistantHistory(t *testing.T) {
 	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
-	prior.Add(10, 20)
-	prior.Add(20, 30)
-	prior.Add(30, 40)
+	prior.AddResult(10, 20, nil)
+	prior.AddResult(20, 30, nil)
+	prior.AddResult(30, 40, nil)
 	crf, source := prior.InitialCRF(100)
 	if crf != 30 || source != "median" {
 		t.Fatalf("InitialCRF = %g %q, want 30 median", crf, source)

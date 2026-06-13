@@ -9,11 +9,11 @@ Usage:
     python3 scripts/tqreplay.py <workdir> [options]
 
 Options:
-    --score-formula {mean_worst|mean|worst|adaptive}
-        mean_worst: (mean + worst) / 2   (default, current behavior)
+    --score-formula {adaptive|mean_worst|mean|worst}
+        adaptive:   weight toward worst as spread increases (default, current behavior)
+        mean_worst: (mean + worst) / 2   (legacy behavior)
         mean:       use mean_score only
         worst:      use worst_window_score only
-        adaptive:   weight toward worst as spread increases (new behavior)
 
     --tie-break {mean|worst}
         mean:  pick probe closest to target mean (old behavior)
@@ -66,13 +66,13 @@ def compute_probe_score(probe: dict, formula: str) -> float:
         max_weight = 0.70
         weight = min(spread / threshold, max_weight) if spread > 0 else 0
         return mean * (1 - weight) + worst * weight
-    # mean_worst: current behavior
+    # mean_worst: legacy behavior
     if worst > 0:
         return (mean + worst) / 2.0
     return mean
 
 
-def best_probe(probes: list[dict], target: float, tolerance: float, upper_grace: float, tie_break: str) -> Optional[dict]:
+def best_probe(probes: list[dict], target: float, tolerance: float, tie_break: str) -> Optional[dict]:
     """Select best probe matching current logic."""
     epsilon = 0.001
 
@@ -93,7 +93,7 @@ def best_probe(probes: list[dict], target: float, tolerance: float, upper_grace:
     best_err = float("inf")
 
     for p in pool:
-        score = compute_probe_score(p, "mean_worst")  # convergence check always uses mean_worst
+        score = compute_probe_score(p, "adaptive")  # matches current Go selection scoring
         err = abs(score - target)
 
         if best_p is None:
@@ -129,13 +129,12 @@ def window_spread(windows: list[dict]) -> float:
 def replay_chunk(chunk: dict, args) -> dict:
     target = chunk["target"]
     tolerance = args.tolerance if args.tolerance is not None else chunk["tolerance"]
-    upper_grace = chunk.get("tolerance", 0.12) * 0.25  # approximates UpperToleranceGrace
 
     probes = chunk.get("probes", [])
     if not probes:
         return {"chunk_idx": chunk["chunk_idx"], "error": "no probes"}
 
-    selected = best_probe(probes, target, tolerance, upper_grace, args.tie_break)
+    selected = best_probe(probes, target, tolerance, args.tie_break)
     if selected is None:
         return {"chunk_idx": chunk["chunk_idx"], "error": "no valid probe"}
 
@@ -162,7 +161,7 @@ def replay_chunk(chunk: dict, args) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Replay TQ decisions from logs")
     parser.add_argument("workdir", help="Path to .reel-* work directory")
-    parser.add_argument("--score-formula", choices=["mean_worst", "mean", "worst", "adaptive"], default="mean_worst")
+    parser.add_argument("--score-formula", choices=["adaptive", "mean_worst", "mean", "worst"], default="adaptive")
     parser.add_argument("--tie-break", choices=["mean", "worst"], default="worst")
     parser.add_argument("--tolerance", type=float, default=None, help="Override tolerance")
     parser.add_argument("--show-diffs-only", action="store_true", help="Only show chunks where selection changed")

@@ -23,8 +23,10 @@ const (
 	QualityModeTarget = "target"
 	QualityModeCRF    = "crf"
 
-	// DefaultTargetQuality is the default CVVDP JOD target range.
-	DefaultTargetQuality = "9.25-9.50"
+	// DefaultTargetQuality is the default CVVDP JOD target range. The upper
+	// bound carries the small overshoot headroom that previously lived in a
+	// separate search grace constant; the search accepts the range literally.
+	DefaultTargetQuality = "9.25-9.52"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
 	DefaultCRFSearchRange = "4.25-63.75"
@@ -71,9 +73,6 @@ const (
 
 	// DefaultEncodeCooldownSecs is the cooldown period between encodes.
 	DefaultEncodeCooldownSecs uint64 = 3
-
-	// ProgressLogIntervalPercent is the progress logging interval.
-	ProgressLogIntervalPercent uint8 = 5
 
 	// Chunk duration defaults by resolution.
 	// Longer chunks provide better encoder efficiency and reduce concatenation overhead.
