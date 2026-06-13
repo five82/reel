@@ -36,9 +36,14 @@ const (
 	targetQualityExtraWindowSpread = 0.30
 
 	// targetQualityPriorPrimeChunks is how many completed chunks must seed the
-	// CRF prior before dispatch opens beyond the encode-slot count. Starting
-	// too many chunks cold measurably increases probes and error.
+	// CRF prior before dispatch opens beyond the prime-phase concurrency.
+	// Starting too many chunks cold measurably increases probes and error.
 	targetQualityPriorPrimeChunks = 4
+
+	// targetQualityFlightGrowth is how many extra in-flight chunks are allowed
+	// per completed chunk after priming. Each completed chunk adds a usable
+	// CRF prior, so concurrency opens up roughly in step with prior coverage.
+	targetQualityFlightGrowth = 3
 )
 
 type TargetQualityConfig struct {
@@ -137,8 +142,10 @@ func EncodeTargetQuality(
 	width, height := video.OutputDimensions(inf, cropRect)
 
 	maxWorkers := MaxAdaptiveWorkers()
-	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height)
-	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames, cfg.StatusCallback)
+	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height, availableMemoryBytes())
+	primeConcurrency := resolutionWorkerFloor(maxWorkers, width, height)
+	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
+	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
 	if cfg.LevelOfParallelism == 0 {
 		cfg.LevelOfParallelism = levelOfParallelismForWorkers(maxWorkers)
 	}
@@ -239,14 +246,23 @@ func EncodeTargetQuality(
 	}
 
 	// Scoring releases encode slots, so slots alone no longer bound how many
-	// chunks are in flight. Hold dispatch near the encode-slot count until the
-	// prior is primed, then allow one extra chunk per metric worker.
+	// chunks are in flight. Two concerns are balanced here:
+	//   - protect the CRF prior: keep concurrency at the prime floor until a
+	//     few chunks complete, so early chunks are not all started cold;
+	//   - keep encode slots fed: a chunk spends ~half its time scoring with its
+	//     slot released, so in-flight must exceed the slot target (~2x) to keep
+	//     every slot busy across the probe/score duty cycle.
+	// After priming, the cap opens only as fast as completed chunks accumulate
+	// usable priors, so newly started chunks get neighbor/median seeds.
 	flightCap := func() int {
-		if prior.Count() < targetQualityPriorPrimeChunks {
-			return initialWorkers
+		done := prior.Count()
+		if done < targetQualityPriorPrimeChunks {
+			return primeConcurrency
 		}
 		_, target, _ := limiter.stats()
-		return target + tq.MetricWorkers
+		ceil := target + max(target, tq.MetricWorkers)
+		byPriors := primeConcurrency + targetQualityFlightGrowth*(done-targetQualityPriorPrimeChunks)
+		return min(byPriors, ceil)
 	}
 	chunkDone := func() {
 		flightMu.Lock()

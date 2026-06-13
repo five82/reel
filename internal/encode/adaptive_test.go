@@ -12,6 +12,7 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 		maxWorkers int
 		width      uint32
 		height     uint32
+		available  uint64
 		want       int
 	}{
 		{
@@ -22,17 +23,51 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 			want:       1,
 		},
 		{
-			name:       "4k starts with three workers",
+			name:       "4k without memory reading starts at bandwidth ceiling",
 			maxWorkers: 32,
 			width:      3840,
 			height:     2160,
+			available:  0, // ceiling 32/6 = 5
+			want:       5,
+		},
+		{
+			name:       "4k with abundant memory starts at bandwidth ceiling",
+			maxWorkers: 32,
+			width:      3840,
+			height:     2160,
+			available:  60 << 30, // mem allows 10, ceiling 5 wins
+			want:       5,
+		},
+		{
+			name:       "4k memory-limited below ceiling",
+			maxWorkers: 32,
+			width:      3840,
+			height:     2160,
+			available:  18 << 30, // 0.5*18/3 = 3 < ceiling 5
 			want:       3,
 		},
 		{
-			name:       "hd uses quarter of large machines",
+			name:       "4k never starts below floor",
+			maxWorkers: 32,
+			width:      3840,
+			height:     2160,
+			available:  8 << 30, // mem allows 1, floor 3 wins
+			want:       3,
+		},
+		{
+			name:       "4k small machine ceiling and floor coincide",
+			maxWorkers: 8,
+			width:      3840,
+			height:     2160,
+			available:  120 << 30, // ceiling max(3, 8/6)=3
+			want:       3,
+		},
+		{
+			name:       "hd ignores memory and uses quarter of large machines",
 			maxWorkers: 32,
 			width:      1920,
 			height:     1080,
+			available:  60 << 30,
 			want:       8,
 		},
 		{
@@ -60,7 +95,7 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := initialAdaptiveWorkers(tt.maxWorkers, tt.width, tt.height)
+			got := initialAdaptiveWorkers(tt.maxWorkers, tt.width, tt.height, tt.available)
 			if got != tt.want {
 				t.Fatalf("initialAdaptiveWorkers() = %d, want %d", got, tt.want)
 			}
@@ -105,112 +140,73 @@ func TestShouldReopenSource(t *testing.T) {
 	}
 }
 
-func TestAdaptiveLimiterTestsRampBeforeIncreasingAgain(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, 0, nil)
-	limiter.active = 1
-
-	for range rampEvaluationTicks - 1 {
-		limiter.maybeAdjustTarget(true, 100)
-	}
-	_, target, _ := limiter.stats()
-	if target != 1 {
-		t.Fatalf("target before evaluation completes = %d, want 1", target)
-	}
-
-	limiter.maybeAdjustTarget(true, 100)
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after initial evaluation = %d, want 2", target)
-	}
-
-	limiter.active = 2
-	for range rampEvaluationTicks - 1 {
-		limiter.maybeAdjustTarget(true, 107)
-	}
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target before ramp test completes = %d, want 2", target)
-	}
-
-	limiter.maybeAdjustTarget(true, 107)
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after successful ramp test = %d, want 2", target)
-	}
-
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 107)
-	}
-	_, target, _ = limiter.stats()
-	if target != 3 {
-		t.Fatalf("target after next stable window = %d, want 3", target)
+// sampleUtilization feeds n monitor ticks at the given active level, then runs
+// one ramp decision, mirroring the monitor loop (recordUtilization per tick,
+// maybeRampUp once a window has accumulated).
+func sampleUtilization(l *adaptiveLimiter, active, ticks int, memoryStable bool) {
+	for range ticks {
+		l.active = active
+		l.recordUtilization()
+		l.maybeRampUp(memoryStable)
 	}
 }
 
-func TestAdaptiveLimiterRetriesAfterMarginalRamp(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, 0, nil)
-	limiter.active = 1
+func TestAdaptiveLimiterRampsUpWhenSlotsSaturated(t *testing.T) {
+	limiter := newAdaptiveLimiter(8, 2, 8, 0, nil)
 
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 100)
-	}
+	// Slots fully utilized for a full window: expect a ramp.
+	sampleUtilization(limiter, 2, rampWindowTicks, true)
 	_, target, _ := limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after initial evaluation = %d, want 2", target)
-	}
-
-	limiter.active = 2
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 103)
-	}
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after marginal ramp = %d, want 2", target)
-	}
-
-	for range rampRetryCooldownTicks {
-		limiter.maybeAdjustTarget(true, 120)
-	}
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 120)
-	}
-	_, target, _ = limiter.stats()
 	if target != 3 {
-		t.Fatalf("target after marginal-ramp cooldown = %d, want 3", target)
+		t.Fatalf("target after saturated window = %d, want 3", target)
 	}
 }
 
-func TestAdaptiveLimiterHoldsAndBlocksAfterThroughputDrop(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, 0, nil)
-	limiter.active = 1
+func TestAdaptiveLimiterDoesNotRampWhenSlotsIdle(t *testing.T) {
+	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil)
 
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 100)
-	}
+	// Only half the slots used: utilization 0.5 < threshold, no ramp.
+	sampleUtilization(limiter, 2, rampWindowTicks*3, true)
 	_, target, _ := limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after initial evaluation = %d, want 2", target)
+	if target != 4 {
+		t.Fatalf("target with idle slots = %d, want 4 (no ramp)", target)
+	}
+}
+
+func TestAdaptiveLimiterDoesNotRampUnderMemoryPressure(t *testing.T) {
+	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil)
+
+	// Saturated slots but memory not stable: no ramp.
+	sampleUtilization(limiter, 4, rampWindowTicks*2, false)
+	_, target, _ := limiter.stats()
+	if target != 4 {
+		t.Fatalf("target with unstable memory = %d, want 4 (no ramp)", target)
+	}
+}
+
+func TestAdaptiveLimiterRampStepGrowsWithTarget(t *testing.T) {
+	limiter := newAdaptiveLimiter(64, 8, 64, 0, nil)
+
+	// At target 8, step is max(1, 8/4) = 2 -> 10.
+	sampleUtilization(limiter, 8, rampWindowTicks, true)
+	_, target, _ := limiter.stats()
+	if target != 10 {
+		t.Fatalf("target after one saturated window = %d, want 10", target)
+	}
+}
+
+func TestAdaptiveLimiterHoldsCooldownAfterPressure(t *testing.T) {
+	limiter := newAdaptiveLimiter(8, 6, 8, 0, nil)
+	limiter.reduceTarget(0.15, swapPressureGrowthBytes)
+	reduced := func() int { _, target, _ := limiter.stats(); return target }()
+	if reduced >= 6 {
+		t.Fatalf("reduceTarget did not lower target: %d", reduced)
 	}
 
-	limiter.active = 2
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 97)
-	}
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after failed ramp = %d, want 2", target)
-	}
-
-	limiter.active = 2
-	for range plateauCooldownTicks {
-		limiter.maybeAdjustTarget(true, 120)
-	}
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 120)
-	}
-	_, target, _ = limiter.stats()
-	if target != 2 {
-		t.Fatalf("target after blocked-ramp cooldown = %d, want 2", target)
+	// During the cooldown, saturated slots must not immediately ramp back up.
+	sampleUtilization(limiter, reduced, pressureCooldownTicks-1, true)
+	if got := func() int { _, target, _ := limiter.stats(); return target }(); got != reduced {
+		t.Fatalf("target ramped during cooldown = %d, want %d", got, reduced)
 	}
 }
 
@@ -231,16 +227,13 @@ func TestSwapGrowthStableForRamp(t *testing.T) {
 }
 
 func TestAdaptiveLimiterDoesNotRampLateInEncode(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, 100, nil)
-	limiter.active = 1
-	limiter.observeProgress(80)
+	limiter := newAdaptiveLimiter(4, 2, 4, 100, nil)
+	limiter.observeProgress(80) // 80% complete -> late-encode ramp guard
 
-	for range rampEvaluationTicks {
-		limiter.maybeAdjustTarget(true, 100)
-	}
+	sampleUtilization(limiter, 2, rampWindowTicks*2, true)
 
 	_, target, _ := limiter.stats()
-	if target != 1 {
-		t.Fatalf("target after late stable window = %d, want 1", target)
+	if target != 2 {
+		t.Fatalf("target after late saturated window = %d, want 2", target)
 	}
 }

@@ -11,9 +11,19 @@ import (
 
 	"codeberg.org/five82/reel/internal/chunk"
 	"codeberg.org/five82/reel/internal/encoder"
+	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
 )
+
+// availableMemoryBytes returns currently available RAM in bytes, or 0 if it
+// cannot be read. Used to seed the initial adaptive worker count.
+func availableMemoryBytes() uint64 {
+	if stats, ok := util.ReadMemoryStats(); ok {
+		return stats.MemAvailable
+	}
+	return 0
+}
 
 // EncodeConfig contains configuration for the parallel encode pipeline.
 type EncodeConfig struct {
@@ -105,8 +115,9 @@ func EncodeAll(
 	// pressure. Static memory estimates are intentionally not used as a hard cap:
 	// they are too content/SVT-version dependent and can leave the machine underused.
 	maxWorkers := MaxAdaptiveWorkers()
-	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height)
-	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames, cfg.StatusCallback)
+	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height, availableMemoryBytes())
+	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
+	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
 	if cfg.LevelOfParallelism == 0 {
 		cfg.LevelOfParallelism = levelOfParallelismForWorkers(maxWorkers)
 	}

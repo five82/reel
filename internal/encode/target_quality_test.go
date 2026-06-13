@@ -293,7 +293,7 @@ func TestTargetQualityPriorNormalizesCRFWithAdjustmentCap(t *testing.T) {
 }
 
 func TestGatherWindowScoresOrdersAndReacquires(t *testing.T) {
-	limiter := newAdaptiveLimiter(2, 2, 0, nil)
+	limiter := newAdaptiveLimiter(2, 2, 2, 0, nil)
 	if _, err := limiter.acquire(context.Background()); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestGatherWindowScoresOrdersAndReacquires(t *testing.T) {
 }
 
 func TestGatherWindowScoresReturnsFirstError(t *testing.T) {
-	limiter := newAdaptiveLimiter(2, 2, 0, nil)
+	limiter := newAdaptiveLimiter(2, 2, 2, 0, nil)
 	if _, err := limiter.acquire(context.Background()); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}

@@ -514,6 +514,59 @@ This is the load-bearing accuracy result for the whole restructure, because the 
 
 The sampled-probe strategy is not just internally consistent; it matches ground truth. None of the concurrency changes moved final quality out of the target band.
 
+## 2026-06-12 4K adaptive ramp: bandwidth, not capacity (finding + fix)
+
+Goal: the previous "open question 6" claimed 4K was a free speed win held back by a lumpy ramp signal and 6-minute lockouts, citing that sully runs held 47+ GiB free while pinned at 3-4 workers. Investigated whether ramping 4K higher actually helps.
+
+### The premise was a misdiagnosis
+
+It does not. 4K SVT-AV1 encodes are **memory-bandwidth bound, not RAM-capacity bound.** The 47 GiB-free observation was a red herring: the machine was never short of RAM, it was short of memory bandwidth and cache, which does not show up as "available memory." Three `sully-5m-4k-hdr` runs (32 logical cores, 61 GiB RAM), TQ-stage wall from per-chunk timestamps:
+
+| Build | Worker target | ~Active encodes | Per-probe encode | TQ wall | Video encode | Peak mem / min avail |
+|---|---:|---:|---:|---:|---:|---|
+| Slot-release baseline (committed `b652b74`) | 3 -> 5 (slow climb) | ~3.1 | 27.1s | 528s | 8m47s | -- / -- |
+| Memory-informed start (9) + util ramp | 11 | ~9 | 36.8s | 572s | 9m32s | 33.4 GiB / 28.5 GiB |
+| **Bandwidth-capped start (5)** | **5 fixed** | **~4** | **28.6s** | **495s** | **8m15s** | 25.1 GiB / 36.8 GiB |
+
+Pushing concurrency from ~3 to ~9 active encodes raised per-probe encode time 27 -> 37s (+36%, far more than the +8% probe count) and made total wall time *worse* (528 -> 572s), with tens of GiB still free and zero memory-pressure events. The throughput-per-encode falls faster than concurrency rises past roughly one active 4K encode per 6 logical cores.
+
+Neither of the signals the open question suggested can find this knee: slot utilization stays ~1.0 (slots read "busy" while each encode crawls), and available memory never drops. Only end-to-end throughput sees it, and that is exactly the noisy signal the old ramp used. So the answer is not "ramp 4K higher with a better signal" -- it is "cap 4K near its bandwidth optimum and start there."
+
+### Fix (kept)
+
+1. **Bandwidth-aware 4K ceiling.** `resolutionRampCeiling` caps the 4K worker target at `maxWorkers/6` (one active encode per ~6 logical cores; 5 on the 32-core dev machine), bounded by RAM on small machines via `workerMemoryUHD`. HD/SD keep the full hardware ceiling -- they are GPU-metric bound and self-limit via utilization. (`internal/encode/adaptive.go`)
+2. **Start 4K at the ceiling.** `initialAdaptiveWorkers` starts 4K directly at that ceiling instead of climbing from 3, so a 5-minute clip does not waste its first minutes at low concurrency. This is the entire measured win: `cap5` (start 5) beat the committed build (climb 3->5) by 33s of TQ wall, with fewer probes.
+3. **Replaced the throughput ramp with a utilization ramp.** The old frames/s ramp (90s windows, multi-tier modest/blocked verdicts, 3-6 minute lockouts, ~120 lines of state) is gone. The limiter now samples encode-slot utilization each monitor tick and adds a worker only when slots stay saturated (>=85% over a 60s window) and memory is stable, up to the resolution ceiling. This is a maintainability/robustness win (removes the documented lockout pathology) and matters mainly for HD/CRF; 4K starts at its ceiling and does not ramp. Memory-pressure backoff is unchanged -- still the real safety net.
+4. **Prior-paced flight gate.** In-flight chunk concurrency now opens as completed chunks accumulate usable CRF priors (`primeConcurrency + 3*(done - primeChunks)`, capped ~2x target) instead of a flat `target + metricWorkers`, keeping encode slots fed across the probe/score duty cycle without flooding cold-started chunks. (`internal/encode/target_quality.go`)
+
+Note the ceiling divisor (6) is calibrated on the dev machine's dual-channel DDR5 + 32 cores. Memory bandwidth per core varies by platform; a future agent on different hardware should re-measure the 4K active-encode knee (run the three-point sweep above) before trusting `maxWorkers/6`. The RAM bound and pressure backoff keep it safe regardless; only the speed optimum is hardware-specific.
+
+### Results (kept build: `cap5`)
+
+| Clip | Metric | Committed `b652b74` | Bandwidth-capped |
+|---|---|---:|---:|
+| `sully-5m-4k-hdr` | Video encode stage | 8m47s | **8m15s** |
+| | TQ wall (chunk timestamps) | 528s | **495s** |
+| | Worker target | 3 -> 5 climb | 5 fixed |
+| | Probes | 59 | 58 |
+| `soms-5m-1080p-sdr` | TQ wall | 212s | 209s (neutral) |
+| | Initial sources | neighbor:29, default:8 | neighbor:28, default:8, median:1 |
+
+4K total wall improved ~6% by starting at the bandwidth optimum instead of climbing to it, with fewer probes and no memory pressure. HD is unchanged (the HD path is untouched: floor start 8, GPU-bound, util ramp rarely fires). Both within their clips' run-to-run noise on probes/error.
+
+Ground truth (corrected `scripts/fullvalidate`, full-chunk CVVDP of each chunk's standalone encoded IVF):
+
+- `sully-5m-4k-hdr`: mean 9.4137, **0 chunks below range**, 3 above (overshoot), sampled-vs-full gap 0.0470, worst single gap -0.085. No quality regression from the higher concurrency.
+- `soms-5m-1080p-sdr`: mean 9.4231, **0 below**, 2 above, gap 0.0146.
+
+### fullvalidate bug found and fixed during this work
+
+The first 4K ground-truth pass reported 8 chunks at ~8.81 JOD (vs sampled ~9.4, gaps up to -0.72) -- alarming until the clustering of 8 unrelated chunks (CRFs 42-52, different content) within a 0.03 JOD band flagged it as a measurement artifact, not real quality. Those 8 chunks were all `nwin=1` full-probe chunks whose probe bits were reused verbatim as the final output, so the search had already measured them by full-chunk CVVDP at 9.36-9.55 -- the same metric on the same bits. Scoring each chunk's standalone `encode/NNNN.ivf` from frame 0 reproduced the search scores exactly (9.4237 / 9.5042 / 9.3638 vs sampled 9.424 / 9.504 / 9.364).
+
+Root cause: the original fullvalidate seeked to `ch.Start` in the **muxed AV1 output**. Reel's frame seek is timestamp-based (`startTime + frame*tsMul/tsDiv`) and lands a few frames off for some chunks in a long muxed AV1, mis-aligning source vs output and producing a spurious ~8.8 "garbage" score. This is the only code path in the project that seeks into a muxed AV1 output; the encode always scores standalone probe IVFs from frame 0, and source-side seeks are exercised constantly and proven reliable. Fixed by scoring each chunk's `encode/NNNN.ivf` from frame 0 (the IVFs concatenate losslessly into the muxed output, so it is the same bits without the seek). `fullvalidate` now takes `<source> <workdir>` instead of `<source> <encoded> <workdir>`.
+
+Caveat for earlier entries: the soms and sully ground-truth numbers recorded under "2026-06-12 concurrency restructure" came from the pre-fix tool. They happened to land clean (0 below range) because those runs' muxed seeks mostly aligned, and re-scoring soms with the fixed tool agrees closely (gap 0.0146 vs 0.0123). Treat any single pre-fix per-chunk full score with suspicion, but the aggregate "0 below range" conclusions held.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -526,7 +579,7 @@ Search-layer items (carried forward):
 
 Performance items, in suggested order (use `scripts/fullvalidate` as the accuracy ruler for anything below the line):
 
-6. Adaptive ramp for 4K is still the slowest free win: the throughput signal (completed-chunk frames over 90s windows) is too lumpy at 4K chunk rates, and one "modest gain" verdict blocks ramping for 6 minutes. Candidates: ramp on encode-slot utilization instead of frames/s, shorter early evaluation windows, or a memory-informed initial worker count (the 2026-06-12 sully runs held 47+ GiB available while pinned at 3-4 workers).
+6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
 7. Retest 4K metric workers 4 vs 6 now that CVVDP tasks overlap decode with GPU compute and chunk concurrency is higher; 6 was the metric-only saturation point and VRAM-marginal at 7-8.
 8. Verify SVT-AV1 `level_of_parallelism` is bitstream-identical across values; if so, scale lp with the current worker target instead of the hardware max (lp=2 on a 32-thread machine starves early 4K probes when only 2-4 encoders are active).
 9. Accuracy-trading knobs, only with fullvalidate evidence: probe windows 3x48 -> 2x48 or 3x32 (cuts the 1080p GPU floor proportionally), the 256-frame full-probe threshold at 4K (nearly every 4K chunk full-probes under the 12s cap; sampling them would cut GPU work ~40% but loses full-first reuse and whole-chunk scoring), and the 12s TQ chunk cap itself.

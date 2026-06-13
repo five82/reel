@@ -2,11 +2,13 @@
 // full-chunk CVVDP, giving ground-truth per-chunk JOD instead of the sampled
 // scores the target-quality search reports about itself.
 //
-// Usage: fullvalidate <source.mkv> <encoded.mkv> <workdir>
+// Usage: fullvalidate <source.mkv> <workdir>
 //
-// The workdir is a kept .reel-* directory from the encode (--keep-workdir);
-// it supplies chunk boundaries, the crop filter, the JOD target range, and
-// the per-chunk sampled scores to compare against.
+// The workdir is a kept .reel-* directory from the encode (--keep-workdir).
+// Each chunk is scored from its standalone encode/NNNN.ivf (read from frame 0,
+// no seek). Those per-chunk IVFs losslessly concatenate into the final muxed
+// output, so this measures the same bits as the final file but avoids seeking
+// into a muxed AV1, which mis-aligns frames and reports spurious low scores.
 package main
 
 import (
@@ -49,11 +51,11 @@ type chunkResult struct {
 }
 
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "Usage: fullvalidate <source.mkv> <encoded.mkv> <workdir>")
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "Usage: fullvalidate <source.mkv> <workdir>")
 		os.Exit(1)
 	}
-	sourcePath, encodedPath, workDir := os.Args[1], os.Args[2], os.Args[3]
+	sourcePath, workDir := os.Args[1], os.Args[2]
 
 	srcInfo, err := video.Probe(sourcePath)
 	fail(err, "probe source")
@@ -93,8 +95,8 @@ func main() {
 		workers = len(chunks)
 	}
 
-	fmt.Printf("Source: %s (%d frames)\nEncoded: %s\nChunks: %d, output %dx%d, crop %q\nTarget: %.2f +/- %.2f JOD, metric workers %d\n\n",
-		sourcePath, frames, encodedPath, len(chunks), width, height, manifest.CropFilter, tq.Target, tq.Tolerance, workers)
+	fmt.Printf("Source: %s (%d frames)\nWorkdir: %s\nChunks: %d, output %dx%d, crop %q\nTarget: %.2f +/- %.2f JOD, metric workers %d\n\n",
+		sourcePath, frames, workDir, len(chunks), width, height, manifest.CropFilter, tq.Target, tq.Tolerance, workers)
 
 	start := time.Now()
 	chunkCh := make(chan chunk.Chunk)
@@ -111,10 +113,14 @@ func main() {
 			}
 			defer func() { _ = proc.Close() }()
 			for ch := range chunkCh {
+				// Score the chunk's standalone encoded IVF from frame 0. This
+				// is the exact bitstream that is concatenated into the final
+				// muxed output, but reading it without a seek avoids the
+				// frame mis-alignment a seek into the muxed AV1 produces.
 				res, err := quality.ComputeChunkCVVDP(context.Background(), quality.CVVDPOptions{
 					SourcePath:      sourcePath,
-					ProbePath:       encodedPath,
-					ProbeStartFrame: ch.Start,
+					ProbePath:       chunk.IVFPath(workDir, ch.Idx),
+					ProbeStartFrame: 0,
 					Info:            srcInfo,
 					Chunk:           ch,
 					CropRect:        cropRect,
