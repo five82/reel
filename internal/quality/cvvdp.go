@@ -63,38 +63,80 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		return CVVDPResult{}, err
 	}
 
+	// Decode runs in a producer goroutine so CPU frame decode overlaps the GPU
+	// metric compute; two buffer pairs rotate between the producer and the
+	// consumer. All GPU calls stay on this goroutine.
+	ctx, cancelDecode := context.WithCancel(ctx)
+	defer cancelDecode()
+
+	type framePair struct {
+		srcBuf, distBuf       []byte
+		srcPlanes, distPlanes FramePlanes
+	}
 	frameSize := yuv420p10Size(opts.Width, opts.Height)
-	srcBuf := make([]byte, frameSize)
-	distBuf := make([]byte, frameSize)
-	srcPlanes, err := PlanesFromYUV420P10(srcBuf, opts.Width, opts.Height)
-	if err != nil {
-		return CVVDPResult{}, err
+	freeCh := make(chan *framePair, 2)
+	for i := 0; i < 2; i++ {
+		pair := &framePair{
+			srcBuf:  make([]byte, frameSize),
+			distBuf: make([]byte, frameSize),
+		}
+		if pair.srcPlanes, err = PlanesFromYUV420P10(pair.srcBuf, opts.Width, opts.Height); err != nil {
+			return CVVDPResult{}, err
+		}
+		if pair.distPlanes, err = PlanesFromYUV420P10(pair.distBuf, opts.Width, opts.Height); err != nil {
+			return CVVDPResult{}, err
+		}
+		freeCh <- pair
 	}
-	distPlanes, err := PlanesFromYUV420P10(distBuf, opts.Width, opts.Height)
-	if err != nil {
-		return CVVDPResult{}, err
+
+	type decodedFrame struct {
+		pair *framePair
+		err  error
 	}
+	decodedCh := make(chan decodedFrame, 2)
+	// On early return, stop the producer and wait for it to exit before the
+	// deferred decoder Closes run; the producer still holds src/dist.
+	defer func() {
+		cancelDecode()
+		for range decodedCh { //nolint:revive // drain until the producer closes the channel
+		}
+	}()
+	go func() {
+		defer close(decodedCh)
+		for i := 0; i < opts.Chunk.Frames(); i++ {
+			var pair *framePair
+			select {
+			case pair = <-freeCh:
+			case <-ctx.Done():
+				decodedCh <- decodedFrame{err: ctx.Err()}
+				return
+			}
+			if err := src.ReadFrame(opts.Chunk.Start+i, pair.srcBuf, opts.Info, opts.CropRect); err != nil {
+				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read source frame %d for CVVDP: %w", opts.Chunk.Start+i, err)}
+				return
+			}
+			probeFrame := opts.ProbeStartFrame + i
+			if err := dist.ReadFrame(probeFrame, pair.distBuf, probeInfo, nil); err != nil {
+				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read probe frame %d for CVVDP: %w", probeFrame, err)}
+				return
+			}
+			decodedCh <- decodedFrame{pair: pair}
+		}
+	}()
 
 	start := time.Now()
 	var score float32
-	for i := 0; i < opts.Chunk.Frames(); i++ {
-		select {
-		case <-ctx.Done():
-			return CVVDPResult{}, ctx.Err()
-		default:
+	computed := 0
+	for decoded := range decodedCh {
+		if decoded.err != nil {
+			return CVVDPResult{}, decoded.err
 		}
-
-		if err := src.ReadFrame(opts.Chunk.Start+i, srcBuf, opts.Info, opts.CropRect); err != nil {
-			return CVVDPResult{}, fmt.Errorf("failed to read source frame %d for CVVDP: %w", opts.Chunk.Start+i, err)
-		}
-		probeFrame := opts.ProbeStartFrame + i
-		if err := dist.ReadFrame(probeFrame, distBuf, probeInfo, nil); err != nil {
-			return CVVDPResult{}, fmt.Errorf("failed to read probe frame %d for CVVDP: %w", probeFrame, err)
-		}
-		score, err = opts.Processor.ComputeCVVDP(srcPlanes, distPlanes)
+		score, err = opts.Processor.ComputeCVVDP(decoded.pair.srcPlanes, decoded.pair.distPlanes)
 		if err != nil {
-			return CVVDPResult{}, fmt.Errorf("CVVDP failed on frame %d: %w", i, err)
+			return CVVDPResult{}, fmt.Errorf("CVVDP failed on frame %d: %w", computed, err)
 		}
+		computed++
+		freeCh <- decoded.pair
 	}
 
 	return CVVDPResult{

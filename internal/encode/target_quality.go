@@ -34,6 +34,11 @@ const (
 
 	// targetQualityExtraWindowSpread enables denser sampling on later probes for high-variance chunks.
 	targetQualityExtraWindowSpread = 0.30
+
+	// targetQualityPriorPrimeChunks is how many completed chunks must seed the
+	// CRF prior before dispatch opens beyond the encode-slot count. Starting
+	// too many chunks cold measurably increases probes and error.
+	targetQualityPriorPrimeChunks = 4
 )
 
 type TargetQualityConfig struct {
@@ -176,8 +181,15 @@ func EncodeTargetQuality(
 		return p
 	}
 
+	var flightMu sync.Mutex
+	flightCond := sync.NewCond(&flightMu)
+	inFlight := 0
+
 	var encodeErr atomic.Pointer[error]
-	setError := func(err error) { encodeErr.CompareAndSwap(nil, &err) }
+	setError := func(err error) {
+		encodeErr.CompareAndSwap(nil, &err)
+		flightCond.Broadcast()
+	}
 	getError := func() error {
 		if p := encodeErr.Load(); p != nil {
 			return *p
@@ -219,12 +231,33 @@ func EncodeTargetQuality(
 				chunkSearchCtx := searchCtx
 				chunkSearchCtx.InitialCRF = initialCRF
 				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, prior, DefaultTargetQualitySampleFrames, DefaultTargetQualityFullProbeFrames, initialCRFSource, tq.Verbose)
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, DefaultTargetQualitySampleFrames, DefaultTargetQualityFullProbeFrames, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
 		}()
 	}
+
+	// Scoring releases encode slots, so slots alone no longer bound how many
+	// chunks are in flight. Hold dispatch near the encode-slot count until the
+	// prior is primed, then allow one extra chunk per metric worker.
+	flightCap := func() int {
+		if prior.Count() < targetQualityPriorPrimeChunks {
+			return initialWorkers
+		}
+		_, target, _ := limiter.stats()
+		return target + tq.MetricWorkers
+	}
+	chunkDone := func() {
+		flightMu.Lock()
+		inFlight--
+		flightCond.Broadcast()
+		flightMu.Unlock()
+	}
+	go func() {
+		<-ctx.Done()
+		flightCond.Broadcast()
+	}()
 
 	var logsMu sync.Mutex
 	logs := make([]chunkTargetLog, 0, len(remainingChunks))
@@ -233,6 +266,7 @@ func EncodeTargetQuality(
 	go func() {
 		defer collectorWg.Done()
 		for result := range resultChan {
+			chunkDone()
 			if result.Error != nil {
 				setError(result.Error)
 				continue
@@ -265,6 +299,15 @@ func EncodeTargetQuality(
 		defer close(chunkChan)
 		for _, ch := range remainingChunks {
 			if getError() != nil {
+				return
+			}
+			flightMu.Lock()
+			for inFlight >= flightCap() && ctx.Err() == nil && getError() == nil {
+				flightCond.Wait()
+			}
+			inFlight++
+			flightMu.Unlock()
+			if ctx.Err() != nil || getError() != nil {
 				return
 			}
 			if _, err := limiter.acquire(ctx); err != nil {
@@ -315,6 +358,7 @@ func encodeTargetQualityChunk(
 	ch chunk.Chunk,
 	searchCtx quality.SearchContext,
 	metricPool chan *quality.VshipProcessor,
+	limiter *adaptiveLimiter,
 	prior *targetQualityPrior,
 	sampleFrames int,
 	fullProbeFrames int,
@@ -344,7 +388,7 @@ func encodeTargetQualityChunk(
 			break
 		}
 		fullFirst := targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
-		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, extraWindows, metricPool)
+		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, extraWindows, metricPool, limiter)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
@@ -452,6 +496,41 @@ func targetQualityFullFirstProbe(initialCRFSource string, round int, chunkFrames
 	return initialCRFSource == "median"
 }
 
+// windowScore carries one asynchronously scored sample window.
+type windowScore struct {
+	idx    int
+	offset int
+	result quality.CVVDPResult
+	err    error
+}
+
+// gatherWindowScores releases the chunk's encode slot while waiting for
+// outstanding metric work, then re-acquires it so callers keep the invariant
+// that an encode slot is held on entry and exit. The released slot lets other
+// chunks encode while this chunk waits on the GPU.
+func gatherWindowScores(ctx context.Context, limiter *adaptiveLimiter, scoreCh chan windowScore, launched int) ([]windowScore, error) {
+	limiter.release()
+	scores := make([]windowScore, 0, launched)
+	var firstErr error
+	for i := 0; i < launched; i++ {
+		ws := <-scoreCh
+		if ws.err != nil && firstErr == nil {
+			firstErr = ws.err
+		}
+		scores = append(scores, ws)
+	}
+	if _, err := limiter.acquire(ctx); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i].idx < scores[j].idx })
+	return scores, nil
+}
+
 func encodeSampledProbe(
 	ctx context.Context,
 	inputPath string,
@@ -467,20 +546,25 @@ func encodeSampledProbe(
 	fullFirst bool,
 	extraWindows bool,
 	metricPool chan *quality.VshipProcessor,
+	limiter *adaptiveLimiter,
 ) (quality.Probe, string, error) {
 	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames, extraWindows)
 	if len(windows) == 0 {
 		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
 	}
 	if fullFirst && len(windows) > 1 {
-		return encodeFullFirstSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool)
+		return encodeFullFirstSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool, limiter)
 	}
 
 	var totalSize uint64
-	var encodeSeconds, metricSeconds float64
-	var windowsScored []quality.ProbeWindow
+	var encodeSeconds float64
 	var fullProbePath string
+	var encodeErr error
 
+	// Encode windows sequentially under the held encode slot; score each
+	// window asynchronously so window N+1 encodes while window N scores.
+	scoreCh := make(chan windowScore, len(windows))
+	launched := 0
 	for sampleIdx, sample := range windows {
 		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
 		isFullChunk := len(windows) == 1 && sample.Offset == 0 && sample.Frames == ch.Frames()
@@ -489,27 +573,42 @@ func encodeSampledProbe(
 		encodeStart := time.Now()
 		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, sampleChunk, probePath, crf)
 		if probeResult.Error != nil {
-			return quality.Probe{}, "", probeResult.Error
+			encodeErr = probeResult.Error
+			break
 		}
 		encodeSeconds += time.Since(encodeStart).Seconds()
 		totalSize += probeResult.Size
-
-		metricResult, err := scoreProbeWindow(ctx, metricPool, inputPath, probePath, inf, sampleChunk, cropRect, width, height, 0)
-		if err != nil {
-			return quality.Probe{}, "", err
-		}
-		metricSeconds += metricResult.MetricSeconds
-		windowsScored = append(windowsScored, quality.ProbeWindow{
-			Offset: sample.Offset,
-			Frames: metricResult.Frames,
-			Score:  metricResult.Score,
-		})
-
 		if isFullChunk {
 			fullProbePath = probePath
-		} else {
-			_ = os.Remove(probePath)
 		}
+
+		launched++
+		go func(idx int, sampleChunk chunk.Chunk, probePath string, cleanup bool) {
+			result, err := scoreProbeWindow(ctx, metricPool, inputPath, probePath, inf, sampleChunk, cropRect, width, height, 0)
+			if cleanup {
+				_ = os.Remove(probePath)
+			}
+			scoreCh <- windowScore{idx: idx, offset: sampleChunk.Start - ch.Start, result: result, err: err}
+		}(sampleIdx, sampleChunk, probePath, !isFullChunk)
+	}
+
+	scores, err := gatherWindowScores(ctx, limiter, scoreCh, launched)
+	if encodeErr != nil {
+		return quality.Probe{}, "", encodeErr
+	}
+	if err != nil {
+		return quality.Probe{}, "", err
+	}
+
+	var metricSeconds float64
+	windowsScored := make([]quality.ProbeWindow, 0, len(scores))
+	for _, ws := range scores {
+		metricSeconds += ws.result.MetricSeconds
+		windowsScored = append(windowsScored, quality.ProbeWindow{
+			Offset: ws.offset,
+			Frames: ws.result.Frames,
+			Score:  ws.result.Score,
+		})
 	}
 	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
 	if scoredFrames == 0 {
@@ -541,6 +640,7 @@ func encodeFullFirstSampledProbe(
 	crf float32,
 	windows []probeSampleWindow,
 	metricPool chan *quality.VshipProcessor,
+	limiter *adaptiveLimiter,
 ) (quality.Probe, string, error) {
 	fullProbePath := sampledProbePath(workDir, ch.Idx, crf, 0, probeSampleWindow{Frames: ch.Frames()}, true)
 
@@ -551,19 +651,29 @@ func encodeFullFirstSampledProbe(
 	}
 	encodeSeconds := time.Since(encodeStart).Seconds()
 
-	var metricSeconds float64
-	var windowsScored []quality.ProbeWindow
-	for _, sample := range windows {
+	// Score all windows of the already-encoded full probe concurrently.
+	scoreCh := make(chan windowScore, len(windows))
+	for sampleIdx, sample := range windows {
 		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
-		metricResult, err := scoreProbeWindow(ctx, metricPool, inputPath, fullProbePath, inf, sampleChunk, cropRect, width, height, sample.Offset)
-		if err != nil {
-			return quality.Probe{}, "", err
-		}
-		metricSeconds += metricResult.MetricSeconds
+		go func(idx int, sampleChunk chunk.Chunk, offset int) {
+			result, err := scoreProbeWindow(ctx, metricPool, inputPath, fullProbePath, inf, sampleChunk, cropRect, width, height, offset)
+			scoreCh <- windowScore{idx: idx, offset: offset, result: result, err: err}
+		}(sampleIdx, sampleChunk, sample.Offset)
+	}
+
+	scores, err := gatherWindowScores(ctx, limiter, scoreCh, len(windows))
+	if err != nil {
+		return quality.Probe{}, "", err
+	}
+
+	var metricSeconds float64
+	windowsScored := make([]quality.ProbeWindow, 0, len(scores))
+	for _, ws := range scores {
+		metricSeconds += ws.result.MetricSeconds
 		windowsScored = append(windowsScored, quality.ProbeWindow{
-			Offset: sample.Offset,
-			Frames: metricResult.Frames,
-			Score:  metricResult.Score,
+			Offset: ws.offset,
+			Frames: ws.result.Frames,
+			Score:  ws.result.Score,
 		})
 	}
 	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
@@ -778,6 +888,12 @@ func (p *targetQualityPrior) AddResult(chunkIdx int, crf float32, probes []quali
 	defer p.mu.Unlock()
 	p.slopes = append(p.slopes, probeSlopes(probes)...)
 	p.crfs[chunkIdx] = p.normalizedCRF(crf, probes)
+}
+
+func (p *targetQualityPrior) Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.crfs)
 }
 
 func (p *targetQualityPrior) JODPerCRF() float32 {

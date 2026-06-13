@@ -84,7 +84,7 @@ func initialAdaptiveWorkers(maxWorkers int, width, height uint32) int {
 	}
 	switch {
 	case width >= 3840 || height >= 2160:
-		return min(maxWorkers, 2)
+		return min(maxWorkers, 3)
 	case width >= 1920 || height >= 1080:
 		return min(maxWorkers, max(3, maxWorkers/4))
 	default:

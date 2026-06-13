@@ -89,3 +89,7 @@ When comparing against xav, measure:
 - Total encode time (Reel should be significantly faster)
 - Mean absolute JOD error (Reel should be close)
 - Tail behavior (p90/max window spread — this is where sampling shows its cost)
+
+### Measuring Accuracy
+
+Sampled scores in `target-quality.json` are what the search *believed*, not ground truth. For any change that trades accuracy (window count/size, probe thresholds, chunk caps), run `scripts/fullvalidate <src> <out> <workdir>` on a kept workdir: it scores the final output with full-chunk CVVDP and reports true per-chunk JOD plus how far the sampled scores deviated.

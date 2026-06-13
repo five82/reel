@@ -22,11 +22,11 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 			want:       1,
 		},
 		{
-			name:       "4k starts with two workers",
+			name:       "4k starts with three workers",
 			maxWorkers: 32,
 			width:      3840,
 			height:     2160,
-			want:       2,
+			want:       3,
 		},
 		{
 			name:       "hd uses quarter of large machines",
