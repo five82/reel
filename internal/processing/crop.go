@@ -14,7 +14,8 @@ import (
 
 const (
 	cropSampleCount       = 141
-	maxCropWorkers        = 4
+	maxCropWorkers        = 8
+	cropDecoderThreads    = 2
 	cropSampleStart       = 0.15
 	cropSampleEnd         = 0.85
 	cropSampleDecodeLimit = 24
@@ -84,7 +85,7 @@ func detectCropSamples(inputPath string, inf *video.Info, frames []int, workers 
 		go func(frames []int) {
 			defer wg.Done()
 
-			src, err := video.Open(inputPath, 1)
+			src, err := video.Open(inputPath, cropDecoderThreads)
 			if err != nil {
 				return
 			}

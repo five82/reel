@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/video"
@@ -161,44 +162,120 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	}, nil
 }
 
+// scoreVideo computes per-frame shot-change scores. The decode is split into
+// contiguous segments scored by parallel workers; each worker decodes one
+// extra leading frame so segment-boundary scores match the sequential pass.
 func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) ([]float64, error) {
-	src, err := video.Open(inputPath, decoderThreads())
+	workers := shotDetectWorkers(inf.Frames)
+	threads := max(2, decoderThreads()/workers)
+	if workers == 1 {
+		threads = decoderThreads()
+	}
+
+	scores := make([]float64, inf.Frames)
+	var progressMu sync.Mutex
+	decodedTotal := 0
+	report := func(n int) {
+		if opts.Progress == nil {
+			return
+		}
+		progressMu.Lock()
+		decodedTotal += n
+		current := decodedTotal
+		progressMu.Unlock()
+		opts.Progress(current, inf.Frames)
+	}
+
+	type segmentOutcome struct {
+		decodedEnd int
+		err        error
+	}
+	outcomes := make([]segmentOutcome, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		segStart := w * inf.Frames / workers
+		segEnd := (w + 1) * inf.Frames / workers
+		lastSegment := w == workers-1
+		wg.Add(1)
+		go func(w, segStart, segEnd int, lastSegment bool) {
+			defer wg.Done()
+			decodedEnd, err := scoreVideoSegment(ctx, inputPath, inf, opts, threads, segStart, segEnd, lastSegment, scores, report)
+			outcomes[w] = segmentOutcome{decodedEnd: decodedEnd, err: err}
+		}(w, segStart, segEnd, lastSegment)
+	}
+	wg.Wait()
+
+	frameCount := inf.Frames
+	for w, outcome := range outcomes {
+		if outcome.err != nil {
+			return nil, outcome.err
+		}
+		if w == workers-1 {
+			frameCount = outcome.decodedEnd
+		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(frameCount, frameCount)
+	}
+	return scores[:frameCount], nil
+}
+
+// scoreVideoSegment scores frames [segStart, segEnd). It decodes from
+// segStart-1 so the boundary frame's score uses the true previous signature.
+// Only the last segment may end early on EOF (short streams); earlier
+// segments treat EOF as an error.
+func scoreVideoSegment(
+	ctx context.Context,
+	inputPath string,
+	inf *video.Info,
+	opts Options,
+	threads int,
+	segStart, segEnd int,
+	lastSegment bool,
+	scores []float64,
+	report func(int),
+) (int, error) {
+	src, err := video.Open(inputPath, threads)
 	if err != nil {
-		return nil, fmt.Errorf("shot cut detection: open video: %w", err)
+		return 0, fmt.Errorf("shot cut detection: open video: %w", err)
 	}
 	defer src.Close()
 
-	scores := make([]float64, inf.Frames)
+	firstFrame := max(0, segStart-1)
 	var previous *frameSignature
-	for frameIdx := 0; frameIdx < inf.Frames; frameIdx++ {
+	for frameIdx := firstFrame; frameIdx < segEnd; frameIdx++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return 0, err
 		}
 
 		frame, err := src.ReadLumaFrame(frameIdx, inf)
 		if err != nil {
-			if errors.Is(err, io.EOF) && acceptableTerminalEOF(frameIdx, inf.Frames) {
-				if opts.Progress != nil {
-					opts.Progress(frameIdx, frameIdx)
-				}
-				return scores[:frameIdx], nil
+			if errors.Is(err, io.EOF) && lastSegment && acceptableTerminalEOF(frameIdx, inf.Frames) {
+				return frameIdx, nil
 			}
-			return nil, fmt.Errorf("shot cut detection: read frame %d: %w", frameIdx, err)
+			return 0, fmt.Errorf("shot cut detection: read frame %d: %w", frameIdx, err)
 		}
 		sig, err := signatureFromFrame(frame, opts.CropRect)
 		if err != nil {
-			return nil, fmt.Errorf("shot cut detection: analyze frame %d: %w", frameIdx, err)
+			return 0, fmt.Errorf("shot cut detection: analyze frame %d: %w", frameIdx, err)
 		}
-		if previous != nil {
+		if previous != nil && frameIdx >= segStart {
 			scores[frameIdx] = signatureChange(previous, sig)
 		}
 		previous = sig
 
-		if opts.Progress != nil && (frameIdx == inf.Frames-1 || frameIdx%100 == 0) {
-			opts.Progress(frameIdx+1, inf.Frames)
+		if frameIdx >= segStart && (frameIdx+1)%100 == 0 {
+			report(100)
 		}
 	}
-	return scores, nil
+	return segEnd, nil
+}
+
+func shotDetectWorkers(frames int) int {
+	const minFramesPerWorker = 1500
+	workers := min(4, max(util.PhysicalCores(), 1)/4)
+	workers = min(workers, frames/minFramesPerWorker)
+	return max(workers, 1)
 }
 
 func decoderThreads() int {

@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"time"
@@ -84,6 +85,7 @@ func main() {
 func printChunkStats(result chunkplan.Result, fps float64) {
 	fmt.Printf("=== Chunking Results ===\n")
 	fmt.Printf("Total frames:         %d\n", result.Frames)
+	fmt.Printf("Boundary hash:        %s\n", boundaryHash(result.Boundaries))
 	fmt.Printf("Natural shot cuts:    %d\n", result.NaturalCuts)
 	fmt.Printf("Merged short shots:   %d\n", result.MergedShortShots)
 	fmt.Printf("Merged weak cuts:     %d\n", result.MergedWeakCuts)
@@ -260,4 +262,12 @@ func percentileFloat64(v []float64, p float64) float64 {
 		idx = len(v) - 1
 	}
 	return v[idx]
+}
+
+func boundaryHash(boundaries []int) string {
+	h := fnv.New64a()
+	for _, b := range boundaries {
+		_, _ = fmt.Fprintf(h, "%d,", b)
+	}
+	return fmt.Sprintf("%016x", h.Sum64())
 }

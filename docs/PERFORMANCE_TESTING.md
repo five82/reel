@@ -412,9 +412,175 @@ Artifacts: `~/testing/tq-simplify-ab/{baseline1,baseline2,simplified1,simplified
 
 Conclusion: keep. Net ~125 lines of search logic removed with equivalent measured behavior on SDR and no attributable regression on a difficult 4K HDR clip.
 
+## 2026-06-12 pipeline bottleneck attribution
+
+Goal: understand where wall time actually goes across the whole pipeline before tuning anything else. Method: parsed per-probe `encode_seconds`/`metric_seconds`/`final_encode_seconds` and per-chunk `started_at`/`completed_at` from the 2026-06-12 tq-simplify artifacts, plus stage durations from verbose logs. No new encodes were needed for the attribution itself.
+
+### Where the time went (pre-restructure builds)
+
+`soms-5m-1080p-sdr` (TQ stage wall ~232s, total ~4m13s):
+
+- Metric scoring: 67% of summed chunk busy time. Probe encodes: 30%. Final encodes: 3-4%.
+- Average 6.8-7.0 chunks in flight (initial workers 8); average concurrent encodes only ~2.3 because each chunk worker held its encode slot idle while waiting on GPU scoring.
+- The TQ stage was already near the GPU floor: ~8.8k scored frames at the benchmarked ~43 fps aggregate CVVDP throughput = ~204s lower bound vs 220-232s observed. At 1080p the GPU metric is the bottleneck, not SVT-AV1.
+- Encode amplification 1.41-1.48x (probe frames + final frames vs source frames).
+
+`sully-5m-4k-hdr` (TQ stage wall 916-1074s, total 17-20m):
+
+- Probe encode 48% / metric 45% / final 7% of busy time, but only 2.55-2.74 chunks in flight on a 32-core machine. The adaptive limiter started at 2, ramped to 3, judged the gain "modest" against the lumpy completed-chunks speed signal, and blocked further ramping for the entire run. Both CPU and GPU sat mostly idle.
+- Encode amplification 1.82-2.00x: with the 12s TQ chunk cap, most 4K chunks fall at or under the 256-frame full-probe threshold, so nearly every probe is a full-chunk encode (partly paid back by full-probe reuse: 25/33 finals were reused probes).
+
+Stage timings outside the TQ stage (sequential, before/after encoding):
+
+| Stage | soms-5m 1080p | sully-5m 4K | Scaling |
+|---|---:|---:|---|
+| Video probe | 0.2s | 0.4s | flat |
+| Crop detection | 13.1s | 43.5s | linear in duration (141 seeks, 4 workers, 1 decode thread) |
+| Shot cut detection | 7.8s | 69.5s | linear in duration (single sequential decode pass) |
+| Merge + mux + validation | <0.5s | <0.2s | flat |
+
+For a 2-hour 4K movie the crop + shot-detect head was on the order of 20+ minutes of dead time before the first encode started.
+
+### Bottleneck summary
+
+1. 1080p TQ: GPU CVVDP throughput. Encoding is a minority cost.
+2. 4K TQ: chunks-in-flight starvation (slot held during scoring + slow conservative ramp), with GPU becoming the binding constraint once concurrency is fixed.
+3. Pre-encode head: sequential crop + shot detection, ~8% (1080p) to ~12% (4K) of total wall on 5-minute clips, worse relatively on long runs since it cannot overlap encoding.
+4. Inside each metric task, source/probe decode (1-thread) was serialized frame-by-frame with the GPU compute call.
+
+## 2026-06-12 concurrency restructure (slot release, async scoring, decode overlap, parallel analysis)
+
+Changes, all accuracy-neutral by construction except the dispatch gate (which exists to *protect* accuracy):
+
+1. **Encode slots released during metric scoring.** TQ chunk workers now release their adaptive-limiter slot while waiting on CVVDP and re-acquire it before the next encode. Sample windows of one probe are scored asynchronously so window N+1 encodes while window N scores; full-first probes score all windows concurrently. (`internal/encode/target_quality.go`)
+2. **Dispatch flight gate.** With slots released during scoring, dispatch alone would flood chunk starts before any priors exist. First attempt without a gate (soms-5m): probes 53 -> 63, mean abs error 0.0650 -> 0.0872, sources went from 29 neighbor/8 default to 16 default/14 median/7 neighbor, and wall got *worse* (232 -> 262s) because cold-started chunks burned probes (2.25 probes/chunk vs 1.34 for neighbor-seeded; all four >=4-probe blowups were cold starts). Fix: in-flight chunks are capped at the encode-slot count until 4 chunks have seeded the prior, then at `target + metricWorkers`.
+3. **CVVDP decode/compute overlap.** `ComputeChunkCVVDP` now decodes source+probe frames in a producer goroutine with two rotating buffer pairs while the GPU computes the previous frame. (`internal/quality/cvvdp.go`)
+4. **4K initial workers 2 -> 3.** (`internal/encode/adaptive.go`)
+5. **Parallel shot detection.** The luma pass is split into 4 contiguous segments decoded by parallel workers (each decodes one extra leading frame so boundary scores are exact). Verified bit-identical boundaries via a new "Boundary hash" line in `scripts/chunkbench` on `bts-5m-1080p-sdr` and `io-5m-4k-hdr`. 4K: 56.9s -> 34.5s. 8 workers showed no further gain. (`internal/chunkplan/chunkplan.go`)
+6. **Crop detection workers 4 -> 8, decode threads 1 -> 2.** soms-5m: 13.1s -> 4.1s. (`internal/processing/crop.go`)
+7. **New ground-truth tool `scripts/fullvalidate`.** Scores a finished encode against its source with full-chunk CVVDP per chunk and compares against the sampled scores the search believed. This is the accuracy ruler for all future knee-point tuning.
+
+### Results
+
+`sully-5m-4k-hdr`, restructured build vs same-day baseline (`sully-simplified1`, same search code):
+
+| Metric | Baseline | Restructured |
+|---|---:|---:|
+| Total time | 19m48s | 9m44s |
+| Video encoding stage | 17m54s | 8m48s |
+| TQ stage wall (chunk timestamps) | 1074s | 528s |
+| Avg chunks in flight | 2.55 | 5.82 |
+| Probes | 71 | 59 |
+| Stops | converged:28, max_probes:3, monotonicity:2 | converged:32, monotonicity:1 |
+| Sampled mean abs error | 0.0949 | 0.0530 |
+| Sampled JOD min | 9.1173 | 9.2913 |
+| Initial sources | neighbor:30, median:1, default:2 | neighbor:28, median:2, default:3 |
+| Crop detection | 43.5s | 17.3s |
+| Shot cut detection | 69.5s | 38.5s |
+
+Total wall time halved on 4K HDR. The flight gate kept the prior cascade intact (28 neighbor seeds vs 30), so the speedup came without the cold-start probe inflation seen in the ungated attempt. Probe-count and error improvements on this clip are partly luck on its known cliff chunks; the structural claim is only "no accuracy cost". This clip remains noisy; judge accuracy claims on more clips.
+
+Ground truth (`scripts/fullvalidate`, full-chunk CVVDP of the final 4K output):
+
+- Full-chunk JOD: min 9.2913, median 9.4487, mean 9.4473, max 9.7227.
+- vs target (9.39 +/- 0.14): mean abs error 0.0845, **0 chunks below range, 7 above** (overshoot, i.e. spending bits beyond need — a future bit-efficiency target, not a quality risk).
+- vs sampled scores: mean abs gap 0.0360 overall, but **0.0000 on the worst (lowest-JOD) chunks** — under the 12s cap those fall at/under the 256-frame full-probe threshold and are scored whole, so sampling has zero error on exactly the tail chunks that drive quality risk. The gap lives entirely in the higher-scoring, larger sampled chunks where it does not threaten the floor.
+
+Both clips: no chunk landed below the target band in ground truth. The concurrency restructure is accuracy-safe by measurement, not just by construction.
+
+`soms-5m-1080p-sdr`, restructured build vs same-day baseline (`simplified1`):
+
+| Metric | Baseline | Restructured |
+|---|---:|---:|
+| Total time | 4m13s | 3m43s |
+| TQ stage wall (chunk timestamps) | 232s | 212s |
+| Avg chunks in flight | 6.99 | 10.68 |
+| Probes | 53 | 55 |
+| Stops | converged:37 | converged:37 |
+| Sampled mean abs error | 0.0650 | 0.0584 |
+| Initial sources | neighbor:29, default:8 | neighbor:29, default:8 |
+| Crop detection | 13.1s | 4.2s |
+| Shot cut detection | 7.8s | 7.0s |
+
+The 1080p speedup is modest (232 -> 212s on the TQ stage) because this clip was already at the GPU CVVDP floor: metric is 65% of busy time and aggregate scoring throughput is the ceiling. Chunks in flight rose 7.0 -> 10.7 but the GPU can only score so fast. The pre-encode head shrank from ~21s to ~11s. Identical prior cascade (29 neighbor / 8 default) confirms the flight gate preserves scheduling behavior on SDR too.
+
+### Ground-truth accuracy check (`scripts/fullvalidate`, full-chunk CVVDP of the final soms output)
+
+This is the load-bearing accuracy result for the whole restructure, because the speedups would be worthless if sampled scores diverged from reality:
+
+- Full-chunk JOD: min 9.2629, median 9.4162, mean 9.4160, max 9.5436.
+- vs target (9.39 +/- 0.14): mean abs error 0.0585, **0 chunks below range, 1 above** (chunk 0009-adjacent, 9.54).
+- vs the search's own sampled scores: **mean abs gap 0.0123** — the 3x48 sampled windows tracked true full-chunk quality to ~0.012 JOD on average on this clip. The worst single-chunk gap was 0.037 (chunk 0005, sampled 9.281 vs full 9.318 — still comfortably in range).
+
+The sampled-probe strategy is not just internally consistent; it matches ground truth. None of the concurrency changes moved final quality out of the target band.
+
+## 2026-06-12 4K adaptive ramp: bandwidth, not capacity (finding + fix)
+
+Goal: the previous "open question 6" claimed 4K was a free speed win held back by a lumpy ramp signal and 6-minute lockouts, citing that sully runs held 47+ GiB free while pinned at 3-4 workers. Investigated whether ramping 4K higher actually helps.
+
+### The premise was a misdiagnosis
+
+It does not. 4K SVT-AV1 encodes are **memory-bandwidth bound, not RAM-capacity bound.** The 47 GiB-free observation was a red herring: the machine was never short of RAM, it was short of memory bandwidth and cache, which does not show up as "available memory." Three `sully-5m-4k-hdr` runs (32 logical cores, 61 GiB RAM), TQ-stage wall from per-chunk timestamps:
+
+| Build | Worker target | ~Active encodes | Per-probe encode | TQ wall | Video encode | Peak mem / min avail |
+|---|---:|---:|---:|---:|---:|---|
+| Slot-release baseline (committed `b652b74`) | 3 -> 5 (slow climb) | ~3.1 | 27.1s | 528s | 8m47s | -- / -- |
+| Memory-informed start (9) + util ramp | 11 | ~9 | 36.8s | 572s | 9m32s | 33.4 GiB / 28.5 GiB |
+| **Bandwidth-capped start (5)** | **5 fixed** | **~4** | **28.6s** | **495s** | **8m15s** | 25.1 GiB / 36.8 GiB |
+
+Pushing concurrency from ~3 to ~9 active encodes raised per-probe encode time 27 -> 37s (+36%, far more than the +8% probe count) and made total wall time *worse* (528 -> 572s), with tens of GiB still free and zero memory-pressure events. The throughput-per-encode falls faster than concurrency rises past roughly one active 4K encode per 6 logical cores.
+
+Neither of the signals the open question suggested can find this knee: slot utilization stays ~1.0 (slots read "busy" while each encode crawls), and available memory never drops. Only end-to-end throughput sees it, and that is exactly the noisy signal the old ramp used. So the answer is not "ramp 4K higher with a better signal" -- it is "cap 4K near its bandwidth optimum and start there."
+
+### Fix (kept)
+
+1. **Bandwidth-aware 4K ceiling.** `resolutionRampCeiling` caps the 4K worker target at `maxWorkers/6` (one active encode per ~6 logical cores; 5 on the 32-core dev machine), bounded by RAM on small machines via `workerMemoryUHD`. HD/SD keep the full hardware ceiling -- they are GPU-metric bound and self-limit via utilization. (`internal/encode/adaptive.go`)
+2. **Start 4K at the ceiling.** `initialAdaptiveWorkers` starts 4K directly at that ceiling instead of climbing from 3, so a 5-minute clip does not waste its first minutes at low concurrency. This is the entire measured win: `cap5` (start 5) beat the committed build (climb 3->5) by 33s of TQ wall, with fewer probes.
+3. **Replaced the throughput ramp with a utilization ramp.** The old frames/s ramp (90s windows, multi-tier modest/blocked verdicts, 3-6 minute lockouts, ~120 lines of state) is gone. The limiter now samples encode-slot utilization each monitor tick and adds a worker only when slots stay saturated (>=85% over a 60s window) and memory is stable, up to the resolution ceiling. This is a maintainability/robustness win (removes the documented lockout pathology) and matters mainly for HD/CRF; 4K starts at its ceiling and does not ramp. Memory-pressure backoff is unchanged -- still the real safety net.
+4. **Prior-paced flight gate.** In-flight chunk concurrency now opens as completed chunks accumulate usable CRF priors (`primeConcurrency + 3*(done - primeChunks)`, capped ~2x target) instead of a flat `target + metricWorkers`, keeping encode slots fed across the probe/score duty cycle without flooding cold-started chunks. (`internal/encode/target_quality.go`)
+
+Note the ceiling divisor (6) is calibrated on the dev machine's dual-channel DDR5 + 32 cores. Memory bandwidth per core varies by platform; a future agent on different hardware should re-measure the 4K active-encode knee (run the three-point sweep above) before trusting `maxWorkers/6`. The RAM bound and pressure backoff keep it safe regardless; only the speed optimum is hardware-specific.
+
+### Results (kept build: `cap5`)
+
+| Clip | Metric | Committed `b652b74` | Bandwidth-capped |
+|---|---|---:|---:|
+| `sully-5m-4k-hdr` | Video encode stage | 8m47s | **8m15s** |
+| | TQ wall (chunk timestamps) | 528s | **495s** |
+| | Worker target | 3 -> 5 climb | 5 fixed |
+| | Probes | 59 | 58 |
+| `soms-5m-1080p-sdr` | TQ wall | 212s | 209s (neutral) |
+| | Initial sources | neighbor:29, default:8 | neighbor:28, default:8, median:1 |
+
+4K total wall improved ~6% by starting at the bandwidth optimum instead of climbing to it, with fewer probes and no memory pressure. HD is unchanged (the HD path is untouched: floor start 8, GPU-bound, util ramp rarely fires). Both within their clips' run-to-run noise on probes/error.
+
+Ground truth (corrected `scripts/fullvalidate`, full-chunk CVVDP of each chunk's standalone encoded IVF):
+
+- `sully-5m-4k-hdr`: mean 9.4137, **0 chunks below range**, 3 above (overshoot), sampled-vs-full gap 0.0470, worst single gap -0.085. No quality regression from the higher concurrency.
+- `soms-5m-1080p-sdr`: mean 9.4231, **0 below**, 2 above, gap 0.0146.
+
+### fullvalidate bug found and fixed during this work
+
+The first 4K ground-truth pass reported 8 chunks at ~8.81 JOD (vs sampled ~9.4, gaps up to -0.72) -- alarming until the clustering of 8 unrelated chunks (CRFs 42-52, different content) within a 0.03 JOD band flagged it as a measurement artifact, not real quality. Those 8 chunks were all `nwin=1` full-probe chunks whose probe bits were reused verbatim as the final output, so the search had already measured them by full-chunk CVVDP at 9.36-9.55 -- the same metric on the same bits. Scoring each chunk's standalone `encode/NNNN.ivf` from frame 0 reproduced the search scores exactly (9.4237 / 9.5042 / 9.3638 vs sampled 9.424 / 9.504 / 9.364).
+
+Root cause: the original fullvalidate seeked to `ch.Start` in the **muxed AV1 output**. Reel's frame seek is timestamp-based (`startTime + frame*tsMul/tsDiv`) and lands a few frames off for some chunks in a long muxed AV1, mis-aligning source vs output and producing a spurious ~8.8 "garbage" score. This is the only code path in the project that seeks into a muxed AV1 output; the encode always scores standalone probe IVFs from frame 0, and source-side seeks are exercised constantly and proven reliable. Fixed by scoring each chunk's `encode/NNNN.ivf` from frame 0 (the IVFs concatenate losslessly into the muxed output, so it is the same bits without the seek). `fullvalidate` now takes `<source> <workdir>` instead of `<source> <encoded> <workdir>`.
+
+Caveat for earlier entries: the soms and sully ground-truth numbers recorded under "2026-06-12 concurrency restructure" came from the pre-fix tool. They happened to land clean (0 below range) because those runs' muxed seeks mostly aligned, and re-scoring soms with the fixed tool agrees closely (gap 0.0146 vs 0.0123). Treat any single pre-fix per-chunk full score with suspicion, but the aggregate "0 below range" conclusions held.
+
 ## Open questions / next tests
+
+Search-layer items (carried forward):
 
 1. Keep bracket-aware search, conservative high-side jump gating, and block size 32 unless another clip shows a clear regression.
 2. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
 3. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
 4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
+5. Flat-low-response early stop (mirror of the flat-high gate): metric-insensitive chunks still march the low side at full probe cost (soms chunk 0013-style, 6 probes). Candidate once more clips confirm.
+
+Performance items, in suggested order (use `scripts/fullvalidate` as the accuracy ruler for anything below the line):
+
+6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
+7. Retest 4K metric workers 4 vs 6 now that CVVDP tasks overlap decode with GPU compute and chunk concurrency is higher; 6 was the metric-only saturation point and VRAM-marginal at 7-8.
+8. Verify SVT-AV1 `level_of_parallelism` is bitstream-identical across values; if so, scale lp with the current worker target instead of the hardware max (lp=2 on a 32-thread machine starves early 4K probes when only 2-4 encoders are active).
+9. Accuracy-trading knobs, only with fullvalidate evidence: probe windows 3x48 -> 2x48 or 3x32 (cuts the 1080p GPU floor proportionally), the 256-frame full-probe threshold at 4K (nearly every 4K chunk full-probes under the 12s cap; sampling them would cut GPU work ~40% but loses full-first reuse and whole-chunk scoring), and the 12s TQ chunk cap itself.
+10. Overlapping the pre-encode head (crop + shot detection) with the start of encoding is the remaining structural win for long inputs; it needs streaming chunk planning and is not worth it below feature-length inputs.

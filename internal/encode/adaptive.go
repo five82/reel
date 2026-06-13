@@ -11,18 +11,33 @@ import (
 )
 
 const (
-	memoryMonitorInterval  = 5 * time.Second
-	rampEvaluationTicks    = 18 // 90 seconds
-	pressureCooldownTicks  = 12 // 60 seconds
-	rampRetryCooldownTicks = 36 // 3 minutes
-	plateauCooldownTicks   = 72 // 6 minutes
+	memoryMonitorInterval = 5 * time.Second
+	rampWindowTicks       = 12 // 60 seconds of utilization samples per ramp decision
+	pressureCooldownTicks = 12 // 60 seconds
 
 	memoryCriticalAvailableFraction = 0.08
 	memoryPressureAvailableFraction = 0.20
 	memoryStableAvailableFraction   = 0.35
 
-	minSpeedGainFraction = 0.06
-	speedSmoothing       = 0.50
+	// rampUtilizationThreshold is the mean encode-slot utilization above which
+	// the slot cap is treated as the bottleneck and another worker is added.
+	rampUtilizationThreshold = 0.85
+
+	// initialMemoryFraction is the share of available memory used to bound the
+	// starting worker count for memory-heavy (4K) encodes on low-RAM machines.
+	initialMemoryFraction = 0.5
+	// workerMemoryUHD is the rough resident memory of one concurrent 4K
+	// SVT-AV1 encode (encoder internals plus frame buffers). Used only to keep
+	// the 4K start within RAM on small machines; the backoff guards the rest.
+	workerMemoryUHD = 3 << 30
+
+	// uhdCoreDivisor sets the 4K concurrency ceiling at ~1 active encode per
+	// this many logical cores. Measured finding (2026-06-12): 4K SVT-AV1
+	// encodes are memory-bandwidth bound, not RAM-capacity bound. Past roughly
+	// one encode per 6 logical cores, per-encode throughput drops faster than
+	// concurrency rises and total wall time regresses, even with tens of GiB of
+	// RAM free. So 4K is capped here rather than ramped toward CPU/RAM limits.
+	uhdCoreDivisor = 6
 
 	swapStableGrowthBytes          = 16 << 20
 	swapRampTotalGrowthFloorBytes  = 512 << 20
@@ -37,25 +52,24 @@ var ErrMemoryPressure = errors.New("memory pressure critical; canceled before sw
 type statusCallback func(string)
 
 type adaptiveLimiter struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	min    int
-	max    int
-	target int
-	active int
+	mu          sync.Mutex
+	cond        *sync.Cond
+	min         int
+	max         int
+	rampCeiling int
+	target      int
+	active      int
 
-	stableTicks int
-	status      statusCallback
+	status statusCallback
 
-	observedFrames      int
-	totalFrames         int
-	recentSpeed         float64
-	evaluatingRamp      bool
-	rampBaselineSpeed   float64
-	rampBlocked         bool
-	blockedTarget       int
-	cooldownTicks       int
-	plateauCooldownLeft int
+	observedFrames int
+	totalFrames    int
+
+	// Utilization samples accumulate across a ramp window; the up-ramp fires
+	// when slots stay saturated and memory is stable.
+	utilSum       float64
+	utilTicks     int
+	cooldownTicks int
 }
 
 // MaxAdaptiveWorkers returns the hardware-derived adaptive concurrency ceiling.
@@ -63,13 +77,18 @@ func MaxAdaptiveWorkers() int {
 	return max(util.LogicalCores(), 1)
 }
 
-func newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames int, status statusCallback) *adaptiveLimiter {
+func newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames int, status statusCallback) *adaptiveLimiter {
 	maxWorkers = max(maxWorkers, 1)
 	initialWorkers = min(max(initialWorkers, 1), maxWorkers)
+	if rampCeiling <= 0 || rampCeiling > maxWorkers {
+		rampCeiling = maxWorkers
+	}
+	rampCeiling = max(rampCeiling, initialWorkers)
 
 	l := &adaptiveLimiter{
 		min:         1,
 		max:         maxWorkers,
+		rampCeiling: rampCeiling,
 		target:      initialWorkers,
 		totalFrames: max(totalFrames, 0),
 		status:      status,
@@ -78,18 +97,59 @@ func newAdaptiveLimiter(maxWorkers, initialWorkers, totalFrames int, status stat
 	return l
 }
 
-func initialAdaptiveWorkers(maxWorkers int, width, height uint32) int {
+// resolutionRampCeiling caps how high the adaptive ramp may raise the worker
+// target for a given resolution. 4K is bandwidth-bound (see uhdCoreDivisor);
+// lower resolutions are GPU-metric bound and self-limit via utilization, so
+// they may ramp to the full hardware ceiling.
+func resolutionRampCeiling(maxWorkers int, width, height uint32) int {
+	if width >= 3840 || height >= 2160 {
+		return min(maxWorkers, max(3, maxWorkers/uhdCoreDivisor))
+	}
+	return maxWorkers
+}
+
+// resolutionWorkerFloor is the proven-safe starting worker count by resolution.
+// It is also the prime-phase concurrency used while the CRF prior is built.
+func resolutionWorkerFloor(maxWorkers int, width, height uint32) int {
 	if maxWorkers <= 1 {
 		return 1
 	}
 	switch {
 	case width >= 3840 || height >= 2160:
-		return min(maxWorkers, 2)
+		return min(maxWorkers, 3)
 	case width >= 1920 || height >= 1080:
 		return min(maxWorkers, max(3, maxWorkers/4))
 	default:
 		return min(maxWorkers, 4)
 	}
+}
+
+// initialAdaptiveWorkers picks the starting worker count. HD/SD encodes are
+// GPU-metric bound, so they start at the resolution floor and let the
+// utilization ramp extend them as the GPU keeps up. 4K encodes are
+// memory-bandwidth bound at a low, roughly fixed concurrency, and the old
+// throughput ramp was too slow and noisy to climb to it within an encode, so
+// they start directly at the bandwidth-aware ceiling (bounded by RAM on small
+// machines). availableBytes of 0 (no memory reading) keeps the full ceiling.
+func initialAdaptiveWorkers(maxWorkers int, width, height uint32, availableBytes uint64) int {
+	if maxWorkers <= 1 {
+		return 1
+	}
+	floor := resolutionWorkerFloor(maxWorkers, width, height)
+	if width < 3840 && height < 2160 {
+		return floor
+	}
+	target := resolutionRampCeiling(maxWorkers, width, height)
+	if availableBytes > 0 {
+		memWorkers := int(uint64(float64(availableBytes)*initialMemoryFraction) / workerMemoryUHD)
+		if memWorkers < target {
+			target = memWorkers
+		}
+	}
+	if target < floor {
+		target = floor
+	}
+	return min(target, maxWorkers)
 }
 
 func levelOfParallelismForWorkers(workers int) uint32 {
@@ -146,35 +206,19 @@ func (l *adaptiveLimiter) observeProgress(frames int) {
 	l.mu.Unlock()
 }
 
-func (l *adaptiveLimiter) progressFrames() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.observedFrames
-}
-
 func (l *adaptiveLimiter) rampDisabledLate() bool {
 	return l.totalFrames > 0 && float64(l.observedFrames)/float64(l.totalFrames) >= 0.80
 }
 
-func (l *adaptiveLimiter) nextTargetBlocked() bool {
-	return l.blockedTarget > 0 && l.target+1 >= l.blockedTarget
-}
-
-func (l *adaptiveLimiter) updateRecentSpeed(framesDelta int, elapsedSeconds float64) float64 {
+// recordUtilization samples current slot utilization (active/target) for the
+// ramp decision. Sampled once per monitor tick.
+func (l *adaptiveLimiter) recordUtilization() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if framesDelta <= 0 || elapsedSeconds <= 0 {
-		return l.recentSpeed
+	if l.target > 0 {
+		l.utilSum += float64(l.active) / float64(l.target)
+		l.utilTicks++
 	}
-
-	intervalSpeed := float64(framesDelta) / elapsedSeconds
-	if l.recentSpeed == 0 {
-		l.recentSpeed = intervalSpeed
-	} else {
-		l.recentSpeed = l.recentSpeed*(1-speedSmoothing) + intervalSpeed*speedSmoothing
-	}
-	return l.recentSpeed
+	l.mu.Unlock()
 }
 
 func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc, setError func(error)) {
@@ -185,8 +229,6 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 
 	baselineSwapUsed := stats.SwapUsed()
 	lastSwapUsed := baselineSwapUsed
-	lastFrames := l.progressFrames()
-	lastSpeedAt := time.Now()
 	ticker := time.NewTicker(memoryMonitorInterval)
 	defer ticker.Stop()
 
@@ -198,11 +240,7 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 		case <-ticker.C:
 		}
 
-		now := time.Now()
-		currentFrames := l.progressFrames()
-		recentSpeed := l.updateRecentSpeed(currentFrames-lastFrames, now.Sub(lastSpeedAt).Seconds())
-		lastFrames = currentFrames
-		lastSpeedAt = now
+		l.recordUtilization()
 
 		stats, ok := util.ReadMemoryStats()
 		if !ok || stats.MemTotal == 0 {
@@ -230,7 +268,7 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 
 		swapGrowthStable := swapGrowthStableForRamp(stats, swapGrowthTotal, swapGrowthInterval)
 		memoryStable := availableFraction > memoryStableAvailableFraction && swapGrowthStable
-		l.maybeAdjustTarget(memoryStable, recentSpeed)
+		l.maybeRampUp(memoryStable)
 	}
 }
 
@@ -281,11 +319,9 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 		step = max(step, old/2)
 	}
 	l.target = max(l.min, old-step)
-	l.stableTicks = 0
-	l.evaluatingRamp = false
-	l.rampBlocked = false
+	l.utilSum = 0
+	l.utilTicks = 0
 	l.cooldownTicks = pressureCooldownTicks
-	l.plateauCooldownLeft = 0
 	active := l.active
 	newTarget := l.target
 	l.cond.Broadcast()
@@ -297,86 +333,42 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	}
 }
 
-func (l *adaptiveLimiter) maybeAdjustTarget(memoryStable bool, recentSpeed float64) {
+// maybeRampUp adds a worker when encode slots have stayed saturated across a
+// full window and memory is stable. Utilization (active/target) is a smooth,
+// direct signal that the slot cap is the bottleneck; unlike throughput it does
+// not jump only on chunk completion, so it stays meaningful at low 4K chunk
+// rates. When slots are not saturated the bottleneck is elsewhere (GPU
+// scoring, dispatch, or the duty cycle) and adding slots would not help.
+func (l *adaptiveLimiter) maybeRampUp(memoryStable bool) {
 	l.mu.Lock()
-	if !memoryStable || recentSpeed <= 0 {
-		l.stableTicks = 0
-		l.mu.Unlock()
-		return
-	}
-	if l.active != l.target {
-		l.stableTicks = 0
-		l.mu.Unlock()
-		return
-	}
+	defer l.mu.Unlock()
+
 	if l.cooldownTicks > 0 {
 		l.cooldownTicks--
-		l.stableTicks = 0
-		l.mu.Unlock()
 		return
 	}
-	if l.rampBlocked {
-		if l.plateauCooldownLeft > 0 {
-			l.plateauCooldownLeft--
-			l.stableTicks = 0
-			l.mu.Unlock()
-			return
-		}
-		l.rampBlocked = false
-	}
-
-	l.stableTicks++
-	if l.stableTicks < rampEvaluationTicks {
-		l.mu.Unlock()
+	if l.utilTicks < rampWindowTicks {
 		return
 	}
-	l.stableTicks = 0
+	utilization := l.utilSum / float64(l.utilTicks)
+	l.utilSum = 0
+	l.utilTicks = 0
 
-	if l.evaluatingRamp {
-		old := l.target
-		baseline := l.rampBaselineSpeed
-		clearGainThreshold := baseline * (1 + minSpeedGainFraction)
-		switch {
-		case recentSpeed <= baseline:
-			l.evaluatingRamp = false
-			l.rampBlocked = true
-			l.blockedTarget = old + 1
-			l.plateauCooldownLeft = plateauCooldownTicks
-			l.mu.Unlock()
-
-			l.statusf("Throughput did not improve; holding at %d workers and skipping higher worker tests", old)
-			return
-		case recentSpeed < clearGainThreshold:
-			l.evaluatingRamp = false
-			l.rampBlocked = true
-			l.plateauCooldownLeft = rampRetryCooldownTicks
-			l.mu.Unlock()
-
-			l.statusf("Throughput gain was modest; holding at %d workers", old)
-			return
-		default:
-			l.evaluatingRamp = false
-			l.mu.Unlock()
-
-			l.statusf("Throughput improved; keeping %d workers", old)
-			return
-		}
+	if !memoryStable {
+		return
 	}
-
-	if l.target >= l.max || l.rampDisabledLate() || l.nextTargetBlocked() {
-		l.mu.Unlock()
+	if l.target >= l.rampCeiling || l.rampDisabledLate() {
+		return
+	}
+	if utilization < rampUtilizationThreshold {
 		return
 	}
 
 	old := l.target
-	l.rampBaselineSpeed = recentSpeed
-	l.target++
-	l.evaluatingRamp = true
-	newTarget := l.target
+	step := max(1, l.target/4)
+	l.target = min(l.rampCeiling, old+step)
 	l.cond.Broadcast()
-	l.mu.Unlock()
-
-	l.statusf("Throughput stable; testing workers %d -> %d", old, newTarget)
+	l.statusf("Encode slots saturated (%.0f%% utilization, memory stable); raising workers %d -> %d", utilization*100, old, l.target)
 }
 
 func (l *adaptiveLimiter) statusf(format string, args ...any) {

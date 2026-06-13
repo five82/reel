@@ -1,6 +1,8 @@
 package encode
 
 import (
+	"context"
+	"errors"
 	"math"
 	"testing"
 
@@ -287,5 +289,42 @@ func TestTargetQualityPriorNormalizesCRFWithAdjustmentCap(t *testing.T) {
 	crf, source := prior.InitialCRF(11)
 	if crf != 28 || source != "neighbor" {
 		t.Fatalf("InitialCRF = %g %q, want 28 neighbor", crf, source)
+	}
+}
+
+func TestGatherWindowScoresOrdersAndReacquires(t *testing.T) {
+	limiter := newAdaptiveLimiter(2, 2, 2, 0, nil)
+	if _, err := limiter.acquire(context.Background()); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	scoreCh := make(chan windowScore, 3)
+	scoreCh <- windowScore{idx: 2, offset: 200}
+	scoreCh <- windowScore{idx: 0, offset: 0}
+	scoreCh <- windowScore{idx: 1, offset: 100}
+	scores, err := gatherWindowScores(context.Background(), limiter, scoreCh, 3)
+	if err != nil {
+		t.Fatalf("gatherWindowScores: %v", err)
+	}
+	for i, ws := range scores {
+		if ws.idx != i {
+			t.Fatalf("scores out of order: got idx %d at position %d", ws.idx, i)
+		}
+	}
+	active, _, _ := limiter.stats()
+	if active != 1 {
+		t.Fatalf("expected slot re-acquired (active=1), got active=%d", active)
+	}
+}
+
+func TestGatherWindowScoresReturnsFirstError(t *testing.T) {
+	limiter := newAdaptiveLimiter(2, 2, 2, 0, nil)
+	if _, err := limiter.acquire(context.Background()); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	scoreCh := make(chan windowScore, 2)
+	scoreCh <- windowScore{idx: 0}
+	scoreCh <- windowScore{idx: 1, err: errors.New("boom")}
+	if _, err := gatherWindowScores(context.Background(), limiter, scoreCh, 2); err == nil {
+		t.Fatal("expected error from failed window score")
 	}
 }
