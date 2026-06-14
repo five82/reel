@@ -981,23 +981,226 @@ None to the encoder. The `RetainScores` hook (`chunkplan.go`) and the chunkbench
 dump are kept -- they are zero-cost, reusable, and make this analysis (or a future test with a
 proper spatial-complexity feature) reproducible. The joiner is the throwaway `/tmp/activity_corr.py`.
 
+## 2026-06-14 Full-length 4K encode: stage attribution (the first feature-length run)
+
+Goal: open question 0. Every prior conclusion in this doc was validated on 5-20m clips. Run one
+real feature and attribute its stages, to confirm the linear extrapolations and the prediction
+that probes/chunk *drops* under a deep (feature-length) prior cascade. This is the first
+end-to-end feature-length encode the project has measured.
+
+Input: full Sully theatrical rip (`~/.cache/spindle/rips/.../Sully_t00.mkv`), 3840x2160 10-bit
+PQ HDR, 23.976 fps, 01:35:50 (137,877 frames -- ~19x the 5m cut). Default pipeline (autocrop on,
+preset 6, CVVDP target 9.25-9.52, metric workers 4). Dev machine (32 logical CPU, RTX 5060 Ti
+16 GiB, dual-channel DDR5, 62 GiB RAM). Cmd: `reel encode -i <rip> -o sully-full.mkv -v
+--keep-workdir`. Artifacts in `~/testing/fulllen-attr/` (encode.log, resource.log, kept workdir
+7.9 GiB). Crop resolved to 3840x1600 (2.40:1). Output 2.86 GiB, 93.7% reduction.
+
+### Stage attribution (total wall 4h2m47s)
+
+| Stage | Feature | 5m sully cut | Scaling vs 5m | Verdict |
+|---|---:|---:|---|---|
+| Crop detection | 17.4s | 17.3s | **constant, NOT linear** | fixed 141-sample vote; negligible at feature length |
+| Shot cut detection | 12m0s | 38.5s | linear (predicted 12m19s) | **linear confirmed**; matches the Q10 ~14-15min estimate |
+| Chunk planning | <1s | <1s | flat | flat |
+| TQ + encode + mux | ~3h50m | ~8m15s | **super-linear (+45% over linear)** | the surprise -- see below |
+
+Crop is a fixed 141-sample whole-file vote, so a 96-min film costs the same ~17s as a 5m cut --
+the earlier "linear in duration" note in the 2026-06-12 attribution was wrong. Shot detection is
+cleanly linear and validates the streaming-head (Q10) sizing. The encode stage is where the
+extrapolation broke.
+
+### Headline finding: short clips badly under-represent feature-length probe cost
+
+A linear-in-frames extrapolation from the 5m cut predicted a ~2.6h encode stage; the actual was
+3h50m (+45%). The cause is **probes/chunk nearly doubled**, because a full film has far higher
+chunk-to-chunk CRF variance than any single 5-20m cut (which is one homogeneous scene).
+
+| Metric | sully FULL 96min | sully 5m cuts | io 5m cuts |
+|---|---:|---:|---:|
+| chunks | 670 | 33 | 36 |
+| **probes/chunk** | **3.11** | 1.5-1.9 | 1.6-1.9 |
+| converged | **63%** | 85-97% | 100% |
+| chunks hitting max 6 probes | **21%** | 0-3% | 0% |
+| final_crf spread (sd) | **12.35** | 5.7-7.1 | 5.8-6.0 |
+| final_crf range | 4.25-59.5 | ~ | ~ |
+| initial source = neighbor | 81% | 85-92% | 89-92% |
+| initial source = default (cold start) | **3 / 670 (0.4%)** | 3 / 33 (9%) | 3 / 36 (8%) |
+
+What this means:
+
+- **The narrow hypothesis was right: the deep cascade eliminates cold starts.** Only 3 of 670
+  chunks fell back to the blind default seed (0.4%, vs ~9% on a 5m clip); 81% got neighbor
+  seeds, 19% median. So priors are healthy at depth.
+- **But the overall prediction (probes/chunk drops) is REFUTED.** Probes/chunk went *up* 1.7 ->
+  3.11. The cold-start saving is real but tiny, and it is swamped by a much larger effect: a
+  feature spans dark grainy interiors, bright simple skies, water-rescue action, and credits, so
+  adjacent chunks legitimately want very different CRFs (final CRF 4.25-59.5, sd 12.35). The
+  neighbor prior is far less predictive when neighbors genuinely differ, so each chunk needs more
+  probes to converge -- and 21% exhaust all 6.
+- **Therefore every 5-20m-clip result in this doc UNDER-estimates real probe cost and TQ wall
+  time.** A single short cut is low-variance by construction (one scene), so it converges in ~1.7
+  probes; the real workload converges in ~3.1. This is the most important methodological takeaway
+  here: short homogeneous clips are fine for accuracy ground-truth (fullvalidate) and for
+  bitstream/throughput knobs, but they systematically flatter the search's probe efficiency.
+
+### The probe tail is the dominant feature-length cost (and it is bit-efficiency, not quality)
+
+Stop reasons at feature length: converged 420 (63%), monotonicity_guard 147 (22%), max_probes 65
+(10%), bounds_crossed 38 (6%). So 37% of chunks did not cleanly converge -- vs ~5-15% on 5m
+clips. Where do the non-converged chunks land (sampled final score vs band 9.25-9.52)?
+
+- in-band 458 (68%), **above-band 201 (30%)**, below-band 11 (2%, worst 9.191 -- only 0.06 under
+  the floor).
+- The non-converged chunks overwhelmingly land *above* the band: monotonicity_guard 104/147
+  above, max_probes 64/65 above, bounds_crossed 33/38 above.
+
+So when the search cannot converge on hard feature content, it errs **high** -- it overshoots
+quality (CRF too low, bits spent beyond need) rather than risking quality. This is a
+bit-efficiency cost, not a quality risk (only 2% marginally below band). 30% overshoot at feature
+length vs ~7-15% on 5m clips means there is real size headroom being left on the table. (Sampled
+scores; a fullvalidate ground-truth pass on the kept workdir would confirm -- not yet run.)
+
+### Robustness: no feature-length structural problems
+
+The code-review predictions from the 2026-06-14 strategic analysis held:
+
+- **No memory leak.** RAM rose to a ~22-24 GiB steady state by chunk ~100 and stayed flat through
+  chunk 670 (peak ~24.5 GiB of 62, never under 37 GiB available). The bounded flight cap held.
+- **Concurrency did not collapse.** The 4K worker *target* was 5 for 542 of 551 progress ticks
+  (~98%); only 2 brief memory-pressure transients early on dipped it to 3 (swap noise, recovered
+  immediately). The `maxWorkers/6` bandwidth cap behaves identically at feature scale.
+- **GPU VRAM** peaked ~6 GiB (same as the 5m mw4 runs) -- metric-worker sizing holds.
+- **enc/met busy-time ratio 1.23** (probe encode 55% / metric 45%) -- 4K stays encode-bound at
+  feature length, consistent with the 5m attribution.
+
+### Implications (and the Q10 head-overlap re-read)
+
+1. The **search-layer probe-tail items are now the highest-value performance work**, not a
+   "wait for more clips" backlog. The tail (21% maxing probes, 22% stopping on monotonicity) is
+   the dominant feature-length cost and is invisible on short clips. Flat-low early stop (search
+   item 5) and a look at why monotonicity_guard fires on 22% of chunks are the concrete next
+   steps. Reducing average probes/chunk from 3.1 toward 2 would cut feature wall time by roughly
+   a third.
+2. **Future tuning must validate against high-variance content**, not a single homogeneous cut.
+   Cheapest fix: build a "diverse" test clip by concatenating several dissimilar scenes from one
+   film, so probes/chunk approaches the feature-length regime without a 4-hour run. Otherwise run
+   a real feature.
+3. **Q10 (overlap the pre-encode head) is even less attractive than before.** The head was 12.3
+   min of a 4h2m wall = ~5%, vs ~12% on a 5m clip -- because shot detection grows linearly while
+   the encode stage grows super-linearly. Overlapping the head saves ~5% at feature length;
+   reducing the probe tail saves far more. Keep Q10 deferred.
+
+### Change
+
+None. This is a measurement entry. The encoder behaved correctly at feature length; the finding
+is methodological (short clips under-state probe cost) and re-prioritizes the search-layer tail
+work. Kept workdir at `~/testing/fulllen-attr/.reel-Sully_t00-1ce039b19801` for a possible
+feature-length fullvalidate ground-truth pass.
+
 ## Open questions / next tests
 
-Search-layer items (carried forward):
+Layout: **Open** work first (grouped by area, highest value first), then **Standing
+guidance** (principles to hold, not to-dos), then a **Resolved index** (each entry keeps
+its summary and points to the dated section above with the full detail). Resolved entries
+keep their original `Qn` label so the "open question N" references inside the dated entries
+still resolve. Open items are intentionally unnumbered -- reused numbers are what made this
+section unreadable before; add new ones under the right heading instead.
 
-1. Keep bracket-aware search, conservative high-side jump gating, and block size 32 unless another clip shows a clear regression.
-2. Watch for high-spread chunks like `knives5` chunk `0001` where bracket-aware search can add a probe; consider targeted handling only if this repeats.
-3. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
-4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
-5. Flat-low-response early stop (mirror of the flat-high gate): metric-insensitive chunks still march the low side at full probe cost (soms chunk 0013-style, 6 probes). Candidate once more clips confirm.
-6. (Rejected 2026-06-14 -- see "Content-prior first-probe seed: correlation test" above.) The discarded `scoreVideo` per-frame scores do not robustly predict per-chunk CRF: the activity-vs-CRF Spearman sign flips across clips (soms 1080p +0.54, io/kbv1 4K -0.63/-0.56), so a global first-probe seed would push cold starts the wrong direction on some content. The signal is a temporal-change measure on a 64x36 downsample, not the spatial detail/grain that drives JOD-at-CRF. A future test would need a real spatial-complexity feature; the `RetainScores` hook + chunkbench dump are in place to support it.
+### Open -- search layer (probe-count tail; highest value)
 
-Performance items, in suggested order (use `scripts/fullvalidate` as the accuracy ruler for anything below the line):
+The 2026-06-14 feature-length run showed the probe tail is the dominant real-movie cost
+(probes/chunk 3.11, 21% of chunks maxing out, 37% not cleanly converging) and is invisible
+on short homogeneous clips. These are now the top performance lever.
 
-0. Run one full-length 4K encode with stage attribution. Every entry below is validated on 5-20m clips; confirm the linear extrapolations hold and that probes/chunk drops under a deep (feature-length) prior cascade as expected. Highest-information, lowest-risk experiment available.
+- **Flat-low-response early stop** (mirror of the flat-high gate). Metric-insensitive chunks
+  still march the low side at full probe cost (soms chunk 0013-style, 6 probes). **Top
+  priority** -- the feature run shows this tail is the dominant cost on real movies, not a
+  clip-specific curiosity. Cutting average probes/chunk from 3.1 toward 2 cuts feature wall
+  time ~1/3.
+- **Monotonicity_guard investigation** (new, from the feature run). It stopped 22% of chunks
+  (147/670), which overwhelmingly overshoot the band (104/147 above) -- it may be halting
+  search before convergence and leaving bits on the table. On 5m clips it fired 0-3 times so
+  it was never examined. Check whether it is too aggressive on high-variance feature content
+  or whether those chunks are genuinely unconvergeable; pair with fullvalidate ground truth.
+- **Provisional priors from in-progress chunks.** Consider only if probe-count tails persist
+  across multiple clips (the feature run says they do; worth revisiting).
+- **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
+  a probe; add targeted handling only if this repeats.
 
-6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
-7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.
-8. (Resolved 2026-06-13 -- see "SVT-AV1 level_of_parallelism: bitstream identity and 4K scaling" above.) lp is byte-identical across values, so it is a free throughput knob; lp now scales off the resolution-aware worker target (4K -> lp 3, was 2). Fixed-CRF A/B showed a clean ~3-4% 4K throughput gain with identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound). New `--level-of-parallelism` flag added for overrides.
-9. (Resolved 2026-06-13 -- see "Accuracy-trading TQ knobs" above.) Keep all three as-is. fullvalidate A/B showed lowering the 256 full-probe threshold to 144 wrecks accuracy (sully mean_abs_error 0.075 -> 0.302, 22/33 chunks above range) *and raises* GPU work (+30% probes) because noisier samples force more probes; the window size is only a 4-9% GPU lever and not worth more sample degradation; the 12s cap binds on 0-2 of ~35 chunks so there is nothing to gain.
-10. (Resolved 2026-06-14 -- see "Overlapping the pre-encode head (shot detection) with encoding" above.) Confirmed and deferred. Shot detection scales linearly (4K ~5ms/frame -> ~14-15 min on a 2hr feature; 1080p ~2.7 min), so the overlap prize is real only at 4K feature length. Naive front-to-back streaming does not work: scoring is already fully parallel across the file and three whole-file statistics (cut threshold, strong-cut threshold, merge passes) gate every boundary, so streaming requires online threshold estimators that *change the boundaries* (accuracy-affecting; must pass Boundary hash + fullvalidate) plus incremental plan/encoder/resume plumbing. Not worth it below feature length; revisit only if 4K feature wall time becomes the priority.
+### Open -- performance / infra
+
+- **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
+  it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
+  calibrated on this box's dual-channel DDR5 + 32 cores).
+- **Feature-length fullvalidate ground-truth pass** on the kept Sully workdir
+  (`~/testing/fulllen-attr/.reel-Sully_t00-1ce039b19801`) to confirm the 30%-overshoot
+  finding against true full-chunk CVVDP -- the first feature-length accuracy check the
+  project would have. ~1h GPU.
+
+### Open -- methodology / tooling
+
+- **Build a high-variance test clip** (concatenate several dissimilar scenes from one film)
+  so probes/chunk approaches the feature-length regime (~3) without a 4-hour encode. Validate
+  every search-layer change against it; single homogeneous 5-20m cuts converge in ~1.7 probes
+  and hide the tail entirely (2026-06-14 feature run).
+
+### Standing guidance (hold unless new evidence overrides)
+
+- Keep bracket-aware search, conservative high-side jump gating, and block size 32 unless
+  another clip shows a clear regression.
+- Do not revisit chunk-boundary complexity unless sampled-window spread or full validation
+  shows a repeatable failure that cannot be addressed in sampling/search.
+- Use `scripts/fullvalidate` as the accuracy ruler for any accuracy-trading change (window
+  count/size, probe thresholds, chunk caps, shot-detection boundaries) -- never sampled scores.
+
+### Resolved (index -- full detail in the dated entries above)
+
+- **Content-prior first-probe seed** -- rejected 2026-06-14 (see "Content-prior first-probe
+  seed: correlation test"). The discarded `scoreVideo` per-frame scores do not robustly
+  predict per-chunk CRF: the activity-vs-CRF Spearman sign flips across clips (soms 1080p
+  +0.54, io/kbv1 4K -0.63/-0.56), so a global first-probe seed would push cold starts the
+  wrong direction on some content. The signal is a temporal-change measure on a 64x36
+  downsample, not the spatial detail/grain that drives JOD-at-CRF. A future test would need a
+  real spatial-complexity feature; the `RetainScores` hook + chunkbench dump are in place to
+  support it.
+- **Q0 -- Full-length 4K stage attribution** -- resolved 2026-06-14 (see "Full-length 4K
+  encode: stage attribution"). Ran a 96-min Sully 4K encode (4h2m). Shot detection is linear
+  (confirmed), crop is constant (not linear, corrected), no memory leak / concurrency
+  collapse. But the core prediction was REFUTED: probes/chunk nearly doubled (1.7 -> 3.11)
+  because feature content has high chunk-to-chunk CRF variance, so short test clips
+  systematically under-state probe cost. Cold starts were eliminated as predicted (3/670
+  default) but that saving is swamped. The probe tail (21% maxing probes, 37% not cleanly
+  converging, 30% overshooting the band as bit-efficiency loss) is the dominant feature-length
+  cost -- it elevated the search-layer tail items above to top priority.
+- **Q6 -- 4K adaptive ramp (bandwidth, not capacity)** -- resolved 2026-06-12 (see "4K
+  adaptive ramp: bandwidth, not capacity"). 4K was bandwidth-bound, not capacity-bound; the
+  fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. (Open sub-item -- the
+  divisor retest on other hardware -- moved to the performance/infra list above.)
+- **Q7 -- 4K metric workers 4 vs 6** -- resolved 2026-06-13 (see "4K metric workers 4 vs 6
+  retest"). Keep 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe)
+  because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring
+  tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no
+  wall-time gain.
+- **Q8 -- SVT-AV1 level_of_parallelism** -- resolved 2026-06-13 (see "SVT-AV1
+  level_of_parallelism: bitstream identity and 4K scaling"). lp is byte-identical across
+  values, so it is a free throughput knob; lp now scales off the resolution-aware worker
+  target (4K -> lp 3, was 2). Fixed-CRF A/B showed a clean ~3-4% 4K throughput gain with
+  identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound).
+  New `--level-of-parallelism` flag added for overrides.
+- **Q9 -- Accuracy-trading TQ knobs** -- resolved 2026-06-13 (see "Accuracy-trading TQ
+  knobs"). Keep all three as-is. fullvalidate A/B showed lowering the 256 full-probe threshold
+  to 144 wrecks accuracy (sully mean_abs_error 0.075 -> 0.302, 22/33 chunks above range) *and
+  raises* GPU work (+30% probes) because noisier samples force more probes; the window size is
+  only a 4-9% GPU lever and not worth more sample degradation; the 12s cap binds on 0-2 of
+  ~35 chunks so there is nothing to gain.
+- **Q10 -- Overlap pre-encode head with encoding** -- resolved/deferred 2026-06-14 (see
+  "Overlapping the pre-encode head (shot detection) with encoding"). Shot detection scales
+  linearly (4K ~5ms/frame -> ~14-15 min on a 2hr feature; 1080p ~2.7 min), so the overlap
+  prize is real only at 4K feature length -- and the feature run showed the head is only ~5%
+  of feature wall (vs ~12% on a 5m clip) because the encode stage grows super-linearly, making
+  this even less attractive. Naive front-to-back streaming does not work: scoring is already
+  fully parallel across the file and three whole-file statistics (cut threshold, strong-cut
+  threshold, merge passes) gate every boundary, so streaming requires online threshold
+  estimators that *change the boundaries* (accuracy-affecting; must pass Boundary hash +
+  fullvalidate) plus incremental plan/encoder/resume plumbing. Revisit only if 4K
+  feature-length wall time becomes the priority.
