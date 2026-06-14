@@ -813,6 +813,174 @@ feature-length wall time becomes the priority; the gating prerequisite is an onl
 threshold that reproduces the current "Boundary hash" closely enough to pass `fullvalidate`,
 since changing boundaries changes which frames get encoded together.
 
+## 2026-06-14 Where to go next: strategic analysis and recommendations
+
+Goal: step back from individual knobs and ask where the remaining performance is, whether
+the testing so far has revealed new avenues, and whether any larger design change is worth
+it. This is an analysis entry (code reading + existing artifacts), not a new encode.
+
+### State of play
+
+The tuning is mature. Open questions 6-10 are resolved, and the two bottlenecks are pinned
+by measurement, not guess:
+
+- **1080p TQ is GPU-CVVDP-throughput bound.** The clip sits at the GPU floor (~204s lower
+  bound vs 220s observed; metric ~65% of busy time). Scheduling cannot help further -- the
+  GPU scores at a fixed rate.
+- **4K TQ is memory-bandwidth bound on SVT-AV1.** Capped at ~5 active encodes
+  (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time.
+
+The cross-cutting fact from the accuracy-knob and metric-worker work: **probe count is the
+multiplier on both bottlenecks.** Every probe is both an encode and a CVVDP scoring.
+Cold-started chunks cost ~2.25 probes vs ~1.34 for neighbor-seeded; cliff chunks (sully
+0002/0020/0029) are where the tail lives. Cutting sampling accuracy to save per-probe work
+backfires -- noisier scores make the search thrash *more* probes (knob B, 2026-06-13). So the
+remaining lever that helps both bottlenecks at once is **fewer probes per chunk without
+trading sampling accuracy.** Scheduling/concurrency is largely spent; work-reduction via
+better search seeding is the open territory.
+
+### New avenue surfaced by code review: a free per-chunk content prior
+
+Shot detection already computes a per-frame content-activity score for every frame and then
+discards it. `scoreVideo` (`internal/chunkplan/chunkplan.go:168`) produces a 0-1 score per
+frame (65% pixel diff + 30% histogram + 5% luma; `signatureChange` at `:357`), uses it only
+for boundary placement, and keeps only `Boundaries` in `Result` (`:58`). The TQ search,
+meanwhile, has *no* content signal: the first probe is seeded purely from neighbor/median
+priors of already-completed chunks, falling back to a blind `(CRFMin+CRFMax)/2` midpoint on
+cold start (`internal/encode/target_quality.go:104, 952`).
+
+Idea: aggregate the existing per-frame scores into a cheap per-chunk descriptor (mean/max/
+variance) and use it to (a) seed the first probe on cold-start chunks, and (b) distrust the
+neighbor prior when a chunk's activity is an outlier vs its neighbors -- the cliff-chunk case
+where priors mislead and probes blow up.
+
+Why this is the right shape of bet:
+
+- **Accuracy-safe by construction.** A first-probe seed only changes the starting CRF; the
+  search still runs to convergence. Worst case it is neutral (no probe saved); it cannot move
+  final quality. This sidesteps the fullvalidate-gating burden every accuracy knob carried.
+- **Nearly free.** The signal is already computed during mandatory shot detection.
+- **Payoff concentrated where the tail is:** cold starts (24% of soms chunks were
+  default-seeded) and content-outlier chunks at any length.
+
+Honest caveat: the shot-activity score measures *temporal change between frames*, not the
+spatial complexity/grain that most directly drives JOD-at-CRF. The correlation to optimal CRF
+is plausible but **unproven**, so it needs a cheap correlation test before any code (see
+recommended next steps).
+
+### Larger design changes considered and rejected
+
+- **GPU-encode the probes (NVENC AV1) to dodge the 4K bandwidth cap.** Dead end: NVENC's
+  quality-at-CRF does not transfer to SVT-AV1, so the searched CRF would be invalid for the
+  final SVT-AV1 encode.
+- **Cheaper/proxy perceptual metric to relieve the 1080p GPU floor.** CVVDP is the chosen
+  accuracy ruler and sampling is already at the fullvalidate-allowed limit. High risk, against
+  every accuracy finding.
+- **Cross-*film* learned CRF model.** The within-run prior plus resume-time seeding
+  (`seedTargetQualityPrior` from prior `tq/*.json`) already capture the safe version. A global
+  cross-content model is large complexity for uncertain transfer.
+
+The one large structural win that survives scrutiny is already scoped and deferred: streaming
+the pre-encode head to overlap shot detection with encoding (item 10), worth it only at 4K
+feature length.
+
+### Feature-length: untested, but no structural breakage found
+
+Every conclusion in this doc is validated on 5-minute clips. Code review for feature-length
+(90-150 min, thousands of chunks) found nothing that breaks: `flightCap`
+(`target_quality.go:255`) is bounded by `min(byPriors, target + max(target, metricWorkers))`,
+so in-flight is capped at ~2x the worker target regardless of chunk count -- no concurrency
+blowup. The only unbounded accumulations are trivial (the `slopes` array and per-chunk JSON
+logs -- a few thousand floats / a few MB; `packShortShots` is O(n^2) but on cheap shot data).
+The linear extrapolations should hold. The open uncertainty is the *prior cascade*: at feature
+length there are hundreds of neighbors, so cold-start fraction approaches zero and probes/chunk
+likely drop, which could shift the bottleneck balance in ways 5m data cannot show.
+
+### Recommended next steps (in order)
+
+Two cheap, high-information experiments before any code change:
+
+1. **Correlation test for the content-prior idea** (no encodes). DONE 2026-06-14 -- rejected;
+   see "Content-prior first-probe seed: correlation test" below. The activity-vs-CRF sign flips
+   across clips, so the cheap global seed is not viable on this signal.
+2. **One full-length 4K encode with attribution**, to confirm the 5m extrapolations or surface
+   a feature-length-only effect (especially probes/chunk under a deep prior cascade).
+
+Incremental search wins already listed and worth doing, both pure probe-count reductions:
+flat-low-response early stop (item 5) and provisional in-progress priors (item 3).
+
+### Change: None yet (analysis only)
+
+No code or default changed. This entry records the direction and the gating experiment for the
+next round of work.
+
+## 2026-06-14 Content-prior first-probe seed: correlation test (rejected)
+
+Goal: the cheap gating test for the content-prior idea from the analysis above. Do the
+per-frame shot-detection scores that `scoreVideo` already computes (and discards) predict a
+chunk's final CRF well enough to seed the first probe? If yes, build the seeder; if no, kill it
+for the price of a script. Decided with zero encodes, against existing artifacts.
+
+### Method
+
+Added a zero-cost `RetainScores` option to `chunkplan.Plan` (frees the scores slice as before
+when false; `internal/chunkplan/chunkplan.go`) and a frame-scores dump to `scripts/chunkbench`
+(`chunkbench <video> [scores-out.txt]`). Ran chunkbench once per source clip (activity is a
+property of the source, identical across encode runs) to dump per-frame scores, then a joiner
+(`/tmp/activity_corr.py`) reconstructed each artifact's per-chunk frame intervals from
+cumulative `frames`, aggregated the interior scores (mean/median/p90/max/std, skipping the
+boundary-cut frame), averaged `final_crf` per chunk across all matching runs of that clip to
+damp probe-cascade noise, and correlated activity vs CRF. Correlation is measured **within each
+clip**: between-clip CRF differences (4K vs 1080p, grain) are exactly what neighbor/median
+priors already handle, so the open question is chunk-to-chunk variation inside one film.
+
+Artifacts joined: soms (4 runs), sully (13), io (8), kbv1 (2) from `~/testing/perf-ab/`.
+
+### Result (Spearman rho of per-chunk activity vs averaged final_crf)
+
+| clip | nchunk | runs | crf sd | mean | median | p90 | max | std |
+|------|-------:|-----:|-------:|-----:|-------:|----:|----:|----:|
+| soms-5m-1080p-sdr | 37 | 4 | 2.12 | **+0.544** | +0.596 | +0.475 | +0.074 | +0.030 |
+| sully-5m-4k-hdr | 33 | 13 | 5.00 | -0.127 | -0.197 | -0.120 | -0.247 | -0.212 |
+| io-5m-4k-hdr | 36 | 8 | 4.61 | **-0.631** | -0.540 | -0.634 | -0.479 | -0.552 |
+| kbv1-5m-4k-hdr | 37 | 2 | 3.16 | **-0.558** | -0.563 | -0.549 | -0.228 | -0.361 |
+| POOLED (within-clip z) | 143 | | | -0.147 | -0.162 | -0.139 | -0.209 | -0.265 |
+
+### Verdict: rejected
+
+**The sign flips across clips.** soms (1080p) is strongly *positive* (+0.54: high temporal
+activity -> higher CRF, i.e. motion masking lets you spend fewer bits), while io and kbv1 (4K)
+are strongly *negative* (-0.63 / -0.56: high activity -> lower CRF). The per-clip correlations
+are real and significant (io -0.631 at n=36 is p<0.001), so the signal is being measured
+correctly -- but the relationship is clip-specific in both slope and sign, so the pooled
+correlation is weak (-0.15 to -0.28) because the clips cancel.
+
+That is fatal for the cheap version of the idea. The whole appeal was a *global* first-probe
+seed that fixes cold starts before any chunk of the film has completed. A global activity->CRF
+mapping calibrated on one clip would push the first probe the **wrong direction** on others
+(seed too low on soms-like content if fit on io, and vice versa), which adds probes rather than
+removing them -- the opposite of the goal. It stays accuracy-safe (the search still converges),
+but it fails the "can only help or be neutral on probe count" promise that justified it.
+
+Why the signal is weak as a complexity proxy: the shot-change score is a *temporal-change*
+measure (65% pixel diff + 30% histogram + 5% luma between consecutive frames, on a 64x36
+downsample), not the spatial detail/grain that most directly drives JOD-at-CRF. The 64x36
+downsample also cannot see grain. So this particular already-computed signal is the wrong
+feature, independent of the sign problem.
+
+The only non-dead remnant: a *within-run* adaptive activity regression (learn this film's sign
+and slope from its completed chunks, then refine seeds for not-yet-encoded chunks) could exploit
+the moderate per-clip correlations -- but it needs completed chunks to fit, so it does nothing
+for cold start (the actual prize), it overlaps the timeline-local neighbor prior that already
+captures chunk-to-chunk drift, and sully's weak -0.13 shows it would not even help every film.
+Poor expected value vs complexity; not pursued.
+
+### Change
+
+None to the encoder. The `RetainScores` hook (`chunkplan.go`) and the chunkbench frame-scores
+dump are kept -- they are zero-cost, reusable, and make this analysis (or a future test with a
+proper spatial-complexity feature) reproducible. The joiner is the throwaway `/tmp/activity_corr.py`.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -822,8 +990,11 @@ Search-layer items (carried forward):
 3. Consider provisional priors from in-progress chunks only if probe-count tails remain across multiple clips.
 4. Do not revisit chunk-boundary complexity unless sampled-window spread or full validation shows a repeatable failure that cannot be addressed in sampling/search.
 5. Flat-low-response early stop (mirror of the flat-high gate): metric-insensitive chunks still march the low side at full probe cost (soms chunk 0013-style, 6 probes). Candidate once more clips confirm.
+6. (Rejected 2026-06-14 -- see "Content-prior first-probe seed: correlation test" above.) The discarded `scoreVideo` per-frame scores do not robustly predict per-chunk CRF: the activity-vs-CRF Spearman sign flips across clips (soms 1080p +0.54, io/kbv1 4K -0.63/-0.56), so a global first-probe seed would push cold starts the wrong direction on some content. The signal is a temporal-change measure on a 64x36 downsample, not the spatial detail/grain that drives JOD-at-CRF. A future test would need a real spatial-complexity feature; the `RetainScores` hook + chunkbench dump are in place to support it.
 
 Performance items, in suggested order (use `scripts/fullvalidate` as the accuracy ruler for anything below the line):
+
+0. Run one full-length 4K encode with stage attribution. Every entry below is validated on 5-20m clips; confirm the linear extrapolations hold and that probes/chunk drops under a deep (feature-length) prior cascade as expected. Highest-information, lowest-risk experiment available.
 
 6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
 7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.

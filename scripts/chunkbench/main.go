@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -21,10 +22,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: chunkbench <video.mkv>")
+		fmt.Fprintln(os.Stderr, "Usage: chunkbench <video.mkv> [frame-scores-out.txt]")
 		os.Exit(1)
 	}
 	inputPath := os.Args[1]
+	scoresOut := ""
+	if len(os.Args) >= 3 {
+		scoresOut = os.Args[2]
+	}
 
 	inf, err := video.Probe(inputPath)
 	if err != nil {
@@ -52,6 +57,7 @@ func main() {
 		MaxFrames:    maxFrames,
 		MinFrames:    minFrames,
 		TargetFrames: targetFrames,
+		RetainScores: scoresOut != "",
 		Progress: func(current, total int) {
 			if total > 0 {
 				pct := current * 100 / total
@@ -79,7 +85,32 @@ func main() {
 
 	fmt.Printf("\rShot detection complete in %s\n\n", elapsed.Round(time.Millisecond))
 
+	if scoresOut != "" {
+		if err := writeScores(scoresOut, result.FrameScores); err != nil {
+			fmt.Fprintf(os.Stderr, "writing frame scores: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Wrote %d per-frame scores to %s\n\n", len(result.FrameScores), scoresOut)
+	}
+
 	printChunkStats(result, fps)
+}
+
+// writeScores dumps one per-frame shot-change score per line, for offline
+// per-chunk activity correlation against final CRFs.
+func writeScores(path string, scores []float64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	w := bufio.NewWriter(f)
+	for _, s := range scores {
+		if _, err := fmt.Fprintf(w, "%.6f\n", s); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
 }
 
 func printChunkStats(result chunkplan.Result, fps float64) {

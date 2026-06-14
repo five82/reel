@@ -43,6 +43,12 @@ type Options struct {
 	TargetFrames int
 	CropRect     *video.CropRect
 	Progress     func(current, total int)
+
+	// RetainScores keeps the per-frame shot-change scores on the Result for
+	// offline analysis (e.g. scripts/chunkbench correlating per-chunk activity
+	// against final CRF). The production path leaves this false so the scores
+	// slice is freed after boundary detection.
+	RetainScores bool
 }
 
 // BoundaryKind explains why a planned chunk boundary exists.
@@ -67,6 +73,10 @@ type Result struct {
 
 	// MergedScenes is kept for compatibility with older internal callers.
 	MergedScenes int
+
+	// FrameScores holds the per-frame shot-change scores when Options.RetainScores
+	// is set; nil otherwise. Index i is the score for frame i (frame 0 is 0).
+	FrameScores []float64
 }
 
 // Metadata records the inputs that produced a chunk boundary file.
@@ -149,7 +159,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	frameCount := len(scores)
 	naturalCuts := detectNaturalCuts(scores)
 	plan := planBoundaries(naturalCuts, frameCount, maxFrames, minFrames, targetFrames, scores)
-	return Result{
+	result := Result{
 		Boundaries:       plan.Boundaries,
 		BoundaryKinds:    plan.BoundaryKinds,
 		NaturalCuts:      max(0, len(naturalCuts)-1),
@@ -159,7 +169,11 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 		MergedWeakCuts:   plan.MergedWeakCuts,
 		Frames:           frameCount,
 		MergedScenes:     plan.MergedShortShots,
-	}, nil
+	}
+	if opts.RetainScores {
+		result.FrameScores = scores
+	}
+	return result, nil
 }
 
 // scoreVideo computes per-frame shot-change scores. The decode is split into
