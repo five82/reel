@@ -729,6 +729,90 @@ truth can judge an accuracy-trading knob. The cheap per-frame model is fine for 
 *candidates* (it correctly flagged B as the only one worth testing) but cannot predict
 the outcome.
 
+## 2026-06-14 Overlapping the pre-encode head (shot detection) with encoding
+
+Open question 10. The claim under test: overlapping shot detection with the start of
+encoding is the remaining structural win for long inputs, needs streaming chunk planning,
+and is not worth it below feature-length inputs. Investigated by code analysis plus cheap
+`scripts/chunkbench` timing (shot detection only, no encode/CVVDP/mux). No full encode was
+run -- the prize is bounded by the head's wall time, which `chunkbench` measures directly.
+
+### Sizing the prize: shot detection scales linearly with duration
+
+`chunkbench` on the 5m/10m/20m cuts (this machine, 32 logical CPUs; `chunkplan.Plan` is
+not cached, so each run is fresh):
+
+| res   | clip | cut | frames | shot detection | ms/frame |
+|-------|------|-----|-------:|---------------:|---------:|
+| 1080p | soms | 5m  |   7265 |          6.9s  |    0.95  |
+| 1080p | soms | 10m |  14498 |         13.8s  |    0.95  |
+| 1080p | soms | 20m |  28772 |         27.2s  |    0.95  |
+| 4K    | io   | 5m  |   7222 |         34.1s  |    4.72  |
+| 4K    | io   | 10m |  14390 |         66.2s  |    4.60  |
+| 4K    | io   | 20m |  28840 |        145.9s  |    5.06  |
+
+Clean linear scaling (4K creeps mildly super-linear, likely deeper-seek/cache effects).
+Extrapolated to a 2-hour feature (~173k frames @ 24fps): **1080p ~2.7 min, 4K ~14-15 min**
+of shot detection. So the overlap prize is real only at 4K feature length; at 1080p it
+stays small (minutes) even for a full movie, and on any 5-20m clip it is tens of seconds --
+far below the cost of the rework. This confirms the "long inputs only" half of the claim.
+
+### Why naive streaming does not work: three global-statistics barriers
+
+The one-line claim ("scan front to back, release early chunks as their cuts are known")
+mischaracterizes the current algorithm. Two structural facts in `internal/chunkplan/chunkplan.go`:
+
+1. **Raw scoring is already fully parallel across the whole file, not front-to-back.**
+   `scoreVideo` splits the file into N contiguous segments scored by concurrent workers with
+   a `wg.Wait()` barrier (the back of the film starts decoding at the same instant as the
+   front). There is no front-to-back frontier to ride.
+2. **Every boundary depends on whole-file statistics.** Three steps each need the complete
+   score array before *any* boundary is final:
+   - `shotCutThreshold` -- the cut threshold is `median + 6*MAD` clamped to `p95*1.10` over
+     *all* per-frame scores. Whether frame 1000 is a cut depends on the score distribution
+     of the entire film.
+   - `strongCutThreshold` -- a p90 over all cut scores, used to protect strong cuts from merging.
+   - `packShortShots` / `packWeakCutsToTarget` -- the merge/pack passes iterate the whole cut
+     list to hit min/target chunk sizes.
+
+So streaming chunk planning is not "emit boundaries as you go." It requires:
+- replacing the two global thresholds with online/windowed estimators -- **this changes which
+  frames become cuts, i.e. it changes the boundaries**, so it is an accuracy-affecting change
+  that must pass the `chunkbench` "Boundary hash" check and `scripts/fullvalidate`, not a
+  mechanical refactor;
+- a bounded-look-ahead commit protocol for the merges (they only need neighbors within
+  `maxFrames`, so a boundary can be committed once scoring passes ~one chunk beyond it --
+  feasible, but new code);
+- making the consumer incremental: today `chunk.LoadSegments` -> `chunk.Chunkify` ->
+  `buildResumeManifest` all materialize the *complete* boundary list before the first encode,
+  and the resume manifest is built from the full chunk set. Streaming needs an append-safe
+  plan file, a growing chunk feed into the dispatcher, and an append-safe resume manifest.
+
+### Why the win is real (when it is worth taking)
+
+Shot detection is CPU + libav-decode bound and uses no GPU. Both 1080p and 4K TQ encoding
+are GPU-CVVDP-throughput bound (established above: metric is the ceiling, encoder sustains
+only ~5 active workers at 4K). The two workloads are genuinely complementary, so overlapping
+shot-detection CPU work with GPU-bound scoring is close to free *in principle* -- the head
+time would be hidden rather than traded. Caveat: shot detection's 4 decode workers do contend
+for CPU with SVT-AV1, so the real-world overlap efficiency would need measurement; the prize
+is an upper bound, not a guarantee.
+
+Crop stays a serial pre-step (correctly out of scope here): it feeds the analysis rectangle
+into shot detection *and* the crop filter into every encode, and it is a fixed 141-sample
+whole-file vote, so nothing can start before it. It is also the smaller component post the
+2026-06-12 parallelization.
+
+### Change: None (deferred with evidence)
+
+The claim holds. The prize is ~14-15 min only on a 4K feature; the cost is an accuracy-
+affecting rewrite of cut-threshold statistics plus incremental plan/encoder/resume plumbing.
+Not worth it for the 5-20m test clips this project iterates on, and there is no feature-length
+clip here to ground-truth-validate an online-threshold change against. Revisit only if 4K
+feature-length wall time becomes the priority; the gating prerequisite is an online cut
+threshold that reproduces the current "Boundary hash" closely enough to pass `fullvalidate`,
+since changing boundaries changes which frames get encoded together.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -745,4 +829,4 @@ Performance items, in suggested order (use `scripts/fullvalidate` as the accurac
 7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.
 8. (Resolved 2026-06-13 -- see "SVT-AV1 level_of_parallelism: bitstream identity and 4K scaling" above.) lp is byte-identical across values, so it is a free throughput knob; lp now scales off the resolution-aware worker target (4K -> lp 3, was 2). Fixed-CRF A/B showed a clean ~3-4% 4K throughput gain with identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound). New `--level-of-parallelism` flag added for overrides.
 9. (Resolved 2026-06-13 -- see "Accuracy-trading TQ knobs" above.) Keep all three as-is. fullvalidate A/B showed lowering the 256 full-probe threshold to 144 wrecks accuracy (sully mean_abs_error 0.075 -> 0.302, 22/33 chunks above range) *and raises* GPU work (+30% probes) because noisier samples force more probes; the window size is only a 4-9% GPU lever and not worth more sample degradation; the 12s cap binds on 0-2 of ~35 chunks so there is nothing to gain.
-10. Overlapping the pre-encode head (crop + shot detection) with the start of encoding is the remaining structural win for long inputs; it needs streaming chunk planning and is not worth it below feature-length inputs.
+10. (Resolved 2026-06-14 -- see "Overlapping the pre-encode head (shot detection) with encoding" above.) Confirmed and deferred. Shot detection scales linearly (4K ~5ms/frame -> ~14-15 min on a 2hr feature; 1080p ~2.7 min), so the overlap prize is real only at 4K feature length. Naive front-to-back streaming does not work: scoring is already fully parallel across the file and three whole-file statistics (cut threshold, strong-cut threshold, merge passes) gate every boundary, so streaming requires online threshold estimators that *change the boundaries* (accuracy-affecting; must pass Boundary hash + fullvalidate) plus incremental plan/encoder/resume plumbing. Not worth it below feature length; revisit only if 4K feature wall time becomes the priority.
