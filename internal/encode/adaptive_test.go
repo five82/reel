@@ -103,6 +103,56 @@ func TestInitialAdaptiveWorkers(t *testing.T) {
 	}
 }
 
+func TestLevelOfParallelismForWorkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		workers int
+		want    uint32
+	}{
+		{"one worker", 1, 4},
+		{"two workers", 2, 4},
+		{"three workers", 3, 3},
+		{"five workers", 5, 3},
+		{"six workers", 6, 2},
+		{"hardware max", 32, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := levelOfParallelismForWorkers(tt.workers); got != tt.want {
+				t.Errorf("levelOfParallelismForWorkers(%d) = %d, want %d", tt.workers, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLevelOfParallelismFromRampCeiling pins the intended scaling: lp is driven
+// off the resolution-aware worker target, so 4K (bandwidth-capped near
+// maxWorkers/uhdCoreDivisor) gets a higher lp than non-4K (which ramps to the
+// full hardware ceiling) on the same machine.
+func TestLevelOfParallelismFromRampCeiling(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxWorkers int
+		width      uint32
+		height     uint32
+		want       uint32
+	}{
+		{"4k big machine", 32, 3840, 2160, 3},   // ceiling max(3,32/6)=5 -> lp 3
+		{"1080p big machine", 32, 1920, 1080, 2}, // ceiling 32 -> lp 2
+		{"4k small machine", 8, 3840, 2160, 3},   // ceiling max(3,8/6)=3 -> lp 3
+		{"4k huge machine", 64, 3840, 2160, 2},   // ceiling max(3,64/6)=10 -> lp 2
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ceiling := resolutionRampCeiling(tt.maxWorkers, tt.width, tt.height)
+			if got := levelOfParallelismForWorkers(ceiling); got != tt.want {
+				t.Errorf("lp for %dx%d on %d cores (ceiling %d) = %d, want %d",
+					tt.width, tt.height, tt.maxWorkers, ceiling, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShouldReopenSource(t *testing.T) {
 	tests := []struct {
 		name       string

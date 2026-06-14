@@ -152,6 +152,15 @@ func initialAdaptiveWorkers(maxWorkers int, width, height uint32, availableBytes
 	return min(target, maxWorkers)
 }
 
+// levelOfParallelismForWorkers picks SVT-AV1's level_of_parallelism from the
+// resolution-aware worker target (the ramp ceiling), not the hardware core
+// count. lp is verified bitstream-identical across values
+// (TestLevelOfParallelismBitstreamIdentical), so it is purely a throughput
+// knob: when few encoders run concurrently each should use more internal
+// threads, and when many run each should use fewer. Driving it off the raw
+// hardware max pins lp=2 on big machines even for 4K, where the bandwidth cap
+// holds concurrency near maxWorkers/uhdCoreDivisor and the extra cores would
+// otherwise sit idle while early probes run only 2-4 encoders.
 func levelOfParallelismForWorkers(workers int) uint32 {
 	switch {
 	case workers <= 2:

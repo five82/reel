@@ -602,6 +602,47 @@ Interpretation:
 
 Conclusion: keep the 4K metric-worker default at 4. No code change. The 2026-06-12 recommendation holds under the higher-concurrency pipeline: until sustained 4K encode concurrency rises well above ~5 (which the bandwidth cap prevents on this class of hardware), 4 metric workers already meet scoring demand. Revisit only if the `maxWorkers/6` cap is lifted on higher-bandwidth hardware.
 
+## 2026-06-13 SVT-AV1 level_of_parallelism: bitstream identity and 4K scaling
+
+Goal: open question 8. `level_of_parallelism` (lp) was derived from the raw hardware core count via `levelOfParallelismForWorkers(maxWorkers)`, which pins lp=2 on any machine with >5 cores -- including for 4K, where the `maxWorkers/6` bandwidth cap holds sustained concurrency near 5 and the early prime/probe phase runs only 2-4 encoders. The hypothesis: at that low concurrency each encoder should use more internal threads (higher lp), so lp should scale off the resolution-aware worker target, not the hardware max. This is only safe if lp is bitstream-neutral.
+
+Environment: same dev machine (32 logical CPUs, RTX 5060 Ti 16 GB VRAM, dual-channel DDR5).
+
+### Part 1 -- bitstream identity (gating condition)
+
+`TestLevelOfParallelismBitstreamIdentical` (internal/encoder) encodes a deterministic synthetic 10-bit 320x240 clip through the real `EncodeChunkToIVF` path at lp = {1, 2, 3, 4, 6} and SHA256s each output. All five are byte-identical (same 151307 bytes, same hash). lp is purely a throughput knob; it cannot change encode results. Confirmed again end-to-end below: every fixed-CRF run of a given clip produced an identical output hash across lp=2 and lp=3 and across both rounds.
+
+### Part 2 -- throughput (the actual question)
+
+Two instruments. Target-quality (TQ) mode wall time is **uninterpretable** for this question: lp perturbs chunk-completion timing, which shifts the neighbor/median prior cascade, which changes probe counts and final CRFs. The io lp2-vs-lp3 TQ pair differed 106 vs 63 probes with wildly different final CRFs (chunk 32: CRF 4.25 vs 39.75); across rounds the direction even reversed (io lp3 faster, sully lp3 slower) and within-config spread hit 320s (io lp2: 828s vs 508s). Same confound class as the metric-worker retest, but far larger here.
+
+The clean instrument is **fixed-CRF mode** (`--quality-mode crf --crf 32`): no probe search, so lp2 and lp3 do byte-identical work and wall time is pure encoder throughput. Two clips, two interleaved rounds each (8 runs). Harness/artifacts: `~/testing/perf-ab/lp-retest/` (`orchestrate-crf.sh`, `run-one-crf.sh`, per-run `.log`/`.vram`, `results-crf.tsv`; the confounded TQ runs are in `orchestrate.sh`/`results.tsv` for the record).
+
+| clip | lp=2 (s) | lp=3 (s) | lp=3 gain |
+|---|---:|---:|---:|
+| io-5m-4k-hdr | 245, 244 (mean 244.5) | 237, 236 (mean 236.5) | 3.3% |
+| sully-5m-4k-hdr | 236, 234 (mean 235.0) | 226, 226 (mean 226.0) | 3.8% |
+
+Run-to-run variance is +/-1s (vs the TQ test's +/-160s), so the ~3-4% is real, not noise. Note both 4K test clips are low-grain (io clean CG animation, sully clean ARRI Alexa 65 digital -- see `~/testing/README.md`); grain-heavy 4K (e.g. kbv1) was not exercised, but lp is bitstream-neutral regardless of content, so this only affects the magnitude of the throughput delta, not its sign.
+
+Interpretation:
+
+- lp=3 is a consistent ~3-4% throughput win on full 4K encodes, with provably identical output. The gain is modest because most of the encode runs at the ~5-worker bandwidth ceiling where lp matters little; it concentrates in the low-concurrency prime/probe ramp, which is a small fraction of a full encode but is exactly the window the goal flagged.
+- Because the change is free (byte-identical, no quality/size/VRAM cost -- fixed-CRF peak VRAM was ~0, no GPU scoring), there is no downside to taking the small win.
+
+### Change
+
+`levelOfParallelismForWorkers` is now fed the resolution-aware ramp ceiling (`resolutionRampCeiling`) instead of `maxWorkers`, at both call sites (`encode.go`, `target_quality.go`). Effect by case (mapping unchanged: <=2->lp4, <=5->lp3, else lp2):
+
+- 4K on this 32-core box: ceiling `max(3, 32/6)=5` -> **lp 3** (was 2).
+- 1080p/SD on the same box: ceiling = maxWorkers (32) -> lp 2 (unchanged).
+- 4K on a small machine (<=~18 cores): ceiling 3 -> lp 3.
+- 4K on a 64-core box: ceiling 10 -> lp 2 (concurrency already fills the cores).
+
+A new `--level-of-parallelism <1-6>` flag (config `SVTAV1LevelOfParallelism`, 0 = auto) overrides it for testing/operator use. Unit test `TestLevelOfParallelismFromRampCeiling` pins the resolution-derived values.
+
+Conclusion: scale lp off the worker target. Keep the change.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -616,6 +657,6 @@ Performance items, in suggested order (use `scripts/fullvalidate` as the accurac
 
 6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
 7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.
-8. Verify SVT-AV1 `level_of_parallelism` is bitstream-identical across values; if so, scale lp with the current worker target instead of the hardware max (lp=2 on a 32-thread machine starves early 4K probes when only 2-4 encoders are active).
+8. (Resolved 2026-06-13 -- see "SVT-AV1 level_of_parallelism: bitstream identity and 4K scaling" above.) lp is byte-identical across values, so it is a free throughput knob; lp now scales off the resolution-aware worker target (4K -> lp 3, was 2). Fixed-CRF A/B showed a clean ~3-4% 4K throughput gain with identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound). New `--level-of-parallelism` flag added for overrides.
 9. Accuracy-trading knobs, only with fullvalidate evidence: probe windows 3x48 -> 2x48 or 3x32 (cuts the 1080p GPU floor proportionally), the 256-frame full-probe threshold at 4K (nearly every 4K chunk full-probes under the 12s cap; sampling them would cut GPU work ~40% but loses full-first reuse and whole-chunk scoring), and the 12s TQ chunk cap itself.
 10. Overlapping the pre-encode head (crop + shot detection) with the start of encoding is the remaining structural win for long inputs; it needs streaming chunk planning and is not worth it below feature-length inputs.

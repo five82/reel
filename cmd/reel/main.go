@@ -99,6 +99,7 @@ type encodeArgs struct {
 	maxProbes       int
 	crf             string // Single value or comma-separated triple (SD,HD,UHD)
 	preset          uint
+	parallelism     uint
 	disableAutocrop bool
 	noLog           bool
 	keepWorkDir     bool
@@ -135,6 +136,9 @@ Quality Settings:
                          Supplying --crf without --quality-mode selects fixed-CRF mode.
                          Fixed defaults: SD=%s, HD=%s, UHD=%s
   --preset <0-13>        SVT-AV1 encoder preset. Lower=slower/better. Default: %d
+  --level-of-parallelism <1-6>
+                         SVT-AV1 level_of_parallelism override. Bitstream-neutral;
+                         affects throughput only. Default: auto-scale from worker target
 
 Processing Options:
   --disable-autocrop     Disable automatic black bar crop detection
@@ -172,6 +176,7 @@ Output Options:
 	fs.IntVar(&ea.maxProbes, "max-probes", 0, "Maximum target-quality probes per chunk")
 	fs.StringVar(&ea.crf, "crf", "", "Fixed CRF quality level (single value or SD,HD,UHD)")
 	fs.UintVar(&ea.preset, "preset", 0, "SVT-AV1 encoder preset (0-13)")
+	fs.UintVar(&ea.parallelism, "level-of-parallelism", 0, "SVT-AV1 level_of_parallelism (1-6); 0 auto-scales from the worker target")
 
 	// Processing options
 	fs.BoolVar(&ea.disableAutocrop, "disable-autocrop", false, "Disable automatic crop detection")
@@ -296,6 +301,9 @@ func executeEncode(ea encodeArgs) error {
 	}
 	if ea.preset != 0 {
 		cfg.SVTAV1Preset = uint8(ea.preset)
+	}
+	if ea.parallelism != 0 {
+		cfg.SVTAV1LevelOfParallelism = uint32(ea.parallelism)
 	}
 	if ea.disableAutocrop {
 		cfg.CropMode = "none"

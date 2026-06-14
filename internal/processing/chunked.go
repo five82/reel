@@ -194,6 +194,7 @@ func ProcessChunked(
 		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
+		LevelOfParallelism:    cfg.SVTAV1LevelOfParallelism,
 	}
 	if cfg.Verbose {
 		encCfg.StatusCallback = func(message string) {

@@ -101,6 +101,10 @@ type Config struct {
 	SVTAV1EnableVarianceBoost   bool
 	SVTAV1VarianceBoostStrength uint8
 	SVTAV1VarianceOctile        uint8
+	// SVTAV1LevelOfParallelism overrides SVT-AV1 level_of_parallelism (1-6);
+	// 0 lets Reel scale it from the resolution-aware worker target. The value
+	// is bitstream-neutral, so it affects throughput only.
+	SVTAV1LevelOfParallelism uint32
 
 	// Quality mode and settings.
 	QualityMode            string  // "target" or "crf"
@@ -174,6 +178,9 @@ func defaultQualityMode() string {
 func (c *Config) Validate() error {
 	if c.SVTAV1Preset > 13 {
 		return fmt.Errorf("svt_av1_preset must be 0-13, got %d", c.SVTAV1Preset)
+	}
+	if c.SVTAV1LevelOfParallelism > 6 {
+		return fmt.Errorf("level-of-parallelism must be 1-6 when set, got %d", c.SVTAV1LevelOfParallelism)
 	}
 
 	switch c.QualityMode {
