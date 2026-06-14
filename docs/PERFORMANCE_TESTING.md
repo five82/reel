@@ -660,6 +660,75 @@ A new `--level-of-parallelism <1-6>` flag (config `SVTAV1LevelOfParallelism`, 0 
 
 Conclusion: scale lp off the worker target. Keep the change.
 
+## 2026-06-13 Accuracy-trading TQ knobs: full-probe threshold, window size, chunk cap
+
+Goal: open question 9. Three knobs trade probe accuracy for GPU work -- the 256-frame
+full-probe threshold, the 3x48 sampled-window size, and the 12s TQ chunk cap. Decide
+each only against `scripts/fullvalidate` ground truth, never sampled scores.
+
+### Cheap accounting first (zero GPU)
+
+Per-chunk GPU-frame counts came straight from the existing `target-quality.json`
+artifacts (each chunk carries `frames` and per-probe `windows`), so two of the three
+knobs were settled without an encode:
+
+- **Window size (3x48 -> 2x48 / 3x32):** the windowed path only touches chunks above
+  the threshold, which are a *minority* today (5-9 of 33-37 chunks). Cutting it saves
+  just **4-9%** of total GPU frames. Low payoff.
+- **12s chunk cap:** the cap binds on **0-2 of 33-37 chunks** across every artifact
+  (max observed chunk 275-287 vs the 287-288 cap). Chunking is already scene-driven;
+  raising the cap does nothing and lowering it only fragments coherent scenes (an
+  efficiency/parallelism axis, not accuracy). Nothing to validate.
+- **Full-probe threshold (256 -> 144):** the median chunk is ~200-253 frames, sitting
+  right under 256, so nearly every chunk is full-probed. Naive accounting said sampling
+  them with 3x48 windows would cut **~19-26%** of GPU frames. This was the only knob
+  worth a real fullvalidate A/B.
+
+### Full-probe threshold A/B (the prize -- decisively rejected)
+
+Built two binaries differing only in `DefaultTargetQualityFullProbeFrames` (256 vs 144),
+encoded both 4K clips with `--keep-workdir`, scored each with `fullvalidate`. sully is
+low-grain digital (high inter-window content variance); kbv1 is the grainiest 4K clip.
+
+| clip  | variant | thr | probes | GPU frames | true-JOD mean | mean_abs_err | above range | sampled_gap |
+|-------|---------|-----|--------|-----------|---------------|--------------|-------------|-------------|
+| sully | base    | 256 | 65     | 12474     | 9.425         | 0.075        | 5 / 33      | 0.028       |
+| sully | knobB   | 144 | 99     | 16205     | 9.683         | **0.302**    | **22 / 33** | **0.463**   |
+| kbv1  | base    | 256 | 52     | 8591      | 9.413         | 0.065        | 0 / 37      | 0.010       |
+| kbv1  | knobB   | 144 | 59     | 8579      | 9.474         | 0.099        | 8 / 37      | 0.050       |
+
+The naive prediction inverted on both axes:
+
+- **Accuracy collapsed.** sully's sampled scores lied by a mean 0.46 JOD (vs 0.03 at
+  full-probe); e.g. chunk 0031 (254f) sampled 8.86 but its true whole-chunk JOD is 9.34.
+  Those artificially-low windows push CRF down, so true JOD overshoots target -- 22/33
+  sully chunks landed above range, mean drifting 9.43 -> 9.68. kbv1 degraded too
+  (0/37 -> 8/37 above range). The damage tracks *content variance*, not grain: low-grain
+  sully was the worse case because its medium chunks span dissimilar shots that a 3-window
+  sample misrepresents.
+- **GPU went up, not down.** sully probes 65 -> 99 and GPU frames 12474 -> 16205 (+30%).
+  The accounting assumed a fixed probe count; in reality a noisier sampled score makes
+  the search thrash for more probes, eating the per-probe saving and then some. kbv1 was
+  roughly flat (52 -> 59 probes) -- no win there either.
+
+This is exactly the "loses full-first reuse and whole-chunk scoring" cost the design
+comment names, now measured. Full-probing chunks up to 256 frames is both more accurate
+*and* competitive-to-cheaper on GPU because it converges in fewer probes.
+
+### Change
+
+None. All three knobs are well-set; do not touch them. The 256 full-probe threshold is
+confirmed correct by ground truth, the window size is too low-payoff to risk further
+sample degradation, and the 12s cap effectively never binds. Source tree unchanged
+(A/B used throwaway builds with the constant edited, then reverted). Artifacts in
+`~/testing/perf-ab/knobB/`.
+
+Methodology note: this repeats the lp-work lesson -- sampled-score accounting and true
+quality are coupled through the search's convergence loop, so only `fullvalidate` ground
+truth can judge an accuracy-trading knob. The cheap per-frame model is fine for ranking
+*candidates* (it correctly flagged B as the only one worth testing) but cannot predict
+the outcome.
+
 ## Open questions / next tests
 
 Search-layer items (carried forward):
@@ -675,5 +744,5 @@ Performance items, in suggested order (use `scripts/fullvalidate` as the accurac
 6. (Resolved 2026-06-12 -- see "4K adaptive ramp: bandwidth, not capacity" above.) 4K was bandwidth-bound, not capacity-bound; the fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. Remaining sub-item: re-measure the `maxWorkers/6` divisor on non-dev hardware before trusting it there.
 7. (Resolved 2026-06-13 -- see "4K metric workers 4 vs 6 retest" above.) Keep 4K metric workers at 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe) because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no wall-time gain.
 8. (Resolved 2026-06-13 -- see "SVT-AV1 level_of_parallelism: bitstream identity and 4K scaling" above.) lp is byte-identical across values, so it is a free throughput knob; lp now scales off the resolution-aware worker target (4K -> lp 3, was 2). Fixed-CRF A/B showed a clean ~3-4% 4K throughput gain with identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound). New `--level-of-parallelism` flag added for overrides.
-9. Accuracy-trading knobs, only with fullvalidate evidence: probe windows 3x48 -> 2x48 or 3x32 (cuts the 1080p GPU floor proportionally), the 256-frame full-probe threshold at 4K (nearly every 4K chunk full-probes under the 12s cap; sampling them would cut GPU work ~40% but loses full-first reuse and whole-chunk scoring), and the 12s TQ chunk cap itself.
+9. (Resolved 2026-06-13 -- see "Accuracy-trading TQ knobs" above.) Keep all three as-is. fullvalidate A/B showed lowering the 256 full-probe threshold to 144 wrecks accuracy (sully mean_abs_error 0.075 -> 0.302, 22/33 chunks above range) *and raises* GPU work (+30% probes) because noisier samples force more probes; the window size is only a 4-9% GPU lever and not worth more sample degradation; the 12s cap binds on 0-2 of ~35 chunks so there is nothing to gain.
 10. Overlapping the pre-encode head (crop + shot detection) with the start of encoding is the remaining structural win for long inputs; it needs streaming chunk planning and is not worth it below feature-length inputs.
