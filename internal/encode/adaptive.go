@@ -172,6 +172,16 @@ func levelOfParallelismForWorkers(workers int) uint32 {
 	}
 }
 
+// resolveLevelOfParallelism applies the lp auto-selection policy in one place so
+// the encode and target-quality paths cannot drift: an explicit value (non-zero)
+// is honored, otherwise lp is derived from the resolution-aware worker target.
+func resolveLevelOfParallelism(current uint32, rampCeiling int) uint32 {
+	if current != 0 {
+		return current
+	}
+	return levelOfParallelismForWorkers(rampCeiling)
+}
+
 func (l *adaptiveLimiter) acquire(ctx context.Context) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

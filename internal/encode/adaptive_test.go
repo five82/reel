@@ -153,6 +153,17 @@ func TestLevelOfParallelismFromRampCeiling(t *testing.T) {
 	}
 }
 
+func TestResolveLevelOfParallelism(t *testing.T) {
+	// Explicit (non-zero) value is honored regardless of the ceiling.
+	if got := resolveLevelOfParallelism(5, 32); got != 5 {
+		t.Errorf("explicit lp not honored: got %d, want 5", got)
+	}
+	// 0 derives from the worker target (ceiling 5 -> lp 3).
+	if got := resolveLevelOfParallelism(0, 5); got != 3 {
+		t.Errorf("auto lp from ceiling 5: got %d, want 3", got)
+	}
+}
+
 func TestShouldReopenSource(t *testing.T) {
 	tests := []struct {
 		name       string

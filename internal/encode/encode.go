@@ -118,9 +118,7 @@ func EncodeAll(
 	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height, availableMemoryBytes())
 	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
-	if cfg.LevelOfParallelism == 0 {
-		cfg.LevelOfParallelism = levelOfParallelismForWorkers(rampCeiling)
-	}
+	cfg.LevelOfParallelism = resolveLevelOfParallelism(cfg.LevelOfParallelism, rampCeiling)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

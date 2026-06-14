@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,12 +52,15 @@ func TestLevelOfParallelismBitstreamIdentical(t *testing.T) {
 		}
 	}
 
+	// Include every value the auto-scaler can emit (lp 2/3/4, with 3 the 4K
+	// default this guards) plus the flag's range endpoints (1 and 6).
 	lpValues := []uint32{1, 2, 3, 4, 6}
-	hashes := make(map[uint32]string, len(lpValues))
 	dir := t.TempDir()
 
+	var ref string
+	var refLP uint32
 	for _, lp := range lpValues {
-		out := filepath.Join(dir, "lp"+string(rune('0'+lp))+".ivf")
+		out := filepath.Join(dir, fmt.Sprintf("lp%d.ivf", lp))
 		cfg := &EncConfig{
 			Inf:                inf,
 			CRF:                30,
@@ -76,14 +80,12 @@ func TestLevelOfParallelismBitstreamIdentical(t *testing.T) {
 			t.Fatalf("read output for lp=%d: %v", lp, err)
 		}
 		sum := sha256.Sum256(data)
-		hashes[lp] = hex.EncodeToString(sum[:])
-		t.Logf("lp=%d: %d bytes sha256=%s", lp, len(data), hashes[lp])
-	}
-
-	ref := hashes[lpValues[0]]
-	for _, lp := range lpValues[1:] {
-		if hashes[lp] != ref {
-			t.Errorf("bitstream differs at lp=%d: %s != lp=%d %s", lp, hashes[lp], lpValues[0], ref)
+		got := hex.EncodeToString(sum[:])
+		t.Logf("lp=%d: %d bytes sha256=%s", lp, len(data), got)
+		if ref == "" {
+			ref, refLP = got, lp
+		} else if got != ref {
+			t.Errorf("bitstream differs at lp=%d: %s != lp=%d %s", lp, got, refLP, ref)
 		}
 	}
 }
