@@ -1097,6 +1097,80 @@ is methodological (short clips under-state probe cost) and re-prioritizes the se
 work. Kept workdir at `~/testing/fulllen-attr/.reel-Sully_t00-1ce039b19801` for a possible
 feature-length fullvalidate ground-truth pass.
 
+## 2026-06-14 monotonicity_guard diagnostic: why the feature-length probe tail overshoots
+
+The feature run flagged `monotonicity_guard` as the single biggest probe consumer (147/670
+chunks, 670 probes = 32% of all probe work, mean 4.56 probes/chunk, and 104/147 land above the
+band). Before building any new gate, a diagnostic to disambiguate two populations with opposite
+fixes: *genuinely flat* (guard correct, overshoot unavoidable, win = stop sooner) vs
+*noise-tripped* (guard premature, one more probe recovers bits). Pure re-analysis of the recorded
+probe sequences in the kept Sully `target-quality.json` -- no encodes.
+
+### Method
+
+For each guard chunk, replay reel's exact convergence rule (`tq.go`): a probe converges iff
+`target-tol <= mean_score <= target+tol` AND `worst_window >= target-tol`. Decompose *why* no
+probe converged, measure the geometry of the miss, and test interpolation reliability empirically
+via leave-one-out on real probes (predict each interior probe from its two CRF-neighbours, compare
+to its measured score). Scripts kept in `/tmp/guard_*.py`, `/tmp/interp_reliab.py`,
+`/tmp/resid_nature.py`.
+
+### Result: it is a three-way split, and neither original hypothesis fits the majority
+
+Authoritative decomposition of the 147 guard chunks (reel-exact criteria):
+
+| why no probe converges | chunks | nature | recoverable? |
+|---|---|---|---|
+| **worst-window below floor** (mean IS in band) | 77 (52%) | a hard sub-segment fails the floor by ~0.020 JOD (median); conservative overshoot pick is correct | No -- content property, more probing cannot fix it |
+| **mean never in band** (probes straddle target) | 58 (39%) | in-band CRF wedged between probes; tightest straddle gap median 0.75 CRF | Only ~60% -- the curve is noise-limited (below) |
+| all mean below band (want lower CRF) | 9 (6%) | quality-leaning; BestProbe protects via worst-window floor | n/a |
+| all mean above band (want higher CRF) | 3 (2%) | flat-high accelerator's domain | n/a |
+
+Key supporting measurements:
+
+- **Zero** guard chunks left a converge-able probe (mean-in-band AND worst-window-safe) on the
+  table. The guard is not discarding good results.
+- **Interpolation is only ~60% reliable on this content.** Leave-one-out residuals: median 0.075
+  JOD, p90 0.34 JOD (2.5x the +-0.135 tolerance); only 57-63% land within tolerance. So "one more
+  probe converges" is not a reliable recovery for the 39% mean-bracket group.
+- **The residuals are noise, not curvature** (sign 64/36, magnitude random; only a mild convex
+  lean). A better interpolator (quadratic) would not reliably help -- the limit is metric noise on
+  the ~48-frame probe sample, not the search math.
+- **The guard reacts to sub-noise wobbles.** Its tripping wrong-way move is median 0.022 JOD --
+  three times smaller than the curve's own 0.075 JOD scatter. It is genuinely firing on noise.
+
+### Verdict
+
+The dominant guard population (52%) is a category neither hypothesis named: **worst-window-limited**.
+The mean score sits in band but a hard sub-segment of the chunk misses the floor by ~0.02 JOD, so
+the conservative overshoot is the *correct, quality-safe* pick -- the bits are not recoverable by
+more probing. These chunks over-*probe* (the straddle/worst-window state is usually visible by
+probe 2-3 but the guard fires at 4.56), so the only win here is **speed**, accuracy-neutral.
+
+The 39% mean-bracket group is the closest to "noise-tripped," but recovery is noise-capped at ~60%.
+Softening the guard would mostly convert guard-stops into `max_probes` stops (more probes) for
+probabilistic partial recovery on a minority -- likely net-negative. The real lever for this group
+is probe-sample noise (more sample frames = more GPU) or a wider tolerance, not the guard.
+
+Consequences for the open-questions list:
+
+- **Flat-low early-stop is the wrong tool and is rejected.** The all-mean-below population it
+  targets is 9 chunks (6%) at feature length; the doc's "top priority" framing came from one 1080p
+  clip (soms 0013) and does not generalise. The overshoot tail is an all-*above* / worst-window
+  problem, not an all-below one.
+- **The accuracy-safe win is a worst-window/straddle early-out:** when the mean is in band but the
+  worst window is stuck below floor across a CRF bracket (or probes straddle target with the low
+  side below floor), stop immediately and take the conservative overshoot instead of probing to the
+  guard at 4.56. Estimated ~2 probes/chunk saved on ~52-69% of guard chunks ~= 7-10% of total
+  probe work, with no quality or bit change. This is the concrete next build.
+
+### Change
+
+None yet (diagnostic only). A confirmatory targeted re-probe pass (re-encode ~10-15 mean-bracket
+chunks at their interpolated CRF, measure real landing rate vs the 60% estimate) is available but
+not decision-critical -- the noise-dominated residuals make its outcome predictable and it would
+not change the gate choice. Next build is the worst-window/straddle early-out above.
+
 ## Open questions / next tests
 
 Layout: **Open** work first (grouped by area, highest value first), then **Standing
@@ -1112,16 +1186,13 @@ The 2026-06-14 feature-length run showed the probe tail is the dominant real-mov
 (probes/chunk 3.11, 21% of chunks maxing out, 37% not cleanly converging) and is invisible
 on short homogeneous clips. These are now the top performance lever.
 
-- **Flat-low-response early stop** (mirror of the flat-high gate). Metric-insensitive chunks
-  still march the low side at full probe cost (soms chunk 0013-style, 6 probes). **Top
-  priority** -- the feature run shows this tail is the dominant cost on real movies, not a
-  clip-specific curiosity. Cutting average probes/chunk from 3.1 toward 2 cuts feature wall
-  time ~1/3.
-- **Monotonicity_guard investigation** (new, from the feature run). It stopped 22% of chunks
-  (147/670), which overwhelmingly overshoot the band (104/147 above) -- it may be halting
-  search before convergence and leaving bits on the table. On 5m clips it fired 0-3 times so
-  it was never examined. Check whether it is too aggressive on high-variance feature content
-  or whether those chunks are genuinely unconvergeable; pair with fullvalidate ground truth.
+- **Worst-window / straddle early-out** (the diagnostic's recommended next build, see
+  "monotonicity_guard diagnostic" above). When the mean score is in band but the worst window is
+  stuck below floor across a CRF bracket -- or probes straddle target with the low side below
+  floor -- stop immediately and take the conservative overshoot instead of probing to the
+  monotonicity guard at 4.56 probes. ~52-69% of guard chunks are in this state; ~7-10% of total
+  probe work recoverable, accuracy-neutral (the overshoot pick does not change, only how fast we
+  reach it). This *replaces* the flat-low idea below as the search-layer priority.
 - **Provisional priors from in-progress chunks.** Consider only if probe-count tails persist
   across multiple clips (the feature run says they do; worth revisiting).
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
@@ -1155,6 +1226,16 @@ on short homogeneous clips. These are now the top performance lever.
 
 ### Resolved (index -- full detail in the dated entries above)
 
+- **monotonicity_guard diagnostic** -- resolved 2026-06-14 (see "monotonicity_guard diagnostic").
+  The 147 guard chunks split three ways: 52% worst-window-limited (mean in band, a hard sub-segment
+  ~0.02 JOD below floor; overshoot is the correct quality-safe pick, not recoverable), 39%
+  mean-bracket but noise-limited (interpolation only ~60% reliable; residuals are noise not
+  curvature), 6% all-below, 2% all-above. The guard fires on sub-noise wobbles (0.022 vs 0.075 JOD
+  scatter) but is not discarding converge-able probes. Outcome: flat-low gate rejected; the
+  accuracy-safe win is a worst-window/straddle early-out (speed only).
+- **Flat-low-response early stop** -- rejected 2026-06-14 (folded into the diagnostic above). The
+  all-mean-below population it targets is 6% (9/147 guard chunks) at feature length; the overshoot
+  tail is an all-above / worst-window problem, so the mirror-of-flat-high framing does not apply.
 - **Content-prior first-probe seed** -- rejected 2026-06-14 (see "Content-prior first-probe
   seed: correlation test"). The discarded `scoreVideo` per-frame scores do not robustly
   predict per-chunk CRF: the activity-vs-CRF Spearman sign flips across clips (soms 1080p
