@@ -2,6 +2,23 @@
 
 This is a living log for Reel performance tuning, especially target-quality (TQ) probing and chunk scheduling. Update it when a real encode or replay changes the evidence behind Reel's defaults.
 
+## Current defaults (settled)
+
+Quick reference for the tuned knobs and why they are where they are; the dated
+entries below are the provenance. Update a row when its value changes.
+
+| Knob | Current value | Why | Provenance |
+|------|---------------|-----|------------|
+| 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K is memory-bandwidth bound, not RAM-capacity bound; higher concurrency does not help and the slow ramp wasted time | 2026-06-12 "4K adaptive ramp: bandwidth, not capacity" |
+| Non-4K encode concurrency | ramps to full `maxWorkers` | GPU-metric bound, self-limits via utilization | 2026-06-12 "4K adaptive ramp" |
+| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | bandwidth-capped encoder sustains ~5 active 4K workers, so scoring is not the critical path; 6 only added VRAM | 2026-06-13 "4K metric workers 4 vs 6 retest" |
+| `level_of_parallelism` | auto from resolution ramp ceiling → 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | lp is bitstream-neutral; higher lp fills cores when concurrency is low (~3-4% 4K gain) | 2026-06-13 "SVT-AV1 level_of_parallelism" |
+| TQ scheduling block | 32 chunks, largest-first within block | smaller blocks (8) regressed; 32 keeps priors useful | 2026-06-07 entries; "What did not work" |
+| TQ probe windows | 3×48 sampled; 5 windows on later probes after high spread; whole-chunk at/below full-probe threshold | sampled probes match full-probe accuracy at lower GPU cost | "Current target-quality strategy"; "What has worked" |
+| JOD target range (default) | 9.25-9.52, accepted literally | 0.02 above old 9.50 absorbs overshoot headroom | "Current target-quality strategy" |
+| CRF search | adaptive priors from completed chunks + bracket-aware after first two probes | fewer probes without accuracy loss | "What has worked" |
+| Pipeline concurrency | slot release during scoring, async scoring, decode/GPU overlap, parallel analysis | overlaps GPU and CPU work for faster TQ | 2026-06-12 "concurrency restructure" |
+
 ## Why this exists
 
 Performance work has a long feedback loop: real encodes are slow, many plausible changes only help one clip, and git history alone does not capture why a change was kept or reverted. Keep enough notes here that a future maintainer or coding agent can understand what was tried, what worked, what failed, and what should be tested next.
