@@ -1171,6 +1171,59 @@ chunks at their interpolated CRF, measure real landing rate vs the 60% estimate)
 not decision-critical -- the noise-dominated residuals make its outcome predictable and it would
 not change the gate choice. Next build is the worst-window/straddle early-out above.
 
+## 2026-06-14 Worst-window / straddle early-out: simulated and rejected
+
+The monotonicity_guard diagnostic recommended a worst-window/straddle early-out as an
+"accuracy-neutral" probe-count win (stop once the band is provably unreachable; the conservative
+overshoot pick "does not change, only how fast we reach it"). Before building it, I validated that
+premise by replaying candidate stop rules over all 670 recorded Sully probe sequences -- truncating
+each at the rule's stop point and comparing `BestProbe(prefix)` to `BestProbe(all)`. No encodes.
+The Python `BestProbe`/floor reimplementation reproduces reel's recorded `final_crf` on 670/670
+chunks, so the simulation is faithful. Scripts: `/tmp/sim_oracle.py`, `/tmp/sim_rule.py`,
+`/tmp/direction.py`.
+
+### The premise is false: post-straddle probes refine the pick
+
+- **Oracle ceiling (hindsight):** only 12.7% of all probes (266/2087) are taken *after* the result
+  has already stabilised; 208 of those are in guard chunks (31% of guard probes). Mean probes/chunk
+  could drop 3.11 -> 2.72 with a perfect oracle.
+- **No causal rule reaches it safely.** Two principled result-safe rules -- "best is a safe
+  overshoot and a floor-fail sits adjacent on the target side" and "worst-window slope predicts the
+  next grid step falls below floor" -- **fire zero times**. An interval-collapse rule saves 1.1% but
+  already changes 12 picks. The 12.7% waste is only separable with hindsight: at the moment a
+  straddle appears the search genuinely cannot tell whether the next probe will improve the pick.
+- **The diagnostic's literal rule trades accuracy.** "Stop when probes straddle the band"
+  (mean above-band + mean below-floor) saves 30% of probes -- matching the diagnostic's ~2.2
+  probes/chunk estimate -- but **changes the final pick on 216/670 chunks (32%)** by a median 0.126
+  JOD, max 0.534 (about a full +-0.135 tolerance band). The worst-window-bracket variant: 34% saved,
+  232 picks changed. So post-straddle probes are not waste; they materially reduce overshoot.
+
+### What the trade actually is: quality-safe but bitrate-expensive
+
+Every one of the 216 changed picks lands on a **more-overshooting** probe (higher quality, larger
+file); **zero** drop below the floor. So the early-out introduces no quality risk -- but the
+early-chosen probe encodes are **~47% larger (median, p90 2.3x)** than the converged pick. Stopping
+early spends ~30% fewer probes in exchange for keeping ~0.13 JOD of imperceptible over-quality, at
+roughly +15% output size across the whole encode (0.32 of chunks x ~0.47 each). For an archival
+encoder whose entire purpose is size-efficiency at a controlled quality floor, that is a bad default
+-- it directly undoes what the TQ search exists to do.
+
+### Verdict: rejected
+
+The worst-window/straddle early-out is not an accuracy-neutral speed win; it is a speed-vs-size
+knob. As a default it is harmful (~15% larger files for imperceptible over-quality). As an explicit
+opt-in "fast" mode it is quality-safe but low value for this encoder, and the user has not asked for
+a speed/size tradeoff. Killed for the price of a script -- no code change, no encode. The genuine
+remaining lever for the probe tail is *probe-sample measurement noise* (the 39% mean-bracket group
+is noise-limited, not search-limited); reducing it needs more sample frames per probe (more GPU
+per probe), which is a real-encode experiment, not a free optimization.
+
+### Change
+
+None. Third plausible search-layer idea (after content-prior and flat-low) rejected by simulation
+before any build. The probe tail is real but has no free lunch: probe count cannot be cut without
+either larger files or noisier measurements.
+
 ## Open questions / next tests
 
 Layout: **Open** work first (grouped by area, highest value first), then **Standing
@@ -1184,15 +1237,18 @@ section unreadable before; add new ones under the right heading instead.
 
 The 2026-06-14 feature-length run showed the probe tail is the dominant real-movie cost
 (probes/chunk 3.11, 21% of chunks maxing out, 37% not cleanly converging) and is invisible
-on short homogeneous clips. These are now the top performance lever.
+on short homogeneous clips. **Update 2026-06-14:** the probe tail has no free lunch -- the
+three obvious cheap wins (content-prior seed, flat-low gate, worst-window early-out) are all
+rejected by simulation. Probe count cannot be cut without larger files or noisier measurements.
+The only remaining lever is a real-encode experiment, not a search-layer tweak.
 
-- **Worst-window / straddle early-out** (the diagnostic's recommended next build, see
-  "monotonicity_guard diagnostic" above). When the mean score is in band but the worst window is
-  stuck below floor across a CRF bracket -- or probes straddle target with the low side below
-  floor -- stop immediately and take the conservative overshoot instead of probing to the
-  monotonicity guard at 4.56 probes. ~52-69% of guard chunks are in this state; ~7-10% of total
-  probe work recoverable, accuracy-neutral (the overshoot pick does not change, only how fast we
-  reach it). This *replaces* the flat-low idea below as the search-layer priority.
+- **Probe-sample noise vs sample-frame count** (the one genuine, untested lever). The 39%
+  mean-bracket guard group is *measurement-noise*-limited, not search-limited (interpolation only
+  ~60% reliable; residuals are noise not curvature). More sample frames per probe would lower that
+  noise and could cut probes needed to localise the band -- but it costs more GPU per probe, so the
+  net is unknown and needs a real A/B (probe_sample_frames up vs down on a high-variance clip),
+  measured as total TQ wall time, not probe count. This is the next real experiment if the tail is
+  worth pursuing at all.
 - **Provisional priors from in-progress chunks.** Consider only if probe-count tails persist
   across multiple clips (the feature run says they do; worth revisiting).
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
@@ -1226,6 +1282,13 @@ on short homogeneous clips. These are now the top performance lever.
 
 ### Resolved (index -- full detail in the dated entries above)
 
+- **Worst-window / straddle early-out** -- rejected 2026-06-14 (see "Worst-window / straddle
+  early-out: simulated and rejected"). Simulated over all 670 Sully chunks (BestProbe replay
+  verified 670/670). Result-safe causal rules save ~0%; the aggressive straddle stop saves 30% but
+  changes 32% of picks by ~a full tolerance band. Every changed pick is *more* overshoot (quality-
+  safe, never below floor) but ~47% larger encodes -- so it is a speed-vs-size knob (+15% output
+  for ~30% fewer probes), not the accuracy-neutral win the diagnostic assumed. Not worth it as a
+  default for an archival encoder.
 - **monotonicity_guard diagnostic** -- resolved 2026-06-14 (see "monotonicity_guard diagnostic").
   The 147 guard chunks split three ways: 52% worst-window-limited (mean in band, a hard sub-segment
   ~0.02 JOD below floor; overshoot is the correct quality-safe pick, not recoverable), 39%
