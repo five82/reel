@@ -29,7 +29,7 @@ const (
 	// ~2x that wastes probes landing just outside the band and marching the
 	// search to extra probes. At +-0.20 chunks converge in 1-2 probes with no
 	// streaming-visible quality loss. See AGENTS.md "Target CVVDP range" and
-	// docs/PERFORMANCE_TESTING.md "Target band WIDTH is the real probe-tail lever".
+	// docs/PERFORMANCE_TESTING_LOG.md "Target band WIDTH is the real probe-tail lever".
 	DefaultTargetQuality = "9.15-9.55"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
