@@ -124,7 +124,10 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 - **Smarter sampling on high-spread chunks.** The one real outlier in the band-confirm encode
   (Sully chunk 0664, true 8.689 vs sampled 9.679) was a sampling miss on a chunk pushed to the CRF
   ceiling, not a band problem. Conditional extra windows on high-spread chunks remain the standing
-  remedy (AGENTS.md "How to Improve Target-Quality Results", item 1).
+  remedy (AGENTS.md "How to Improve Target-Quality Results", item 1). This is also the prerequisite
+  for ever raising the HDR display peak luminance above 1000: a higher peak makes the metric more
+  highlight-sensitive than sparse sampling can track, so it overshoots CRF on bright content (see
+  LOG "HDR display peak luminance 1000 vs 1500"). Don't retry the HDR peak bump without it.
 
 ### Open -- performance / infra
 

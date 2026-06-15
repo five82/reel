@@ -1269,6 +1269,86 @@ principle in AGENTS.md. Validated by the feature-length encode + fullvalidate ab
 target-quality encoding and ~2.4x smaller output at a true median JOD of 9.42, well inside
 transparent-for-streaming. Kept workdir at `~/testing/band-confirm/.reel-Sully_t00-1ce039b19801`.
 
+## 2026-06-14 HDR display peak luminance 1000 vs 1500 (reviewed, tested, reverted)
+
+Machine: dev box (32 cores, dual-channel DDR5, CUDA GPU). Clip: `sully-5m-4k-hdr`
+(7184 frames, 3840x2160 -> cropped 3840x1600, HDR PQ). Chosen because it is the
+only 4000-nit master in the test set (mastering-display max 4000 cd/m2, MaxCLL 4000,
+MaxFALL 290) -- the others (io, kbv1, ko) are 1000-nit masters where a display-peak
+change above 1000 is a no-op.
+
+### Why
+
+Reviewed the CVVDP display model (`internal/quality/defaultDisplayModel`) against the
+user's actual screens: LG C2 OLED (~800 nit peak), M4 iPad Pro (~1600), Pixel 10 Pro
+(~2000+) -- all OLED, all viewed at normal distances. The HDR default
+`max_luminance` was 1000, below all three devices and below cvvdp's own
+`standard_hdr_pq` preset (1500). Hypothesis: 1000 under-tests highlight
+banding/quantization for 4000-nit-mastered content on bright panels, so the search
+might be leaving visible highlight artifacts the user could see.
+
+Other parameters were reviewed and left unchanged:
+- **Geometry** (55" @ 1.3 m -> ~76 ppd) already bounds all three devices: the C2 at a
+  living-room distance is ~100-150 ppd and the iPad/Pixel are higher still (higher ppd
+  = artifacts subtend fewer degrees = less demanding). 76 ppd is near the eye's acuity
+  ceiling and is the lowest-ppd (most demanding) realistic case.
+- **SDR** (200 nit, 1000:1, 100 lux): even though all three panels are OLED with true
+  blacks, at `E_ambient` 100 lux the reflected screen flare (`100 * k_refl / pi` ~ 0.16
+  nit) already sits above both the modeled 0.2-nit black and OLED's true black, so
+  raising SDR contrast changes almost nothing unless watching in a near-dark room. Not
+  worth the bits.
+
+### Method
+
+A/B with the same rebuilt binary, differing only in HDR display `max_luminance`.
+Baseline used `--cvvdp-display` pinned to a 1000-nit JSON otherwise identical to the
+default HDR model; the new run used the 1500-nit default. Both encodes were then
+scored by `scripts/fullvalidate`, which regenerates the display model from the current
+binary's default (1500) -- so **both were judged under the same stricter 1500 ruler**.
+
+### Results
+
+| Metric | Baseline (1000-trained) | New (1500-trained) |
+|--------|-------------------------|--------------------|
+| Video size | 36.86 MB | 36.28 MB |
+| Probes/chunk | 1.73 | 1.36 |
+| Sampled JOD mean | 9.419 | 9.407 |
+| Ground-truth full JOD mean | **9.467** | **9.345** |
+| Chunks below band (of 33) | **0** | **8** |
+| Sampled-vs-true gap (mean abs) | 0.051 | 0.109 |
+
+### Conclusion: reverted to 1000
+
+Two findings, both against the change:
+
+1. **The 1000 model was not letting artifacts through.** The 1000-trained encode,
+   judged by the stricter 1500 ruler, still scores 9.467 mean with **zero** chunks
+   below band. There is no highlight-quality deficit for 1500 to fix; existing encodes
+   already satisfy a 1500-nit viewer (reassuring for the C2/iPad/Pixel).
+2. **Training the search on 1500 backfires.** Higher display peak makes the metric more
+   highlight-sensitive, but Reel's sparse 3x48 sampling cannot track those bright
+   moments -- the sampled-vs-true gap **doubled** (0.05 -> 0.11). The search believed
+   chunks sat at 9.3-9.5 while ground truth was 9.0-9.1, picked too-high CRFs, and
+   **8/33 chunks fell below band** in ground truth at the same file size. The sampled
+   summary looked fine (9.407, all converged, fewer probes) -- a textbook "validate
+   against ground truth, not sampled scores" trap.
+
+Net: 1500 gives no quality upside, slightly worse delivered quality, at the same size.
+Reverted `internal/quality/display.go` to `max_luminance = 1000`.
+
+Caveat: `sully-5m` is a known-noisy clip (cliff-response chunks, noisy probe counts)
+and is the only 4000-nit clip available, so the absolute 8-below-band count may be
+partly CRF-divergence on cliff chunks. The robust, mechanism-consistent signal is the
+**doubling of the sampled-vs-true gap**, which points the right way regardless.
+
+Open idea (do not retry 1500 without this): a higher HDR display peak is only viable
+**with highlight-aware sampling** -- conditional extra/brighter-region windows on
+high-luminance chunks so the search can track the highlight sensitivity it introduces.
+This is a variant of the standing "smarter sampling on high-spread chunks" item. Until
+that exists, keep `max_luminance = 1000`. Artifacts:
+`~/testing/hdr-lum-ab/{baseline-1000,new-1500}{,-wd}` plus `*-fullvalidate.txt` and
+`*-output.mkv`.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
 - **Worst-window / straddle early-out** -- rejected 2026-06-14 (see "Worst-window / straddle
@@ -1337,3 +1417,10 @@ transparent-for-streaming. Kept workdir at `~/testing/band-confirm/.reel-Sully_t
   estimators that *change the boundaries* (accuracy-affecting; must pass Boundary hash +
   fullvalidate) plus incremental plan/encoder/resume plumbing. Revisit only if 4K
   feature-length wall time becomes the priority.
+- **HDR display peak luminance 1000 vs 1500** -- reviewed and rejected 2026-06-14 (see "HDR
+  display peak luminance 1000 vs 1500"). Raising the HDR display model to cvvdp's standard 1500
+  (to match bright OLED panels) gives no quality upside and slightly *worse* delivered quality on
+  4000-nit content: the 1000-trained encode already passes the 1500 ruler (0/33 below band, mean
+  9.467), while the 1500-trained search overshoots CRF because sparse sampling cannot track the
+  added highlight sensitivity (sampled-vs-true gap doubles, 8/33 below band at the same size).
+  Keep 1000. Only viable with highlight-aware sampling first.
