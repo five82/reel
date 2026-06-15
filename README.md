@@ -4,9 +4,9 @@ AV1 encoding tool using the SVT-AV1 encoder library and FFmpeg/libav for paralle
 
 ## Expectations
 
-This repository is shared as is. Reel is a personal encoding tool I built for my own workflow, hardware, and preferences. I've open sourced it because I believe in sharing but I'm not an active maintainer.
+This repository is shared as is. reel is a personal encoding tool I built for my own workflow, hardware, and preferences. I've open sourced it because I believe in sharing but I'm not an active maintainer.
 
-- Experimental: This is an incomplete early stage project that is purely experimental at this point. I would recommend looking at [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav) for parallel chunked encoding.
+- Experimental: This is an early stage project that is purely experimental at this point. I would recommend looking at [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav) for parallel chunked encoding.
 - Personal-first: Things will change and break as I iterate.
 - Best-effort only: This is a part-time hobby project and I work on it when I'm able to. I may be slow to respond to questions or may not respond at all.
 - “Vibe coded”: I’m not a Go developer and this project started as (and remains) a vibe-coding experiment. Expect rough edges.
@@ -20,6 +20,12 @@ This repository is shared as is. Reel is a personal encoding tool I built for my
 - Multi-track audio transcoding to Opus
 - Post-encode validation (codec, dimensions, duration, HDR)
 - Library API for embedding
+
+## Design Goals
+
+reel encodes media libraries for home streaming watched at normal viewing distances. It is not an archival or reference quality encoding tool. The aim is "fast" target quality encodes that have more consistent quality across varied content compared to fixed CRF. Speed is a first class goal. When a tradeoff buys meaningful encode time at a quality cost that is invisible in normal viewing, reel takes it.
+
+This is a deliberately different point on the speed/quality/size curve from typical target quality encoding tools which chase near optimal per-scene quality at the expense of more compute.
 
 ## Requirements
 
@@ -63,43 +69,15 @@ reel encode -i input.mkv -o output/
 reel encode -i /videos/ -o /encoded/
 ```
 
-Reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing with a shorter 12s maximum chunk cap, so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
+reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing with a shorter 12s maximum chunk cap, so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
 
 Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores sampled CVVDP windows, starts from adaptive CRF priors, requires every sampled window to meet the lower quality bound, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
-### Options
-
-```
-Required:
-  -i, --input          Input video file or directory (required)
-  -o, --output         Output directory (required)
-
-Quality Settings:
-  --quality-mode MODE  target by default; crf by default in no_vship builds
-  --target-quality R   CVVDP JOD target range (default 9.25-9.52)
-  --crf-range R        Target-quality CRF search range (default 4.25-63.75)
-  --cvvdp-display PATH Optional VSHIP/CVVDP display JSON override
-  --metric-workers N   Concurrent VSHIP/CUDA metric workers (default 4)
-  --max-probes N       Maximum target-quality probes per chunk (default 6)
-  --crf <VALUE>        Fixed CRF mode, 1-70 in 0.25 steps
-                         Defaults in CRF mode: SD=24, HD=26, UHD=26
-                         Single value: --crf 25.25
-                         Triple: --crf 24,26.25,26.5 (SD,HD,UHD)
-  --preset <0-13>      SVT-AV1 preset (default 6, lower = slower/better)
-
-Processing Options:
-  --disable-autocrop   Disable black bar detection
-
-Output Options:
-  -l, --log-dir        Log directory (defaults to ~/.local/state/reel/logs)
-  -v, --verbose        Verbose output
-  --no-log             Disable log file creation
-  --keep-workdir       Keep the .reel work directory after successful encodes
-```
+Run `reel encode --help` for the full flag list, or see [docs/USAGE.md](docs/USAGE.md).
 
 ## Library Usage
 
-Reel can be used as a Go library:
+reel can be used as a Go library:
 
 ```go
 import "codeberg.org/five82/reel"
@@ -120,30 +98,6 @@ result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event reel.Event
     }
     return nil
 })
-```
-
-## Project Structure
-
-```
-reel/
-├── reel.go             # Public API
-├── events.go           # Event types for progress callbacks
-├── cmd/reel/           # CLI
-└── internal/
-    ├── config/         # Configuration and defaults
-    ├── discovery/      # Video file discovery
-    ├── encoder/        # SVT-AV1 command building
-    ├── encode/         # Parallel chunk encoding pipeline
-    ├── chunk/          # Chunk management
-    ├── keyframe/       # Keyframe extraction
-    ├── worker/         # Worker pool for parallel encoding
-    ├── video/          # FFmpeg/libav video probing and frame extraction
-    ├── media/          # Native libav media analysis and HDR detection
-    ├── processing/     # Orchestration, crop detection, audio
-    ├── validation/     # Post-encode validation
-    ├── reporter/       # Progress reporting (terminal, composite)
-    ├── logging/        # File logging
-    └── util/           # Formatting, file utils, system info
 ```
 
 ## Development
