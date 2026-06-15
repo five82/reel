@@ -102,6 +102,11 @@ Layout: **Open** work first (grouped by area, highest value first), then
 are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
+Each open item carries a priority (critical / high / medium / low) with a brief
+reason, per AGENTS.md. None is currently critical or high: the defaults are
+settled and validated, so every item below is an improvement or a portability
+caveat, not a bug or a quality regression.
+
 ### Open -- search layer (probe-count tail; highest value)
 
 The 2026-06-14 feature-length run showed the probe tail is the dominant real-movie cost
@@ -117,10 +122,15 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   net is unknown and needs a real A/B (probe_sample_frames up vs down on a high-variance clip),
   measured as total TQ wall time, not probe count. This is the next real experiment if the tail is
   worth pursuing at all.
+  _Priority: medium -- the only remaining lever on the dominant feature-length probe tail, but the
+  net GPU benefit is unknown and the big tail win (band width) is already banked._
 - **Provisional priors from in-progress chunks.** Consider only if probe-count tails persist
   across multiple clips (the feature run says they do; worth revisiting).
+  _Priority: low -- gated on the tail recurring across multiple clips; a nontrivial change for a
+  speculative gain._
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
   a probe; add targeted handling only if this repeats.
+  _Priority: low -- single sighting; monitor-only, no action unless it recurs._
 - **Smarter sampling on under-represented sub-segments.** The sampled windows can miss a chunk's
   worst-case frames, and two independent sightings now point the same way: the band-confirm Sully
   chunk 0664 (true 8.689 vs sampled 9.679) was a CRF-ceiling miss, and the HDR display-peak test
@@ -132,17 +142,23 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   the prerequisite for ever raising the HDR display peak luminance above 1000; don't retry that bump
   without it. Latent only: at the shipped 1000 config the sampled-vs-true gap is at the noise floor
   and ground truth is 0/33 below band, so this is not worth building for the shipped config alone.
+  _Priority: low -- latent at shipped defaults (0/33 below band, gap at the noise floor); it only
+  unlocks a future HDR display-peak bump that isn't currently needed._
 
 ### Open -- performance / infra
 
 - **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
   it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
   calibrated on this box's dual-channel DDR5 + 32 cores).
+  _Priority: low -- single-user project that runs only on the calibrated box; matters only if the
+  encode host changes._
 - **Feature-length fullvalidate ground-truth pass** on the kept baseline Sully workdir
   (`~/testing/fulllen-attr/.reel-Sully_t00-1ce039b19801`) to confirm the 30%-overshoot
   finding of the *old* 9.25-9.52 band against true full-chunk CVVDP for an apples-to-apples
   worst-case comparison. ~1h GPU. (The new 9.15-9.55 band already has its ground-truth pass --
   see 2026-06-14 "Target band WIDTH".)
+  _Priority: low -- validates a superseded band for the historical record only; the shipped band
+  already has its ground-truth pass._
 
 ### Open -- methodology / tooling
 
@@ -150,6 +166,8 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   so probes/chunk approaches the feature-length regime (~3) without a 4-hour encode. Validate
   every search-layer change against it; single homogeneous 5-20m cuts converge in ~1.7 probes
   and hide the tail entirely (2026-06-14 feature run).
+  _Priority: medium -- cheap prerequisite tooling that unblocks every future search-layer A/B
+  (including the probe-sample item above); current short clips hide the probe tail entirely._
 
 ### Standing guidance (hold unless new evidence overrides)
 
