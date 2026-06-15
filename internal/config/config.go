@@ -23,10 +23,14 @@ const (
 	QualityModeTarget = "target"
 	QualityModeCRF    = "crf"
 
-	// DefaultTargetQuality is the default CVVDP JOD target range. The upper
-	// bound carries the small overshoot headroom that previously lived in a
-	// separate search grace constant; the search accepts the range literally.
-	DefaultTargetQuality = "9.25-9.52"
+	// DefaultTargetQuality is the default CVVDP JOD target range (center 9.35,
+	// half-width 0.20). The band width is a speed lever, not just an accuracy
+	// setting: probe measurement noise is ~0.075 JOD, so a half-width below
+	// ~2x that wastes probes landing just outside the band and marching the
+	// search to extra probes. At +-0.20 chunks converge in 1-2 probes with no
+	// streaming-visible quality loss. See AGENTS.md "Target CVVDP range" and
+	// docs/PERFORMANCE_TESTING.md "Target band WIDTH is the real probe-tail lever".
+	DefaultTargetQuality = "9.15-9.55"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
 	DefaultCRFSearchRange = "4.25-63.75"

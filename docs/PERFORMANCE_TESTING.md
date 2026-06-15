@@ -1224,6 +1224,96 @@ None. Third plausible search-layer idea (after content-prior and flat-low) rejec
 before any build. The probe tail is real but has no free lunch: probe count cannot be cut without
 either larger files or noisier measurements.
 
+## 2026-06-14 Target band WIDTH is the real probe-tail lever (and a quality-goal review)
+
+After three search-layer ideas were rejected for having no free lunch, the right question turned
+out to be upstream: what CVVDP target range does reel actually need? Reel encodes libraries
+(hundreds of titles) for Jellyfin streaming viewed at normal distances on TVs/tablets/phones --
+not archival/reference quality. The point of target-quality is consistency + better-than-fixed-CRF
+at a speed that scales, so the band should be only as tight as the use case needs.
+
+### The band width, not the search, controls the probe tail
+
+Simulated candidate bands over the recorded feature-length Sully probes: for each chunk, the first
+probe that would converge under band [c-w, c+w] (mean in band AND worst_window >= c-w). Script
+`/tmp/tol_sweep.py`. The current default band is `9.25-9.52` (center 9.385, half-width +-0.135).
+
+| band | convergence | probes/chunk | maxed | quality landing (sampled) |
+|---|---|---|---|---|
+| 9.25-9.52 (current, +-0.135) | 63% | 3.11 | 37% | mean 9.49, p10 9.32 |
+| 9.20-9.55 (+-0.175) | 99% | 1.82 | 1% | mean 9.37, p10 9.22 |
+| 9.15-9.55 (+-0.20) | 100% | 1.51 | 0% | mean 9.33, p10 9.19, none < 9.0 |
+| 9.10-9.60 (+-0.25) | 100% | 1.35 | 0% | mean 9.34, p10 9.18, none < 9.0 |
+
+Widening the half-width from 0.135 to 0.20 cuts feature-length probe work ~51% (3.11 -> 1.51) and
+takes convergence 63% -> 100%. The cause is exactly the monotonicity_guard diagnostic: probe
+measurement noise is ~0.075 JOD and the half-width was 0.135 -- barely 1.8x the noise, so probes
+kept landing just outside the band and marching to the guard. At +-0.20 (2.6x noise) they land
+in-band on the first or second probe. This dwarfs the 12.7% oracle ceiling the search-layer tweaks
+could not even reach -- the probe tail was a too-tight-band artifact all along.
+
+Bonus: a wider band also *reduces* the 30% overshoot tail (chunks now converge instead of being
+forced to the conservative overshoot pick), so output is slightly smaller, not larger.
+
+### Why this does not cost streaming quality
+
+CVVDP JOD is anchored at 10 = indistinguishable from source, calibrated so ~1 JOD ~= 75% of
+observers pick the reference in a side-by-side 2AFC. Streaming has no reference on screen, so the
+2AFC-calibrated JOD is far stricter than no-reference viewing: ~9.0+ is effectively transparent in
+normal viewing, 9.25-9.5 is high quality with margin. The current center 9.385 is already
+demanding, and reel's display model (55" 4K at 1.3 m ~= 76 px/deg, near the acuity ceiling) is a
+conservative viewing calibration on top of that. Widening to `9.15-9.55` keeps the center at ~9.35
+(quality intent unchanged) and the floor at 9.15 sampled (and the sampled score is the conservative
+mean/worst midpoint) -- still well inside transparent-for-streaming, and far more consistent than
+fixed CRF.
+
+### Recommendation
+
+Default band `9.15-9.55` (center 9.35, +-0.20): ~51% less probe work at feature length, no quality
+center change, smaller files, nothing below 9.0 in simulation. `9.10-9.60` if more speed is wanted;
+lowering the *center* toward ~9.2 is a separate, more aggressive size lever to validate only if file
+size becomes a priority. The principle to record: **band width is a speed knob, not just an accuracy
+setting -- a band tighter than ~2x probe noise (~0.15 half-width) buys consistency you cannot measure
+and pays for it in probes.**
+
+### Confirming feature-length encode + ground truth (2026-06-14)
+
+Re-ran the full 96-min Sully 4K encode at `9.15-9.55` and validated with `scripts/fullvalidate`
+(full-chunk CVVDP of the final output). Measured against the baseline `9.25-9.52` run:
+
+| metric | baseline 9.25-9.52 | new 9.15-9.55 |
+|---|---|---|
+| probes/chunk | 3.11 | **1.46** (-53%) |
+| convergence | 63% | **99%** (665/670; 1 guard, 4 bounds_crossed) |
+| wall time | 4h2m | **1h57m** (-51%) |
+| output size | 2.9 GB | **1.2 GB** |
+
+The probe and wall-time wins match the simulation (predicted 1.51 probes/chunk). The large size drop
+is the intended removal of the old narrow band's ~30% overshoot tail -- it was over-spending bitrate
+for imperceptible over-quality.
+
+Ground truth (true full-chunk CVVDP of the new output): **mean 9.411, median 9.424, p10 9.257,
+min 8.689, max 9.895.** Only **3/670 chunks below the 9.15 floor**; mean abs error vs target 0.104.
+Sampling reliability: the sampled scores deviated from true by only **0.026 JOD mean** -- the 3x48
+window strategy holds up at the wider band. So the encoder lands where it believes, and where it
+believes is high-quality for streaming (true median 9.42, ~1.4 JOD better than the no-reference
+transparency floor).
+
+The worst three chunks are content/sampling limits, not band artifacts: 0664 true 8.689 (sampled
+said 9.679, a -0.99 gap -- a sampling miss on a chunk pushed to the CRF ceiling; the one real
+outlier, a single ~12 s segment); 0022 true 8.984 (intrinsically hard -- cannot reach the band at
+any CRF, even 4.2); 0647 true 9.136 (a hair under the floor). 0664 is a data point for the existing
+"smarter sampling" open item (conditional extra windows on high-spread chunks), independent of the
+band width.
+
+### Change
+
+Flipped `DefaultTargetQuality` 9.25-9.52 -> **9.15-9.55** (`internal/config/config.go`), updated
+`docs/USAGE.md`, and recorded the reel target-quality purpose + the band-width-as-speed-lever
+principle in AGENTS.md. Validated by the feature-length encode + fullvalidate above. Net: ~2x faster
+target-quality encoding and ~2.4x smaller output at a true median JOD of 9.42, well inside
+transparent-for-streaming. Kept workdir at `~/testing/band-confirm/.reel-Sully_t00-1ce039b19801`.
+
 ## Open questions / next tests
 
 Layout: **Open** work first (grouped by area, highest value first), then **Standing

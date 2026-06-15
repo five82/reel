@@ -57,7 +57,21 @@ golangci-lint run                     # Lint
 
 ## Target-Quality Encoding Philosophy
 
-Reel's target-quality mode trades some accuracy for significantly faster encoding time compared to full-probe approaches (e.g., xav). It is not a pursuit of perfect per-frame quality matching; the goal is to land in a good spot on the speed/accuracy curve before hitting diminishing returns. Treat accuracy comparisons as directional guidance, not a hard target.
+### What Reel target-quality is for
+
+Reel encodes media **libraries** (potentially hundreds of titles) for **Jellyfin streaming**, watched at normal viewing distances on TVs, tablets, and phones. It is **not** an archival or reference-quality encoder. The job of target-quality mode is to produce encodes that are **more consistent and better quality than a fixed CRF** (which has no quality feedback and swings wildly across content), at a **throughput that scales to a whole library**. Speed is a first-class goal, not an afterthought: when a tradeoff buys meaningful encode-time at a quality cost that is invisible in normal streaming, take it.
+
+This is a deliberately different point on the curve from tools like **xav** and **av1an**, where finding near-optimal per-scene/per-title quality is the priority and much more compute is acceptable. Reel chooses the faster "good enough for streaming at viewing distance" point. Treat accuracy comparisons against those tools as directional guidance, not a hard target; do not adopt their cost to chase quality the use case cannot see.
+
+### Target CVVDP range
+
+Quality is measured in CVVDP JOD (0-10, where 10 = indistinguishable from source). The scale is calibrated so ~1 JOD is roughly where 75% of viewers pick the reference in a **side-by-side** comparison. Streaming has no reference on screen, so this is far stricter than no-reference viewing: **~9.0+ is effectively transparent in normal viewing; 9.25-9.5 is high quality with margin.** Reel's default display model (a 55" 4K panel at 1.3 m, ~76 px/deg, near the eye's acuity ceiling) is itself a conservative viewing calibration, so a target landing in the low-to-mid 9.x range is already demanding for the actual use case.
+
+The default target range is set via `DefaultTargetQuality` in `internal/config/config.go` and is expressed as a `LOW-HIGH` band whose center is the target and whose half-width is the tolerance.
+
+**The band width is a speed knob, not just an accuracy setting.** Probe measurement noise on the sampled windows is ~0.075 JOD. A half-width tighter than about 2x that (~0.15) means probes keep landing just outside the band and the search marches to extra probes (the dominant feature-length cost; see `docs/PERFORMANCE_TESTING.md`, "Target band WIDTH is the real probe-tail lever"). A band only as tight as the use case needs converges in 1-2 probes and also reduces overshoot (smaller files). Do not tighten the band to buy consistency finer than the metric can measure or the viewer can see; it is paid for in probes.
+
+When changing the target range, keep it an explicit, evidence-backed decision: it is an accuracy/size/speed tradeoff that needs a confirming real encode + `scripts/fullvalidate` ground truth before the default moves, and it should be coordinated with the user.
 
 ### Two-Layer Architecture
 
