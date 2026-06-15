@@ -32,6 +32,7 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 - Prefer unit tests over real encodes; encoding is slow.
 - When running Reel with a timeout, use at least 120 seconds.
 - When performance tuning, record what was tried, why, measured results, and whether the change was kept or reverted. Add a dated entry to `docs/PERFORMANCE_TESTING_LOG.md` (the historical record), and update `docs/PERFORMANCE_TESTING.md` (the current-guidance summary: defaults table, strategy, open items) if a default or the active strategy changes. Read `docs/PERFORMANCE_TESTING.md` first for current state. This gives future agents context beyond git history.
+- When creating or updating open issues, assign a priority (critical, high, medium, low) and a brief reason
 
 ## Build, Test, Lint
 
