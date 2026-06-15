@@ -10,7 +10,7 @@ This file provides guidance when working with code in this repository.
 
 ## Project
 
-Reel is an **AV1 encoding tool** using FFmpeg/libav + SvtAv1EncApp for parallel chunked encoding. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
+Reel is an **AV1 encoding tool** using the SVT-AV1 and FFmpeg/libav libraries (linked in-process via cgo) for parallel chunked encoding. It provides opinionated defaults, automatic crop detection, HDR preservation, and post-encode validation.
 
 Single-developer hobby project - prefer simple, maintainable solutions over clever abstractions.
 
@@ -66,7 +66,7 @@ This is a deliberately different point on the curve from tools like **xav** and 
 
 ### Target CVVDP range
 
-Quality is measured in CVVDP JOD (0-10, where 10 = indistinguishable from source). The scale is calibrated so ~1 JOD is roughly where 75% of viewers pick the reference in a **side-by-side** comparison. Streaming has no reference on screen, so this is far stricter than no-reference viewing: **~9.0+ is effectively transparent in normal viewing; the mid-9.x range is high quality with margin.** Reel's default display model (a 55" 4K panel at 1.3 m, ~76 px/deg, near the eye's acuity ceiling) is itself a conservative viewing calibration, so a target landing in the low-to-mid 9.x range is already demanding for the actual use case.
+Quality is measured in CVVDP JOD (0-10, where 10 = indistinguishable from source). The scale is calibrated so ~1 JOD is roughly where 75% of viewers pick the reference in a **side-by-side** comparison. Streaming has no reference on screen, so this is far stricter than no-reference viewing: **~9.0+ is effectively transparent in normal viewing; the mid-9.x range is high quality with margin.** Reel's default display model (defined in `internal/quality/display.go`) is itself a conservative viewing calibration -- it resolves detail at the eye's acuity ceiling -- so a target landing in the low-to-mid 9.x range is already demanding for the actual use case.
 
 The default target range is set via `DefaultTargetQuality` in `internal/config/config.go` and is expressed as a `LOW-HIGH` band whose center is the target and whose half-width is the tolerance.
 
@@ -108,4 +108,4 @@ When comparing against xav, measure:
 
 ### Measuring Accuracy
 
-Sampled scores in `target-quality.json` are what the search *believed*, not ground truth. For any change that trades accuracy (window count/size, probe thresholds, chunk caps), run `scripts/fullvalidate <src> <out> <workdir>` on a kept workdir: it scores the final output with full-chunk CVVDP and reports true per-chunk JOD plus how far the sampled scores deviated.
+Sampled scores in `target-quality.json` are what the search *believed*, not ground truth. For any change that trades accuracy (window count/size, probe thresholds, chunk caps), run `scripts/fullvalidate` on a kept workdir: it scores the final output with full-chunk CVVDP and reports true per-chunk JOD plus how far the sampled scores deviated.
