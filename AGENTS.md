@@ -65,7 +65,7 @@ This is a deliberately different point on the curve from tools like **xav** and 
 
 ### Target CVVDP range
 
-Quality is measured in CVVDP JOD (0-10, where 10 = indistinguishable from source). The scale is calibrated so ~1 JOD is roughly where 75% of viewers pick the reference in a **side-by-side** comparison. Streaming has no reference on screen, so this is far stricter than no-reference viewing: **~9.0+ is effectively transparent in normal viewing; 9.25-9.5 is high quality with margin.** Reel's default display model (a 55" 4K panel at 1.3 m, ~76 px/deg, near the eye's acuity ceiling) is itself a conservative viewing calibration, so a target landing in the low-to-mid 9.x range is already demanding for the actual use case.
+Quality is measured in CVVDP JOD (0-10, where 10 = indistinguishable from source). The scale is calibrated so ~1 JOD is roughly where 75% of viewers pick the reference in a **side-by-side** comparison. Streaming has no reference on screen, so this is far stricter than no-reference viewing: **~9.0+ is effectively transparent in normal viewing; the mid-9.x range is high quality with margin.** Reel's default display model (a 55" 4K panel at 1.3 m, ~76 px/deg, near the eye's acuity ceiling) is itself a conservative viewing calibration, so a target landing in the low-to-mid 9.x range is already demanding for the actual use case.
 
 The default target range is set via `DefaultTargetQuality` in `internal/config/config.go` and is expressed as a `LOW-HIGH` band whose center is the target and whose half-width is the tolerance.
 
