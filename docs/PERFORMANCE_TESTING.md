@@ -121,13 +121,17 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   across multiple clips (the feature run says they do; worth revisiting).
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
   a probe; add targeted handling only if this repeats.
-- **Smarter sampling on high-spread chunks.** The one real outlier in the band-confirm encode
-  (Sully chunk 0664, true 8.689 vs sampled 9.679) was a sampling miss on a chunk pushed to the CRF
-  ceiling, not a band problem. Conditional extra windows on high-spread chunks remain the standing
-  remedy (AGENTS.md "How to Improve Target-Quality Results", item 1). This is also the prerequisite
-  for ever raising the HDR display peak luminance above 1000: a higher peak makes the metric more
-  highlight-sensitive than sparse sampling can track, so it overshoots CRF on bright content (see
-  LOG "HDR display peak luminance 1000 vs 1500"). Don't retry the HDR peak bump without it.
+- **Smarter sampling on under-represented sub-segments.** The sampled windows can miss a chunk's
+  worst-case frames, and two independent sightings now point the same way: the band-confirm Sully
+  chunk 0664 (true 8.689 vs sampled 9.679) was a CRF-ceiling miss, and the HDR display-peak test
+  showed the windows under-cover a chunk's brightest (>1000-nit) frames (see LOG "HDR display peak
+  luminance 1000 vs 1500"). Both are the same representativeness gap. The concrete, cheap remedy
+  this suggests is **luminance-aware window placement** -- put one window on the chunk's brightest
+  segment using the per-frame luma shot detection already computes -- which is sharper than generic
+  conditional extra windows (AGENTS.md "How to Improve Target-Quality Results", item 1). It is also
+  the prerequisite for ever raising the HDR display peak luminance above 1000; don't retry that bump
+  without it. Latent only: at the shipped 1000 config the sampled-vs-true gap is at the noise floor
+  and ground truth is 0/33 below band, so this is not worth building for the shipped config alone.
 
 ### Open -- performance / infra
 

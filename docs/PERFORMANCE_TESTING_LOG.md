@@ -1325,27 +1325,45 @@ Two findings, both against the change:
    judged by the stricter 1500 ruler, still scores 9.467 mean with **zero** chunks
    below band. There is no highlight-quality deficit for 1500 to fix; existing encodes
    already satisfy a 1500-nit viewer (reassuring for the C2/iPad/Pixel).
-2. **Training the search on 1500 backfires.** Higher display peak makes the metric more
-   highlight-sensitive, but Reel's sparse 3x48 sampling cannot track those bright
-   moments -- the sampled-vs-true gap **doubled** (0.05 -> 0.11). The search believed
-   chunks sat at 9.3-9.5 while ground truth was 9.0-9.1, picked too-high CRFs, and
-   **8/33 chunks fell below band** in ground truth at the same file size. The sampled
-   summary looked fine (9.407, all converged, fewer probes) -- a textbook "validate
-   against ground truth, not sampled scores" trap.
+2. **The sampled windows under-cover a chunk's brightest frames.** This is the sharp
+   mechanism, not just "sampling is noisy." Note what did and did not move: the sampled
+   score barely changed (9.419 -> 9.407) and mean CRF barely moved (43.50 -> 44.12), so
+   the windows are mostly *not* highlight frames -- raising the display peak to 1500 only
+   affects content above 1000 nits, and the 3x48 windows largely sit below that. Yet the
+   **full-chunk** truth (which sees every frame, including the >1000-nit highlights the
+   windows skipped) dropped 9.467 -> 9.345, with the sampled-vs-true gap **doubling**
+   (0.05 -> 0.11) and **8/33 chunks below band**. So the search was blind to those bright
+   frames in *both* runs; it only stopped mattering at 1000 because they weren't scored
+   low enough to fall below band. The sampled summary looked fine (9.407, all converged,
+   fewer probes) -- a textbook "validate against ground truth, not sampled scores" trap.
 
 Net: 1500 gives no quality upside, slightly worse delivered quality, at the same size.
 Reverted `internal/quality/display.go` to `max_luminance = 1000`.
 
-Caveat: `sully-5m` is a known-noisy clip (cliff-response chunks, noisy probe counts)
-and is the only 4000-nit clip available, so the absolute 8-below-band count may be
-partly CRF-divergence on cliff chunks. The robust, mechanism-consistent signal is the
-**doubling of the sampled-vs-true gap**, which points the right way regardless.
+Confounds checked and ruled out:
+- **Not just CRF-curve steepness.** Higher CRF steepens JOD-vs-CRF, so any sampling error
+  maps to a bigger JOD error -- but the gap showed up at *moderate* CRF too (chunk 0030 at
+  CRF 38.75: full 9.09, gap -0.40; chunk 0007 at 40.50: gap -0.29), so it is not a
+  steepness illusion.
+- **Not a one-clip fluke.** `sully-5m` is a known-noisy clip (cliff chunks) and the only
+  4000-nit master available, so the absolute 8-below-band count may be partly CRF-divergence
+  on cliff chunks. But this is the *second* independent sighting of the same failure mode:
+  the feature-length Sully run had chunk 0664 (true 8.689 vs sampled 9.679, ~1.0 JOD miss)
+  on a CRF-ceiling chunk -- a worst-case sub-segment the windows did not represent. Same
+  story.
 
-Open idea (do not retry 1500 without this): a higher HDR display peak is only viable
-**with highlight-aware sampling** -- conditional extra/brighter-region windows on
-high-luminance chunks so the search can track the highlight sensitivity it introduces.
-This is a variant of the standing "smarter sampling on high-spread chunks" item. Until
-that exists, keep `max_luminance = 1000`. Artifacts:
+Important: this is **latent, not biting at the shipped config.** At 1000 / +-0.20 the
+sampled-vs-true gap is 0.05, at the probe noise floor (~0.075), and full-chunk truth of the
+shipped encode is 0/33 below band. Today's bits are genuinely fine; the gap only becomes a
+delivered-quality problem under a stricter/more-highlight-sensitive model than the sampling
+can track. Do not churn the sampler for this alone.
+
+Open idea (do not retry 1500 without this): the remedy is **luminance-aware window
+placement**, not just generic "extra windows on high spread." Per-frame luma is already
+available from shot detection, so placing one sampled window on the chunk's brightest
+segment is nearly free and directly closes the peak-luminance representativeness gap. That
+is the concrete prerequisite that would make a stricter HDR display model viable. Until it
+exists, keep `max_luminance = 1000`. Artifacts:
 `~/testing/hdr-lum-ab/{baseline-1000,new-1500}{,-wd}` plus `*-fullvalidate.txt` and
 `*-output.mkv`.
 
@@ -1421,6 +1439,9 @@ that exists, keep `max_luminance = 1000`. Artifacts:
   display peak luminance 1000 vs 1500"). Raising the HDR display model to cvvdp's standard 1500
   (to match bright OLED panels) gives no quality upside and slightly *worse* delivered quality on
   4000-nit content: the 1000-trained encode already passes the 1500 ruler (0/33 below band, mean
-  9.467), while the 1500-trained search overshoots CRF because sparse sampling cannot track the
-  added highlight sensitivity (sampled-vs-true gap doubles, 8/33 below band at the same size).
-  Keep 1000. Only viable with highlight-aware sampling first.
+  9.467). The sharp finding is a **sampling representativeness gap** -- the 3x48 windows under-cover
+  a chunk's brightest (>1000-nit) frames, so a highlight-sensitive metric exposes divergence the
+  search is blind to (full-chunk truth drops to 9.345, 8/33 below band, while sampled score/CRF
+  barely move). Latent at the shipped 1000 config (gap at noise floor, 0/33 below band). Remedy:
+  luminance-aware window placement (one window on the brightest segment; luma already available).
+  Keep 1000 until that exists.
