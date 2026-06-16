@@ -279,6 +279,11 @@ Conclusion: keep the conservative high-side jump gate. It improved `sully5`, pre
 
 ## 2026-06-12 metric-worker scaling benchmark
 
+> **SUPERSEDED by the 2026-06-16 scoring fix** (see "Cascade root cause + FIX" -> "Impact on prior
+> findings"). The GPU-throughput speedup from concurrent metric workers measured here came from
+> per-handler CUDA streams, which the single-shared-handler fix removes; metric workers now gate
+> decode concurrency only. The numbers were real but the scaling curve no longer applies.
+
 Goal: evaluate whether the current hardcoded 4 CVVDP/VSHIP metric workers should remain fixed for both 1080p and 4K, vary by resolution, or scale like encoding workers. No Reel code changes were made for this test.
 
 Environment: local test machine, AMD Ryzen 9 7950X (32 logical CPUs), NVIDIA GeForce RTX 5060 Ti, 16 GB VRAM, driver 610.43.02.
@@ -541,6 +546,11 @@ Caveat for earlier entries: the soms and sully ground-truth numbers recorded und
 
 ## 2026-06-13 4K metric workers 4 vs 6 retest
 
+> **CONTAMINATED + now MOOT** (see "Cascade root cause + FIX" -> "Impact on prior findings"). The
+> "mw6 took more probes" result was the handler-corruption cascade (6 handlers cascade more than
+> 4), misread here as a prior-cascade *timing* confound. Keeping 4 is still fine, but with one
+> shared handler the 4-vs-6 question no longer exists (worker count = decode concurrency only).
+
 Goal: open question 7. The 2026-06-12 metric-worker benchmark set the 4K default to 4, noting 6 was the *metric-only* saturation point but did not help the full pipeline because the adaptive encoder only sustained 2-3 active 4K workers. Since then the concurrency restructure (slot release during scoring, async scoring, decode/GPU overlap) plus the 4K bandwidth-aware ramp raised sustained concurrency, and CVVDP now overlaps frame decode with GPU compute. Retest whether 6 metric workers now beats 4 in a real 4K encode.
 
 Environment: same dev machine (32 logical CPUs, RTX 5060 Ti 16 GB VRAM, dual-channel DDR5).
@@ -616,6 +626,12 @@ A new `--level-of-parallelism <1-6>` flag (config `SVTAV1LevelOfParallelism`, 0 
 Conclusion: scale lp off the worker target. Keep the change.
 
 ## 2026-06-13 Accuracy-trading TQ knobs: full-probe threshold, window size, chunk cap
+
+> **CONFOUNDED -- re-test the full-probe-threshold A/B before trusting its magnitude** (see
+> "Cascade root cause + FIX" -> "Impact on prior findings"). knobB (threshold 144) full-probes
+> fewer chunks, so it had far more sampled chunks and thus far more cascade exposure than base
+> (256); its "accuracy collapse" is inflated by the scoring bug. The direction (full-probing is
+> more accurate, and is cascade-immune) likely holds; the 0.46 JOD penalty number does not.
 
 Goal: open question 9. Three knobs trade probe accuracy for GPU work -- the 256-frame
 full-probe threshold, the 3x48 sampled-window size, and the 12s TQ chunk cap. Decide
@@ -1271,6 +1287,12 @@ transparent-for-streaming. Kept workdir at `~/testing/band-confirm/.reel-Sully_t
 
 ## 2026-06-14 HDR display peak luminance 1000 vs 1500 (reviewed, tested, reverted)
 
+> **SUSPECT -- re-validate the full-chunk numbers** (see "Cascade root cause + FIX" -> "Impact on
+> prior findings"). The "8/33 below band" full-chunk result and the sampling-representativeness gap
+> rest on single `fullvalidate` runs on 4K HDR content (near-floor chunks present), which could be
+> partly the scoring cascade. Low stakes -- 1000 was kept regardless -- but treat the gap magnitude
+> as unconfirmed until rerun on the fixed binary.
+
 Machine: dev box (32 cores, dual-channel DDR5, CUDA GPU). Clip: `sully-5m-4k-hdr`
 (7184 frames, 3840x2160 -> cropped 3840x1600, HDR PQ). Chosen because it is the
 only 4000-nit master in the test set (mastering-display max 4000 cd/m2, MaxCLL 4000,
@@ -1545,6 +1567,47 @@ neighbors at the floor.
   cascade artifact. The original feature 3.11 tail (tight band, clean run) remains real.
 - The probe-sample A/B is unblocked but its earlier numbers were cascade-contaminated; rerun on
   the now-deterministic clip if pursued (still structurally gated -- 66-76% of chunks full-probed).
+
+### Impact on prior findings (this bug was live in all earlier multi-worker testing)
+
+The bug existed in every prior encode run with >1 metric worker (the default: 4 for 4K, 8 below)
+*and* in `fullvalidate` (it created one handler per worker too). So any earlier result that leans
+on accurate concurrent CVVDP scores can be contaminated. Two earlier entries were already *seeing*
+this without naming it: the lp entry's "TQ-mode wall time uninterpretable due to the probe-cascade
+confound" and the mw4v6 entry's "mw6 took more probes via the prior cascade" -- both were the
+handler-corruption cascade. Discriminator: a finding is **at risk** if it depends on concurrent
+CVVDP scores on hard/near-floor content, on more-sampled-chunk configs (only sampled chunks, >=3
+windows, can cascade -- full-probed chunks are immune), or on a single fullvalidate run; it is
+**low risk** if it used fixed-CRF / byte-identical output (no metric), is architectural, or is an
+aggregate "0 below range" on easy high-scoring clips that replicated.
+
+- **2026-06-12 metric-worker scaling benchmark** -- SUPERSEDED. It measured GPU *throughput*
+  scaling from N concurrent handlers (1080p saturates ~8, 4K ~6). Those numbers were real but the
+  parallelism came from per-handler CUDA streams -- exactly what the fix removes. With one shared
+  handler, metric workers no longer parallelize GPU compute (they gate decode only); the worker
+  defaults persist but the scaling curve no longer applies.
+- **2026-06-13 4K metric workers 4 vs 6** -- CONTAMINATED + now MOOT. "mw6 took more probes"
+  (io a: 82 probes / 2.28 per chunk, the worst run) was the handler-corruption cascade (6 handlers
+  cascade more than 4), misattributed to prior-cascade *timing*. Keeping 4 is still fine, but the
+  4-vs-6 question is moot under one shared handler.
+- **2026-06-13 Accuracy-trading knobs (full-probe threshold 256 vs 144)** -- CONFOUNDED, re-test
+  before trusting the magnitude. knobB (144) full-probes fewer chunks, so it had far more sampled
+  chunks = far more cascade exposure than base (256). Its "accuracy collapse" (22/33 above range,
+  sampled gap 0.46) is inflated by the bug, not pure sampling error. The *direction* (full-probing
+  is more accurate and cascade-immune) likely holds, but rerun the A/B on the fixed binary before
+  citing the 0.46 JOD penalty as real.
+- **2026-06-14 HDR display peak 1000 vs 1500** -- SUSPECT. The full-chunk "8/33 below band" and the
+  "sampling representativeness gap" rest on single fullvalidate runs on 4K HDR content and could be
+  partly cascade. Low stakes (kept 1000 anyway), but re-validate before acting on the gap.
+- **Feature run (3.11) + band WIDTH default + monotonicity diagnostic** -- LIKELY SOUND. The kept
+  feature `target-quality.json` was checked clean of the artifact (0% of worst-window in [8.0,8.7],
+  top value 9.23), and the band-width result is a *simulation* over those clean probes -- so the
+  shipped 9.15-9.55 default does not rest on corrupted data. Caveat: it is one run with the bug
+  live, and the band change's fullvalidate *validation* leg is on a possibly-affected run.
+- **Low risk (no re-test):** lp bitstream identity (fixed-CRF), 4K bandwidth ramp (SVT-encoder
+  concurrency, not VSHIP), the concurrency-restructure / 4K-ramp fullvalidate checks (easy 5m clips,
+  scores ~9.4 far from the 9.15 floor, "0 below range" replicated), and all architectural findings
+  (sampled probes, adaptive priors, scheduling, bracket-aware search, chunk-boundary work).
 
 Artifacts: `scripts/aligncheck` (decode-alignment diagnostic), `~/testing/probe-sample-ab/`
 (sf*/r*/fixed-r* JSONs), `~/testing/.fv-workers1.log` / `.fv-shared.log` (workers=1 and

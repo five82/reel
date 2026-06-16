@@ -49,7 +49,7 @@ with the full evidence. Update a row when its value changes.
 |------|---------------|-----|------------|
 | 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K is memory-bandwidth bound, not RAM-capacity bound; higher concurrency does not help and the slow ramp wasted time | 2026-06-12 "4K adaptive ramp: bandwidth, not capacity" |
 | Non-4K encode concurrency | ramps to full `maxWorkers` | GPU-metric bound, self-limits via utilization | 2026-06-12 "4K adaptive ramp" |
-| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | bandwidth-capped encoder sustains ~5 active 4K workers, so scoring is not the critical path; 6 only added VRAM | 2026-06-13 "4K metric workers 4 vs 6 retest" |
+| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | since the 2026-06-16 fix these gate DECODE concurrency only (one shared VSHIP handler does the serialized GPU compute); kept at the prior values for decode parallelism + VRAM headroom. The old "4 vs 6 scaling" rationale is superseded -- the worker-scaling speedup was the corruption | 2026-06-16 "Cascade root cause + FIX" |
 | `level_of_parallelism` | auto from resolution ramp ceiling → 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | lp is bitstream-neutral; higher lp fills cores when concurrency is low (~3-4% 4K gain) | 2026-06-13 "SVT-AV1 level_of_parallelism" |
 | TQ scheduling block | 32 chunks, largest-first within block | smaller blocks (8) regressed; 32 keeps priors useful | 2026-06-07 entries; "What did not work" |
 | TQ probe windows | 3×48 sampled; 5 windows on later probes after high spread; whole-chunk at/below full-probe threshold | sampled probes match full-probe accuracy at lower GPU cost | "Current target-quality strategy"; "What has worked" |
@@ -142,19 +142,19 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
   a probe; add targeted handling only if this repeats.
   _Priority: low -- single sighting; monitor-only, no action unless it recurs._
-- **Smarter sampling on under-represented sub-segments.** The sampled windows can miss a chunk's
-  worst-case frames, and two independent sightings now point the same way: the band-confirm Sully
-  chunk 0664 (true 8.689 vs sampled 9.679) was a CRF-ceiling miss, and the HDR display-peak test
-  showed the windows under-cover a chunk's brightest (>1000-nit) frames (see LOG "HDR display peak
-  luminance 1000 vs 1500"). Both are the same representativeness gap. The concrete, cheap remedy
-  this suggests is **luminance-aware window placement** -- put one window on the chunk's brightest
-  segment using the per-frame luma shot detection already computes -- which is sharper than generic
-  conditional extra windows (AGENTS.md "How to Improve Target-Quality Results", item 1). It is also
-  the prerequisite for ever raising the HDR display peak luminance above 1000; don't retry that bump
-  without it. Latent only: at the shipped 1000 config the sampled-vs-true gap is at the noise floor
-  and ground truth is 0/33 below band, so this is not worth building for the shipped config alone.
-  _Priority: low -- latent at shipped defaults (0/33 below band, gap at the noise floor); it only
-  unlocks a future HDR display-peak bump that isn't currently needed._
+- **Smarter sampling on under-represented sub-segments -- EVIDENCE NOW SUSPECT, re-confirm first.**
+  This item was motivated by an apparent "representativeness gap" (sampled windows miss a chunk's
+  worst frames) from two single-`fullvalidate`-run sightings: band-confirm Sully chunk 0664
+  (true 8.689 vs sampled 9.679) and the HDR display-peak test's bright-frame under-coverage. But
+  `fullvalidate` had the scoring-concurrency bug (2026-06-16 fix), and a false ~8.x full-chunk
+  score on a scattered chunk is the cascade's exact fingerprint -- so the 0664 "miss" and possibly
+  the HDR gap may have been the bug, not under-sampling. **Re-run both on the fixed binary before
+  building anything;** the gap may largely dissolve. If a real gap remains, the cheap remedy is
+  luminance-aware window placement (one window on the brightest segment, using the per-frame luma
+  shot detection already computes), and it stays the prerequisite for any HDR display-peak bump
+  above 1000.
+  _Priority: low -- the motivating evidence is now suspect; re-confirm the gap post-fix before
+  treating this as a real item at all._
 
 ### Open -- performance / infra
 
@@ -179,6 +179,18 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   see 2026-06-14 "Target band WIDTH".)
   _Priority: low -- validates a superseded band for the historical record only; the shipped band
   already has its ground-truth pass._
+- **Re-baseline accuracy ground truth on the fixed binary.** Every pre-2026-06-16 `fullvalidate`
+  result used the buggy ruler (one VSHIP handler per worker), so the project's accuracy claims rest
+  on a tool that was nondeterministic on near-floor/HDR content. Now that `fullvalidate` is fixed
+  (shared handler), do one clean ground-truth pass on the *current shipped config* (default band +
+  knobs) across a few representative clips -- ideally 4K HDR with near-floor chunks -- to establish
+  a trustworthy baseline. This confirms rather than re-decides: the shipped defaults are
+  independently sound (the band rests on a simulation over the verified-clean feature run; the
+  256-frame full-probe threshold is the cascade-immune choice), so expect agreement -- the value is
+  a clean reference for future accuracy-trading work.
+  _Priority: low -- hygiene; the defaults are sound, this just puts the accuracy record on a
+  trustworthy (post-fix) ruler. Pairs naturally with re-confirming the suspect findings flagged in
+  LOG "Cascade root cause + FIX" -> "Impact on prior findings"._
 
 ### Standing guidance (hold unless new evidence overrides)
 
