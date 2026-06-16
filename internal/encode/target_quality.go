@@ -148,22 +148,22 @@ func EncodeTargetQuality(
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
 	cfg.LevelOfParallelism = resolveLevelOfParallelism(cfg.LevelOfParallelism, rampCeiling)
 
+	// One shared VSHIP/CUDA handler, reused by all metric workers. Multiple
+	// coexisting CVVDP handlers corrupt shared GPU state, garbling worst-window
+	// scores and cascading into ~9x output-size swings (see docs LOG "Cascade
+	// root cause"). The pool hands out the SAME handler MetricWorkers times so
+	// several workers can decode concurrently, while quality.gpuMu serializes the
+	// GPU compute on the single handler -- matching single-worker scoring exactly
+	// (verified byte-identical) without losing decode/compute overlap.
+	sharedProcessor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = sharedProcessor.Close() }()
 	metricPool := make(chan *quality.VshipProcessor, tq.MetricWorkers)
 	for i := 0; i < tq.MetricWorkers; i++ {
-		processor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
-		if err != nil {
-			for j := 0; j < i; j++ {
-				_ = (<-metricPool).Close()
-			}
-			return 0, err
-		}
-		metricPool <- processor
+		metricPool <- sharedProcessor
 	}
-	defer func() {
-		for i := 0; i < tq.MetricWorkers; i++ {
-			_ = (<-metricPool).Close()
-		}
-	}()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

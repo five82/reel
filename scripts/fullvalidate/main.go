@@ -101,17 +101,18 @@ func main() {
 	start := time.Now()
 	chunkCh := make(chan chunk.Chunk)
 	resultCh := make(chan chunkResult, len(chunks))
+	// One shared VSHIP handler across all workers: multiple coexisting CVVDP
+	// handlers corrupt shared GPU state and make scoring nondeterministic
+	// (docs LOG "Cascade root cause"). quality.gpuMu serializes the GPU compute
+	// on the shared handler while workers decode concurrently.
+	sharedProc, err := quality.NewVshipProcessor(width, height, srcInfo, displayPath)
+	fail(err, "shared processor")
+	defer func() { _ = sharedProc.Close() }()
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			proc, err := quality.NewVshipProcessor(width, height, srcInfo, displayPath)
-			if err != nil {
-				resultCh <- chunkResult{idx: -1, err: err}
-				return
-			}
-			defer func() { _ = proc.Close() }()
 			for ch := range chunkCh {
 				// Score the chunk's standalone encoded IVF from frame 0. This
 				// is the exact bitstream that is concatenated into the final
@@ -126,7 +127,7 @@ func main() {
 					CropRect:        cropRect,
 					Width:           width,
 					Height:          height,
-					Processor:       proc,
+					Processor:       sharedProc,
 				})
 				s := sampled[ch.Idx]
 				resultCh <- chunkResult{idx: ch.Idx, frames: ch.Frames(), full: res.Score, sampled: s.FinalScore, probes: len(s.Probes), crf: s.FinalCRF, err: err}

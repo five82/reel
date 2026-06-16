@@ -72,6 +72,7 @@ As of this document:
   - move more aggressively toward high CRF for flat, unbracketed high probes only when the highest-CRF probe is still at least 0.30 JOD above target.
 - Scoring is mean/worst blended when sampled-window spread is high.
 - A worst-window floor prevents convergence when any sampled window falls below tolerance.
+- GPU CVVDP scoring uses **one shared VSHIP handler** across all metric workers (the worker count now controls decode concurrency only); the GPU compute is serialized by `quality.gpuMu`. Do not revert to one handler per worker -- multiple coexisting CVVDP handlers corrupt GPU state and cascade into ~9x output-size swings (2026-06-16 "Cascade root cause + FIX"). Cost: serializing the metric slows a probe-heavy preset-8 4K encode ~1.7x vs a pre-fix clean run; see the open "restore safe metric concurrency" item.
 
 The components above (sampled probes, adaptive priors, block-32 scheduling,
 full-first probe reuse, worst-window protections, conditional extra windows,
@@ -92,7 +93,7 @@ From there, the load-bearing facts for any future tuning:
 - **Band width is the dominant probe-tail lever.** Probe measurement noise is ~0.075 JOD; a half-width tighter than ~2x that (~0.15) makes probes land just outside the band and march to the monotonicity guard. Widening to +-0.20 cut feature-length probe work ~51% (3.11 -> 1.46 probes/chunk) *and* produced smaller files, with no quality center change (2026-06-14 "Target band WIDTH is the real probe-tail lever", validated by a feature-length encode + fullvalidate).
 - **Cutting probes via search tweaks has no free lunch.** Three cheap search-layer ideas were each rejected by simulation before any build: content-prior first-probe seed (activity-vs-CRF sign flips across clips), flat-low early stop (targets only ~6% of guard chunks at feature length), and worst-window/straddle early-out (quality-safe but ~15% larger files -- a speed-vs-size knob, not accuracy-neutral). Probe count cannot be cut by search math alone without larger files or noisier measurements. The one untested lever is probe-sample frame count, which costs more GPU per probe (a real-encode A/B; see open items).
 - **Accuracy-trading knobs are settled against ground truth.** The 256-frame full-probe threshold, the 3x48 window size, and the 12s chunk cap were each validated/rejected via `scripts/fullvalidate` (2026-06-13 "Accuracy-trading TQ knobs"). Lowering the full-probe threshold *wrecked* accuracy and *raised* GPU work. Do not touch them without new ground-truth evidence.
-- **Short clips under-state probe cost.** Feature-length content converges at ~3.1 probes/chunk vs ~1.7 on a homogeneous 5-20m cut, because a full film has much higher chunk-to-chunk CRF variance (2026-06-14 "Full-length 4K encode"). Use short clips for accuracy ground-truth and throughput/bitstream knobs, but validate search-layer changes against high-variance content.
+- **Short clips under-state probe cost (feature 3.1 vs ~1.7), but the cause is NOT content hardness.** The 2026-06-14 feature run converges at ~3.1 probes/chunk (tight band) vs ~1.7 on a homogeneous cut. The 2026-06-15 work first attributed this to within-chunk worst-window difficulty, but that was a single run that hit the scoring-cascade bug (now fixed, LOG "Cascade root cause + FIX"). **With the fix, the hard-content `sullyhv-15m` clip converges at 1.55 probes/chunk -- the same as easy content -- so at the shipped +-0.20 band content hardness does not raise probes/chunk.** The feature's 3.1 is real *tight-band* behavior. Use `sullyhv-15m-4k-hdr` (deterministic now) as a high-variance test asset and `sully-5m` as the easy control; expect a real probe tail only at a tighter band.
 - **`scripts/fullvalidate` is the accuracy ruler.** Sampled scores in `target-quality.json` are what the search *believed*, not ground truth. Judge any accuracy-trading change against full-chunk CVVDP, never sampled scores.
 
 ## Open questions / next tests
@@ -103,9 +104,20 @@ are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
 Each open item carries a priority (critical / high / medium / low) with a brief
-reason, per AGENTS.md. None is currently critical or high: the defaults are
-settled and validated, so every item below is an improvement or a portability
-caveat, not a bug or a quality regression.
+reason, per AGENTS.md. No critical/high items are open. (A GPU-scoring
+concurrency cascade -- coexisting VSHIP handlers garbling CVVDP scores under >1
+metric worker, ~9.2x output-size swings -- was found and **fixed** 2026-06-16:
+single shared handler + `quality.gpuMu`; see LOG "Cascade root cause + FIX".)
+
+### Latent (fixed root, optional hardening)
+
+- **Floor-guard + seed amplifiers.** The scoring cascade above was amplified by two unguarded
+  behaviors that are now untriggered but remain latent: the worst-window floor guard
+  (`tq.go:184`) is a hard 9.15 threshold with no noise margin, and a CRF-floored chunk seeds its
+  neighbors at the floor (only median-seeded chunks re-probe upward, `target_quality.go:510`).
+  Optional defense-in-depth: a small noise margin/hysteresis on the floor guard, and not letting
+  floored chunks propagate the floor via priors.
+  _Priority: low -- the root scoring bug is fixed, so these never fire today; cheap insurance only._
 
 ### Open -- search layer (probe-count tail; highest value)
 
@@ -115,15 +127,14 @@ on short homogeneous clips. The biggest win for it -- widening the target band -
 been taken (default 9.15-9.55). The three obvious cheap search-layer wins (content-prior
 seed, flat-low gate, worst-window early-out) are all rejected by simulation. What remains:
 
-- **Probe-sample noise vs sample-frame count** (the one genuine, untested lever). The 39%
-  mean-bracket guard group is *measurement-noise*-limited, not search-limited (interpolation only
-  ~60% reliable; residuals are noise not curvature). More sample frames per probe would lower that
-  noise and could cut probes needed to localise the band -- but it costs more GPU per probe, so the
-  net is unknown and needs a real A/B (probe_sample_frames up vs down on a high-variance clip),
-  measured as total TQ wall time, not probe count. This is the next real experiment if the tail is
-  worth pursuing at all.
-  _Priority: medium -- the only remaining lever on the dominant feature-length probe tail, but the
-  net GPU benefit is unknown and the big tail win (band width) is already banked._
+- **Probe-sample noise vs sample-frame count** (unblocked now the scoring bug is fixed, but still
+  low value). The idea: the 39% mean-bracket guard group is measurement-noise-limited, so more
+  sample frames per probe might cut probes. But the lever is **structurally gated** -- 66-76% of
+  chunks are <=256 frames and full-probed, so `sample_frames` never applies to them; raising it to
+  96 lifts the full-probe threshold to ~the chunk cap and disables sampling rather than denoising
+  it. The 2026-06-15 A/B numbers (sf24 1.54 / sf48 2.78 / sf96 2.75) were cascade-contaminated;
+  rerun on the now-deterministic `sullyhv-15m` if pursued.
+  _Priority: low -- gated to ~1/3 of chunks; the one remaining probe-tail lever but small reach._
 - **Provisional priors from in-progress chunks.** Consider only if probe-count tails persist
   across multiple clips (the feature run says they do; worth revisiting).
   _Priority: low -- gated on the tail recurring across multiple clips; a nontrivial change for a
@@ -147,6 +158,15 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 
 ### Open -- performance / infra
 
+- **Restore safe metric concurrency (recover the ~1.7x scoring serialization cost).** The
+  2026-06-16 scoring fix uses one shared VSHIP handler with serialized GPU compute because
+  multiple coexisting CVVDP handlers corrupt shared device state. That serialization slows a
+  probe-heavy preset-8 4K encode ~1.7x vs a pre-fix clean run (the buggy N-handler path was
+  overlapping CVVDP across per-handler CUDA streams). The proper fix is in VSHIP: give each
+  handler isolated device buffers + its own CUDA stream so concurrent scoring is correct, then
+  reel can go back to N handlers. Until then, single-handler is the only correct option.
+  _Priority: medium -- a real throughput regression with a clear (external, VSHIP-side) fix; its
+  production impact is smaller at slower presets (encoder dominates), so not urgent._
 - **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
   it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
   calibrated on this box's dual-channel DDR5 + 32 cores).
@@ -159,15 +179,6 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   see 2026-06-14 "Target band WIDTH".)
   _Priority: low -- validates a superseded band for the historical record only; the shipped band
   already has its ground-truth pass._
-
-### Open -- methodology / tooling
-
-- **Build a high-variance test clip** (concatenate several dissimilar scenes from one film)
-  so probes/chunk approaches the feature-length regime (~3) without a 4-hour encode. Validate
-  every search-layer change against it; single homogeneous 5-20m cuts converge in ~1.7 probes
-  and hide the tail entirely (2026-06-14 feature run).
-  _Priority: medium -- cheap prerequisite tooling that unblocks every future search-layer A/B
-  (including the probe-sample item above); current short clips hide the probe tail entirely._
 
 ### Standing guidance (hold unless new evidence overrides)
 

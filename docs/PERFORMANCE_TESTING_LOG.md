@@ -1367,7 +1367,204 @@ exists, keep `max_luminance = 1000`. Artifacts:
 `~/testing/hdr-lum-ab/{baseline-1000,new-1500}{,-wd}` plus `*-fullvalidate.txt` and
 `*-output.mkv`.
 
+## 2026-06-15 High-variance test clip: the probe tail is within-chunk, not chunk-to-chunk
+
+> **CORRECTION (see "2026-06-15 Cascade root cause + FIX" below).** The headline conclusions of
+> this entry were confounded by a GPU-scoring concurrency bug discovered/fixed over 06-15/06-16
+> (multiple coexisting VSHIP handlers corrupt CVVDP scores under >1 metric worker). The "2.78
+> probes/chunk, IN feature regime" measurement was a single run that hit that cascade; with the
+> fix, repeats of the *same* config are identical at ~1.55 -- the same as easy content. So at the
+> shipped band, content hardness does **not** raise probes/chunk, and the "within-chunk
+> worst-window difficulty drives the tail" claim is unproven (much of the 2.78 run's worst-window
+> failure was the scoring bug, not content). What still holds: the clip-build method (mkvmerge,
+> hard-content selection), the `sample_frames` gating finding, and that the *original feature*
+> 3.11 tail is real (clean run, no artifact).
+
+Goal: the open methodology item -- build a ~15-min clip that reproduces the feature-length
+probe tail (so search-layer changes can be A/B'd without a 4-hour encode), since homogeneous
+5-20m cuts converge at ~1.7 probes/chunk and hide the tail. Source: Sully full rip (same film
+as the feature run, so HDR/color metadata is identical and concatenation is clean). All clip
+encodes preset 8 (probes/chunk is preset-independent: the homogeneous `sully-5m` control read
+1.67 at preset 8 vs the documented ~1.7 at preset 6, so a faster preset is a valid proxy and
+cuts the loop to ~20-30 min). Build with **mkvmerge** `--split parts:A-B,+C-D,...` not ffmpeg
+`concat -c copy`: the latter copies a stale per-track Matroska `DURATION` tag equal to the
+*full* source, so reel reads the 15-min clip as 95 min and mis-places crop samples.
+
+### The result that corrects the doc: CRF variance is NOT the tail driver
+
+The 2026-06-14 feature entry attributed the probe tail to "far higher chunk-to-chunk CRF
+variance." A controlled two-clip A/B falsifies that as the cause:
+
+| clip (preset 8) | selection | chunks | probes/chunk | maxed 6 | converged | final_crf sd |
+|---|---|---:|---:|---:|---:|---:|
+| `sully-5m` (control) | one homogeneous scene | 33 | 1.67 | 0% | 100% | 8.05 |
+| **even-spaced** | 15x60s scenes spread across the film | 112 | 1.64 | 0% | 96% | **11.84** |
+| **hard-content** | 15 windows on the film's actual maxed chunks | 110 | **2.78** | **14%** | 51% | 15.54 |
+| feature (reference) | full 96-min film | 670 | 3.11* | 21% | 63% | 12.35 |
+
+\*feature 3.11 was at the old tight band (9.25-9.52); at today's default 9.15-9.55 the whole
+feature is ~1.46. The hard-content clip's 2.78 above is at the **default** band -- i.e. it is a
+*harder* probe stress test than the average feature, because it is concentrated hard content
+with the easy 79% removed.
+
+The even-spaced clip **matched the feature's chunk-to-chunk CRF variance** (sd 11.84 vs 12.35)
+yet produced **no probe tail** (1.64 probes/chunk, 0% maxing). Tightening it to the feature's
+own 9.25-9.52 band barely moved it (1.79, still 0% maxed), where the same tightening doubled
+the feature (1.46 -> 3.11). So CRF variance is a *side effect* of hard content, not its cause.
+
+What actually drives the tail is **within-chunk worst-window difficulty**: the feature's hard
+chunks have pervasive intra-chunk window spread (~0.49 JOD p50 on the final probe) that trips
+the worst-window floor guard, while steady mid-scene grabs are internally clean (~0.25 p50) and
+converge in 1-2 probes regardless of how different they are from their neighbors. The
+hard-content clip's stop reasons confirm the mechanism firing: monotonicity_guard 23,
+bounds_crossed 21, max_probes 10 (vs 0 guard trips on the even-spaced clip). This is the same
+representativeness gap the HDR-peak and band-confirm sightings point at -- worst-window coverage,
+not boundary placement -- consistent with AGENTS.md's "no cut in the middle of a fade."
+
+### How the hard-content clip is selected (evidence-based, reproducible)
+
+The kept feature workdir (`~/testing/fulllen-attr/.reel-Sully_t00-1ce039b19801/
+target-quality.json`) records which chunks maxed the probe budget. Chunks are sequential and
+sum to 137,877 frames, so cumulative frames give each chunk's source timestamp (23.976 fps,
+feature encoded from frame 0). `build-highvar-clip.py` reads that file, finds the 138 maxed
+chunks (21%), clusters them by source time (merge gaps <25s), ranks clusters by hard-chunk
+density, and extracts ~48-100s windows around the densest ones until ~15 min is filled. No
+film knowledge, no randomness -- the clip is made of the real movie's genuinely hard scenes.
+
+### Deliverables (in `~/testing/`)
+
+- `sullyhv-15m-4k-hdr.mkv` -- the canonical high-variance clip (hard-content selection, 912s,
+  4K PQ HDR, 110 chunks, 2.78 probes/chunk at the default band). Runs via the normal harness:
+  `./run-test-encode.sh sullyhv-15m-4k-hdr --keep-workdir`.
+- `build-highvar-clip.py` -- the canonical builder (evidence-based hard-content selection).
+  (The earlier even-spacing builder was deleted -- it wrote the same filename and would clobber
+  the canonical clip with the no-tail version; its result is the negative-control row above.)
+- `highvar-stats.py <target-quality.json|workdir>` -- prints probes/chunk, maxed-6 %, converged
+  %, and final_crf sd against the feature-regime reference, with an IN/NOT-in-regime verdict
+  (thresholds probes/chunk >=2.6 and sd >=10).
+
+### What this unblocks
+
+Search-layer A/Bs (first up: the probe-sample frame-count lever) now have a 20-30 min stress
+clip with a real probe tail at the shipped band, instead of either a 4-hour feature or a short
+clip that hides the tail. Use `sully-5m` as the easy-content control and `sullyhv-15m` as the
+hard-content test in the same A/B.
+
+## 2026-06-15 Cascade root cause + FIX: concurrent VSHIP CVVDP handlers corrupt GPU scoring
+
+While setting up a `probe_sample_frames` A/B, two runs of the *identical* config (sf48, default
+band, preset 8) on the same clip diverged enormously. Root-caused over 06-15/06-16 to a GPU
+concurrency bug in CVVDP scoring; **fixed** by using one shared VSHIP handler. RESOLVED.
+
+### The instability (5 same-config runs, sullyhv-15m, preset 8, default band)
+
+| run | probes/chunk | converged | chunks floored @4.25 | output size |
+|---|---:|---:|---:|---:|
+| r1 | 2.78 | 51% | 27 | 1.911 GB |
+| r2 | 1.74 | 96% | 0 | 0.237 GB |
+| r4 | 2.94 | 57% | 14 | 1.627 GB |
+| r5 | 1.49 | 98% | 0 | 0.207 GB |
+
+Bimodal: ~40% of runs cascade into mass CRF-flooring; the rest are clean. **9.2x output-size
+swing on identical input.** Floored chunks are not higher quality -- they are maxed on a *false*
+score, wasting bitrate. The cascade fingerprint is a **constant, CRF-independent worst-window
+value** across many chunks (r1: 8.165 on 89 probes; r4: 8.56 on 82) -- impossible for real
+scoring (the same 8.16 appears at CRF 6.5 and CRF 32.75), so a scoring fault, not content.
+
+### Root cause: multiple coexisting VSHIP handlers corrupt shared GPU state
+
+The diagnosis ruled out, in order:
+
+- **NOT source frame-misalignment.** `scripts/aligncheck` decodes the concatenated clip
+  sequentially as ground truth, then calls `video.ReadFrame(N)` on fresh Sources (the scoring
+  access pattern). Result: 0 mismatches sequential, **0/480 mismatches under 8-way concurrency,
+  with the autocrop applied** -- source decode is correct and deterministic. (This also kills the
+  "xav-style sequential source pairing" fix idea: the layer it changes is already correct.)
+- **NOT a concatenation/seek issue.** An earlier disambiguation (continuous hard cut clean) had
+  *suggested* concatenation; that was a red herring -- the concatenated clip simply has more
+  chunks (110) and so more concurrent-scoring exposure (see trigger below).
+- **NOT inherent metric noise.** `fullvalidate` at **workers=1** is byte-identical across two
+  passes (mean 9.4757, 0 below) and matches the clean encode; at **workers>1** it corrupts
+  (9.17/31-below). So the defect is *concurrency*.
+- **It is multiple coexisting CVVDP handlers.** Serializing the GPU *compute* with a mutex (both
+  per-call and whole-chunk granularity) reduced but did **not** fix it (~9.41, still off 9.4757,
+  still nondeterministic) -- so concurrent compute is not the whole story. Using **one shared
+  handler** across 4 workers (compute serialized by the mutex) is **byte-identical to workers=1**
+  (9.4757, 0 below, both passes). The differentiator is handler *count*: N coexisting VSHIP CVVDP
+  handlers share/clobber device state (`Vship_CVVDPInit2` allocates per handler but the library
+  shares global GPU resources), so even serialized compute on >1 handler is wrong.
+
+### Trigger (corrected): concurrency x near-floor content x chunk-count -- NOT concatenation
+
+The cascade needs: (a) >1 metric worker (default 4 for 4K, 8 below), (b) chunks whose true score
+sits near the 9.15 floor so a corrupted worst-window dips below it, and (c) enough chunks for the
+race to fire. The concatenated `sullyhv` (110 hard chunks) maxes all three. **Production is
+exposed too:** a real feature (670 chunks, hard scenes, workers=4) has more exposure, not less --
+the single clean feature run was luck / its lower fraction of near-floor chunks, not immunity.
+Easy content (sully-5m, mostly high-scoring chunks) stays clean because corruption rarely dips a
+9.5 chunk below 9.15.
+
+### Why a wrong score cascades into a whole-encode blow-up (the amplifiers)
+
+1. The false sub-floor worst-window trips the floor guard (`tq.go:184`, a hard 9.15 threshold,
+   no noise margin) -> the chunk is driven to the CRF floor (4.25).
+2. `InitialCRF()` (`target_quality.go:952`) seeds the next chunk from that floored neighbor, and
+   `targetQualityFullFirstProbe` only re-probes upward for **median**-seeded chunks (`:510`), so a
+   neighbor-seeded chunk accepts the inherited floor and passes it on -- floors land in contiguous
+   runs (r1: chunks 76-82) until a median reseed breaks the chain.
+
+These amplifiers are now untriggered (scoring is correct) but remain latent robustness gaps;
+optional future hardening: a noise margin on the floor guard, and not letting floored chunks seed
+neighbors at the floor.
+
+### The fix (implemented, validated)
+
+- **One shared VSHIP handler.** `target_quality.go` now creates a single `VshipProcessor` and
+  fills the metric pool with that same pointer `MetricWorkers` times, so several workers decode
+  concurrently while the GPU compute runs on one handler. `fullvalidate` was fixed the same way
+  (it had the identical N-handler bug, which is why ground truth was unreliable on spliced input).
+- **`quality.gpuMu` serializes the GPU compute.** Each chunk's whole `ResetCVVDP`->`ComputeCVVDP`
+  sequence is held under the mutex as one unit (CVVDP is temporal; interleaving two sequences on
+  the shared handler still perturbs it). The per-chunk producer is started *before* the lock, so
+  other workers keep decoding while one holds the GPU.
+- **Throughput cost (real, accepted).** The old N-handler path overlapped CVVDP compute across
+  per-handler CUDA streams -- that overlap was the speedup *and* the corruption. Serializing it
+  slows the preset-8 `sullyhv` encode from ~18 min (a pre-fix *clean* run) to ~31 min (~1.7x); the
+  fixed run is ~the same as a pre-fix *cascade* run. The share is smaller at slower presets (the
+  encoder dominates) and on 4K (bandwidth-bound encoder). This is the price of correctness until
+  VSHIP can isolate handlers (separate device buffers + streams) to make concurrent scoring safe;
+  revisit if metric wall time becomes the priority.
+- **Validation.** `fullvalidate` workers=4 is now byte-identical to workers=1 (9.4757). End-to-end,
+  4 fresh `sullyhv` encodes are now **identical**: 1.55 probes/chunk, 0 floored, 0.281 GB each
+  (vs before: 1.49-2.94, 0-27 floored, 0.21-1.91 GB / 9.2x). `./check-ci.sh` passes (incl. -race).
+
+### Side conclusions (now reliable)
+
+- Content hardness does **not** raise probes/chunk at the shipped +-0.20 band: the fixed `sullyhv`
+  sits at 1.55, same as easy content. The earlier "hard clip reproduces the 2.78 tail" was a
+  cascade artifact. The original feature 3.11 tail (tight band, clean run) remains real.
+- The probe-sample A/B is unblocked but its earlier numbers were cascade-contaminated; rerun on
+  the now-deterministic clip if pursued (still structurally gated -- 66-76% of chunks full-probed).
+
+Artifacts: `scripts/aligncheck` (decode-alignment diagnostic), `~/testing/probe-sample-ab/`
+(sf*/r*/fixed-r* JSONs), `~/testing/.fv-workers1.log` / `.fv-shared.log` (workers=1 and
+shared-handler determinism), `~/testing/.fix-validate.log` (end-to-end), `~/testing/sullyhv-15m-4k-hdr.mkv`.
+
 ## Resolved questions (index -- full detail in the dated entries above)
+
+- **GPU-scoring concurrency cascade** -- found + **fixed** 2026-06-16 (see "Cascade root cause +
+  FIX"). Multiple coexisting VSHIP CVVDP handlers (one per metric worker) corrupted scores under
+  >1 worker, producing a false constant sub-floor worst-window that tripped the floor guard and
+  cascaded into ~9.2x output-size swings (~40% of `sullyhv` runs; production features exposed too).
+  Fixed with a single shared handler + `quality.gpuMu` serializing GPU compute; fullvalidate fixed
+  the same way. Validated byte-identical (workers=4 == workers=1) and end-to-end (4 sullyhv runs
+  now identical). Diagnostic tool `scripts/aligncheck` ruled out source frame-misalignment.
+
+- **High-variance test clip (methodology/tooling)** -- built 2026-06-15, usable after the scoring
+  fix. `sullyhv-15m-4k-hdr` (+ `build-highvar-clip.py`, `highvar-stats.py`) is now deterministic
+  (the concatenated clip exposed the scoring bug; it was never a clip defect). Caveat: at the
+  shipped +-0.20 band hard content converges at ~1.55 probes/chunk, same as easy content -- so the
+  clip is a valid deterministic asset but shows no probe tail at the shipped band.
 
 - **Worst-window / straddle early-out** -- rejected 2026-06-14 (see "Worst-window / straddle
   early-out: simulated and rejected"). Simulated over all 670 Sully chunks (BestProbe replay

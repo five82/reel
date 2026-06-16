@@ -3,11 +3,28 @@ package quality
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"codeberg.org/five82/reel/internal/chunk"
 	"codeberg.org/five82/reel/internal/video"
 )
+
+// gpuMu serializes GPU (VSHIP/CUDA) scoring. Concurrent CVVDP compute on a
+// single GPU corrupts results nondeterministically: a 2026-06-16 diagnostic
+// found full-chunk scoring is byte-identical at one metric worker but garbles
+// worst-window scores at >1 worker, which then trips the floor guard and
+// cascades into ~9x output-size swings (LOG "Cascade root cause"). CVVDP is a
+// temporal metric accumulated per handler, so each chunk's whole reset->compute
+// sequence is held under the lock as one unit (interleaving two sequences on
+// the shared handler still perturbs the result). Frame *decode* runs unlocked,
+// and the per-chunk producer is started before the lock is taken, so other
+// workers keep decoding while one holds the GPU. This does cost throughput --
+// the old (buggy) N-handler path overlapped CVVDP compute across per-handler
+// CUDA streams, so serializing it slows a 4K probe-heavy encode by ~1.5-1.7x
+// (measured on the preset-8 sullyhv clip; smaller share at slower presets).
+// That is the price of correctness until VSHIP supports isolated handlers.
+var gpuMu sync.Mutex
 
 type FramePlanes struct {
 	Planes  [3]*byte
@@ -58,10 +75,6 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		return CVVDPResult{}, fmt.Errorf("failed to open encoded chunk for CVVDP: %w", err)
 	}
 	defer dist.Close()
-
-	if err := opts.Processor.ResetCVVDP(); err != nil {
-		return CVVDPResult{}, err
-	}
 
 	// Decode runs in a producer goroutine so CPU frame decode overlaps the GPU
 	// metric compute; two buffer pairs rotate between the producer and the
@@ -123,6 +136,16 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 			decodedCh <- decodedFrame{pair: pair}
 		}
 	}()
+
+	// Serialize the GPU work as one atomic per-chunk unit. The producer above is
+	// already decoding into the buffer, so other workers keep decoding while this
+	// one waits for / holds the GPU. Reset must be inside the lock so no other
+	// handler's compute interleaves this chunk's temporal accumulation.
+	gpuMu.Lock()
+	defer gpuMu.Unlock()
+	if err := opts.Processor.ResetCVVDP(); err != nil {
+		return CVVDPResult{}, err
+	}
 
 	start := time.Now()
 	var score float32
