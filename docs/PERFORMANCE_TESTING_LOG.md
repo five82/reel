@@ -1686,6 +1686,47 @@ The two flagged sightings split cleanly:
 Artifacts: `~/testing/rebaseline-20260617/` (per-clip `fullvalidate.txt` + `probestats.txt` + kept
 workdirs; `A1-bandconfirm-0664/`, `A2-hdr-baseline1000/`, `A3-hdr1500/`; `STATUS.txt`, `SUMMARY.md`).
 
+## 2026-06-18 Metric serialization is the preset-6 wall bottleneck (concurrency cost is NOT smaller at slow presets)
+
+Follow-up to the re-baseline, prompted by pushback on the "Restore safe metric concurrency" open
+item's claim that the single-handler serialization cost "is smaller at slower presets (encoder
+dominates)". Re-read the per-probe `encode_seconds`/`metric_seconds` in the fixed-binary **preset 6**
+re-baseline logs (no new encode). Under the single shared handler all CVVDP compute is serialized by
+`quality.gpuMu`, so `sum(metric_seconds)` is a hard floor on video-encoding wall time.
+
+| clip | tier | enc_s (sum) | metric_s (sum) | wall_s | metric/wall |
+|------|------|-----:|-----:|-----:|-----:|
+| im-5m | 1080p SDR | 345 | 128 | 151 | 85% |
+| sully-5m | 4K HDR | 917 | 521 | 641 | 81% |
+| kbv1-5m | 4K HDR | 837 | 529 | 648 | 82% |
+| ko-5m | 4K HDR | 1283 | 641 | 744 | 86% |
+| sullyhv-15m | 4K HDR | 3209 | 1796 | 1963 | 91% |
+
+The serialized metric is **81-91% of wall at preset 6, for 4K and 1080p alike.** The "encoder
+dominates at slow presets" intuition conflates *compute* share with *wall* share: the encoder's
+compute is larger in sum (metric is only ~33-39% of total compute), but encodes run across several
+workers in parallel while the metric is pinned to one serial GPU lane -- so the encode work
+compresses away and the serialized metric becomes the binding wall-clock constraint. Slowing the
+encoder (preset 6 vs 8) does not shrink the metric's wall share, because the encoder parallelizes
+and the metric does not. (This also flips the older "4K TQ is memory-bandwidth bound" wall framing:
+the bandwidth cap still limits the *encoder*, but post-fix the serialized metric is what binds 4K
+wall clock.)
+
+Caveats on what this proves: (1) it is **not** a serial-vs-concurrent A/B -- it bounds the
+*potential* win (~80-90% of wall is serialized metric) but does not measure how much concurrency
+would actually recover, which depends on how much CVVDP overlaps on one physical GPU. (2) The one
+real recovery datapoint remains the pre-fix preset-8 sullyhv (~18 min clean -> ~31 min fixed = 1.7x,
+i.e. concurrency recovered ~41% of wall) -- confounded by the cascade and at a different preset, but
+it shows the overlap headroom is real and large, not hypothetical. If that ~halving-of-metric-wall
+ratio held at preset 6, the penalty would be comparable there (~1.5-1.7x), not smaller.
+
+Outcome: re-framed and **bumped the "Restore safe metric concurrency" open item from medium to
+high** -- the serialization tax falls on the large majority of wall at the production preset, not a
+slow-preset afterthought. The fix is still VSHIP-side (external); the cheap reel-side next step is a
+preset-6 serial-vs-concurrent A/B to quantify the recoverable fraction. (Parked pending user
+go-ahead on concurrency work.) Source: `~/testing/rebaseline-20260617/*/.reel-*/target-quality.json`
+(`.probes[].encode_seconds` / `.metric_seconds`); wall from `STATUS.txt`.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
 - **Re-baseline accuracy ground truth on the fixed binary** -- done 2026-06-18 (see "Re-baseline

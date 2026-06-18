@@ -85,7 +85,8 @@ The two binding constraints are pinned by measurement, not guess (2026-06-14
 "Where to go next"; 2026-06-12 "pipeline bottleneck attribution"):
 
 - **1080p TQ is GPU-CVVDP-throughput bound.** The clip sits at the GPU floor (metric ~65% of busy time). Scheduling/concurrency cannot help further -- the GPU scores at a fixed rate.
-- **4K TQ is memory-bandwidth bound on SVT-AV1.** Capped at ~5 active encodes (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time. RAM is not the constraint (tens of GiB stay free).
+- **4K TQ is memory-bandwidth bound *on the SVT-AV1 encoder*.** Active 4K encodes are capped at ~5 (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time. RAM is not the constraint (tens of GiB stay free).
+- **Post-fix, the serialized metric is the wall-clock bottleneck for BOTH tiers, not the encoder.** With the single shared VSHIP handler (`quality.gpuMu`), CVVDP compute is serialized, and at preset 6 it is 81-91% of video-encoding wall time on 4K and 1080p alike (2026-06-18 "Metric serialization is the preset-6 wall bottleneck"). The encoder's larger *compute* parallelizes across workers and compresses away; the serialized metric does not. This is why the "Restore safe metric concurrency" item is high priority -- the two encoder-side constraints above still hold for the encoder, but they are no longer what binds wall clock.
 
 From there, the load-bearing facts for any future tuning:
 
@@ -104,10 +105,13 @@ are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
 Each open item carries a priority (critical / high / medium / low) with a brief
-reason, per AGENTS.md. No critical/high items are open. (A GPU-scoring
-concurrency cascade -- coexisting VSHIP handlers garbling CVVDP scores under >1
-metric worker, ~9.2x output-size swings -- was found and **fixed** 2026-06-16:
-single shared handler + `quality.gpuMu`; see LOG "Cascade root cause + FIX".)
+reason, per AGENTS.md. One **high** item is open: restore safe metric concurrency
+(the single-handler scoring fix's serialization is 81-91% of wall at the shipped
+preset; see performance/infra below and LOG "Metric serialization is the preset-6
+wall bottleneck"). No critical items are open. (A GPU-scoring concurrency cascade
+-- coexisting VSHIP handlers garbling CVVDP scores under >1 metric worker, ~9.2x
+output-size swings -- was found and **fixed** 2026-06-16: single shared handler +
+`quality.gpuMu`; see LOG "Cascade root cause + FIX".)
 
 ### Latent (fixed root, optional hardening)
 
@@ -157,15 +161,23 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 
 ### Open -- performance / infra
 
-- **Restore safe metric concurrency (recover the ~1.7x scoring serialization cost).** The
-  2026-06-16 scoring fix uses one shared VSHIP handler with serialized GPU compute because
-  multiple coexisting CVVDP handlers corrupt shared device state. That serialization slows a
-  probe-heavy preset-8 4K encode ~1.7x vs a pre-fix clean run (the buggy N-handler path was
-  overlapping CVVDP across per-handler CUDA streams). The proper fix is in VSHIP: give each
-  handler isolated device buffers + its own CUDA stream so concurrent scoring is correct, then
-  reel can go back to N handlers. Until then, single-handler is the only correct option.
-  _Priority: medium -- a real throughput regression with a clear (external, VSHIP-side) fix; its
-  production impact is smaller at slower presets (encoder dominates), so not urgent._
+- **Restore safe metric concurrency (recover the metric-serialization wall cost).** The
+  2026-06-16 scoring fix uses one shared VSHIP handler with serialized GPU compute (`quality.gpuMu`)
+  because multiple coexisting CVVDP handlers corrupt shared device state. **At the shipped preset 6
+  the serialized metric is 81-91% of video-encoding wall time -- for 4K and 1080p alike** (2026-06-18
+  "Metric serialization is the preset-6 wall bottleneck"): the encoder's larger compute parallelizes
+  across workers while the metric is pinned to one serial GPU lane, so the metric -- not the encoder
+  -- binds wall clock. The earlier "smaller at slower presets (encoder dominates)" rationale was
+  wrong; it conflated compute share with wall share. The proper fix is VSHIP-side: isolate each
+  handler's device buffers + give it its own stream so concurrent scoring is correct, then reel can
+  go back to N handlers. The cheap reel-side next step is a preset-6 serial-vs-concurrent A/B to
+  quantify the *recoverable* fraction before investing in the VSHIP work (the pre-fix preset-8
+  sullyhv recovered ~41% of wall / 1.7x -- confounded by the cascade but real). Until VSHIP isolates
+  handlers, single-handler is the only correct option.
+  _Priority: high -- the serialization tax falls on ~80-90% of wall at the production preset, a large
+  library-scale cost that the old "not urgent / encoder dominates" framing materially under-stated.
+  Caveats holding it short of critical: the realized win is bounded by GPU overlap headroom
+  (unmeasured at preset 6), and the fix itself is external (VSHIP-side)._
 - **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
   it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
   calibrated on this box's dual-channel DDR5 + 32 cores).
