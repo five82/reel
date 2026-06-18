@@ -142,19 +142,18 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 - **Watch high-spread chunks** like `knives5` chunk `0001` where bracket-aware search can add
   a probe; add targeted handling only if this repeats.
   _Priority: low -- single sighting; monitor-only, no action unless it recurs._
-- **Smarter sampling on under-represented sub-segments -- EVIDENCE NOW SUSPECT, re-confirm first.**
-  This item was motivated by an apparent "representativeness gap" (sampled windows miss a chunk's
-  worst frames) from two single-`fullvalidate`-run sightings: band-confirm Sully chunk 0664
-  (true 8.689 vs sampled 9.679) and the HDR display-peak test's bright-frame under-coverage. But
-  `fullvalidate` had the scoring-concurrency bug (2026-06-16 fix), and a false ~8.x full-chunk
-  score on a scattered chunk is the cascade's exact fingerprint -- so the 0664 "miss" and possibly
-  the HDR gap may have been the bug, not under-sampling. **Re-run both on the fixed binary before
-  building anything;** the gap may largely dissolve. If a real gap remains, the cheap remedy is
-  luminance-aware window placement (one window on the brightest segment, using the per-frame luma
-  shot detection already computes), and it stays the prerequisite for any HDR display-peak bump
-  above 1000.
-  _Priority: low -- the motivating evidence is now suspect; re-confirm the gap post-fix before
-  treating this as a real item at all._
+- **Smarter sampling on under-represented sub-segments -- RE-CONFIRMED post-fix, now narrow.**
+  Re-baselined on the fixed binary 2026-06-18 (LOG "Re-baseline accuracy ground truth on the fixed
+  binary"). The two motivating sightings split: the HDR display-peak "bright-frame under-coverage"
+  was the **cascade** (dissolves on the fixed ruler -- void), but band-confirm Sully chunk 0664
+  (true 8.689 vs sampled 9.679) is **real** -- a byte-identical re-score confirms it. So a genuine
+  representativeness gap exists but is rare and narrow: one chunk in 670, specific to a *sampled*
+  chunk driven to max CRF where a hard sub-segment between the 3x48 windows is starved and missed.
+  The cheap remedy if ever pursued is worst-segment-aware window placement (one window on the
+  chunk's hardest/brightest segment, using the per-frame luma shot detection already computes); it
+  also stays the prerequisite for any HDR display-peak bump above 1000.
+  _Priority: low -- now a single real, rare, max-CRF sighting (the broader HDR evidence was the
+  bug); not worth building for one near-invisible chunk per feature until it recurs more widely._
 
 ### Open -- performance / infra
 
@@ -179,18 +178,6 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   see 2026-06-14 "Target band WIDTH".)
   _Priority: low -- validates a superseded band for the historical record only; the shipped band
   already has its ground-truth pass._
-- **Re-baseline accuracy ground truth on the fixed binary.** Every pre-2026-06-16 `fullvalidate`
-  result used the buggy ruler (one VSHIP handler per worker), so the project's accuracy claims rest
-  on a tool that was nondeterministic on near-floor/HDR content. Now that `fullvalidate` is fixed
-  (shared handler), do one clean ground-truth pass on the *current shipped config* (default band +
-  knobs) across a few representative clips -- ideally 4K HDR with near-floor chunks -- to establish
-  a trustworthy baseline. This confirms rather than re-decides: the shipped defaults are
-  independently sound (the band rests on a simulation over the verified-clean feature run; the
-  256-frame full-probe threshold is the cascade-immune choice), so expect agreement -- the value is
-  a clean reference for future accuracy-trading work.
-  _Priority: low -- hygiene; the defaults are sound, this just puts the accuracy record on a
-  trustworthy (post-fix) ruler. Pairs naturally with re-confirming the suspect findings flagged in
-  LOG "Cascade root cause + FIX" -> "Impact on prior findings"._
 
 ### Standing guidance (hold unless new evidence overrides)
 

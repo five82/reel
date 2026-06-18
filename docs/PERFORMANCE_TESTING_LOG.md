@@ -1596,14 +1596,19 @@ aggregate "0 below range" on easy high-scoring clips that replicated.
   sampled gap 0.46) is inflated by the bug, not pure sampling error. The *direction* (full-probing
   is more accurate and cascade-immune) likely holds, but rerun the A/B on the fixed binary before
   citing the 0.46 JOD penalty as real.
-- **2026-06-14 HDR display peak 1000 vs 1500** -- SUSPECT. The full-chunk "8/33 below band" and the
-  "sampling representativeness gap" rest on single fullvalidate runs on 4K HDR content and could be
-  partly cascade. Low stakes (kept 1000 anyway), but re-validate before acting on the gap.
-- **Feature run (3.11) + band WIDTH default + monotonicity diagnostic** -- LIKELY SOUND. The kept
-  feature `target-quality.json` was checked clean of the artifact (0% of worst-window in [8.0,8.7],
-  top value 9.23), and the band-width result is a *simulation* over those clean probes -- so the
-  shipped 9.15-9.55 default does not rest on corrupted data. Caveat: it is one run with the bug
-  live, and the band change's fullvalidate *validation* leg is on a possibly-affected run.
+- **2026-06-14 HDR display peak 1000 vs 1500** -- **RESOLVED: it was the cascade** (2026-06-18
+  re-baseline). Re-scoring new-1500-wd under the 1500-nit ruler with the fixed handler moves it from
+  mean 9.345 / 8 below / gap 0.109 to mean 9.448 / **0 below** / gap 0.040; the -0.4 chunks collapse
+  to ~0 gap. The "8/33 below band" and "sampling representativeness gap" were the scoring bug, not
+  under-sampling. (The revert-to-1000 decision is unaffected -- 1500 still buys no real quality.)
+- **Feature run (3.11) + band WIDTH default + monotonicity diagnostic** -- LIKELY SOUND, and the
+  adjacent 9.15-9.55 band-confirm feature run is now **CONFIRMED clean**: re-scoring it with the
+  fixed ruler is byte-identical to the buggy-ruler run (2026-06-18 re-baseline), so that
+  ground-truth pass was never contaminated. The kept feature `target-quality.json` was checked clean
+  of the artifact (0% of worst-window in [8.0,8.7], top value 9.23), and the band-width result is a
+  *simulation* over those clean probes -- so the shipped 9.15-9.55 default does not rest on corrupted
+  data. (The band-confirm 0664 outlier -- full 8.689 vs sampled 9.679 -- survived the re-score
+  unchanged: it is a REAL rare max-CRF sampling miss, not the cascade.)
 - **Low risk (no re-test):** lp bitstream identity (fixed-CRF), 4K bandwidth ramp (SVT-encoder
   concurrency, not VSHIP), the concurrency-restructure / 4K-ramp fullvalidate checks (easy 5m clips,
   scores ~9.4 far from the 9.15 floor, "0 below range" replicated), and all architectural findings
@@ -1613,8 +1618,84 @@ Artifacts: `scripts/aligncheck` (decode-alignment diagnostic), `~/testing/probe-
 (sf*/r*/fixed-r* JSONs), `~/testing/.fv-workers1.log` / `.fv-shared.log` (workers=1 and
 shared-handler determinism), `~/testing/.fix-validate.log` (end-to-end), `~/testing/sullyhv-15m-4k-hdr.mkv`.
 
+## 2026-06-18 Re-baseline accuracy ground truth on the fixed binary
+
+First clean accuracy pass since the 2026-06-16 scoring-cascade fix (one shared VSHIP handler +
+`quality.gpuMu`; see "Cascade root cause + FIX"). Every pre-fix `fullvalidate` used the buggy
+N-handler ruler, so this re-establishes a trustworthy baseline for the *current shipped config*
+(preset 6, band 9.15-9.55, default knobs) and re-confirms the two suspect findings the fix flagged.
+Machine: dev box (RTX 5060 Ti, 32 cores). Binary: fresh build at HEAD 18e351a. Ruler:
+`scripts/fullvalidate` (shared handler); the 1500-nit HDR re-score used a throwaway `fullvalidate`
+variant with an optional display-model override arg (not retained -- reproduce by passing a 1500-nit
+model JSON to `quality.EnsureDisplayModel`). All GPU steps strictly serial. Total 239 min.
+
+### Fresh baselines (preset 6, band 9.15-9.55, fixed binary) -- all clean
+
+| clip | tier | chunks | mean | min | below | above | sampled gap | probes/ch | floored |
+|------|------|-------:|-----:|----:|------:|------:|------------:|----------:|--------:|
+| im-5m | 1080p SDR | 32 | 9.452 | 9.222 | 0 | 2 | 0.027 | 1.28 | 0 |
+| sully-5m | 4K HDR | 33 | 9.410 | 9.179 | 0 | 1 | 0.023 | 1.36 | 0 |
+| kbv1-5m | 4K HDR (grainiest) | 37 | 9.387 | 9.198 | 0 | 0 | 0.008 | 1.22 | 0 |
+| ko-5m | 4K HDR | 30 | 9.459 | 9.190 | 0 | 6 | 0.047 | 1.40 | 0 |
+| sullyhv-15m | 4K HDR (near-floor stress) | 110 | 9.433 | 9.169 | 0 | 17 | 0.033 | 1.54 | 0 |
+
+Zero chunks below band, zero CRF-floored, 100% converged on every clip; no false sub-floor
+worst-window anywhere. `sullyhv-15m` -- the asset that cascaded ~40% of pre-fix runs (0-27 floored,
+9.2x size swings) -- now lands at 1.54 probes/chunk / 0 floored, matching the post-fix 1.55
+reference. The grain stress (kbv1, CRFs 22-29) is the tightest of all (gap 0.008, 0/37 out of band):
+grain forces low CRF, so there is always bitrate headroom above the floor.
+
+### Suspect-finding re-confirmations (re-score the same bits, fixed ruler)
+
+Re-scoring the *same encoded IVFs* with the fixed ruler isolates the handler fix from the encode.
+The two flagged sightings split cleanly:
+
+- **Sully band-confirm chunk 0664: REAL (not cascade).** Re-scoring the 670-chunk feature workdir is
+  **byte-identical** to the old buggy-ruler run (mean 9.4110, below 3, above 47, gap 0.0263; 0664
+  full 8.6891 vs sampled 9.6794, gap -0.99 -- unchanged to 4 decimals). So (a) that ground-truth run
+  was never cascade-contaminated (the fix would have changed it), and (b) 0664 is a genuine
+  representativeness gap. Mechanism: 0664 is a 288-frame *sampled* chunk pushed to the **max CRF
+  (63.75)** because all three 3x48 windows scored ~9.67-9.70; a hard sub-segment between the windows
+  is starved at min bitrate and the sampling misses it. Rare (1/670) and max-CRF-specific -- grainy/
+  low-CRF content never reaches it.
+- **HDR display-peak "8/33 below band": CASCADE (dissolves on the fixed ruler).** Re-scoring the
+  reverted 1500-nit test workdir under the 1500-nit ruler with the fixed handler: new-1500 goes from
+  mean 9.345 / **8 below** / gap 0.109 (old) to mean 9.448 / **0 below** / gap 0.040 (fixed); the
+  catastrophic chunks (0017 full 9.09 vs sampled 9.55 = -0.45; 0011 -0.41; 0030 -0.40) all collapse
+  to ~0 gap. The baseline-1000 workdir under 1500 is byte-identical old->new (9.467->9.468, 0 below),
+  as expected for easy content. So the HDR "sampling representativeness gap" was the scoring bug, not
+  under-sampling.
+
+### Conclusions
+
+1. **The shipped config is sound on a trustworthy ruler.** Across 1080p SDR, easy/grainy/mixed 4K
+   HDR, and the near-floor stress clip, the default band + knobs produce in-band, cascade-free
+   encodes (0 below band, 0 floored everywhere). Confirms rather than re-decides -- the band rests on
+   a simulation over verified-clean feature probes and the 256-frame full-probe threshold is
+   cascade-immune.
+2. **The "smarter sampling on under-represented sub-segments" item survives but narrows.** Its
+   HDR-test evidence was cascade (now void); its band-confirm 0664 evidence is real but is a single
+   rare max-CRF sighting. Still low priority. If ever pursued, the cheap remedy (one window on the
+   chunk's hardest segment via the per-frame luma shot detection already computes) targets exactly
+   the 0664 failure mode.
+3. **The HDR revert-to-1000 decision stands, but for a simpler reason.** The alarming "1500 makes
+   8/33 chunks fall below band" was the bug; on the fixed ruler the 1500-trained encode is also clean
+   (0 below). 1000 was kept because the change bought no real quality and isn't needed -- unaffected;
+   only the scary number was an artifact.
+
+Artifacts: `~/testing/rebaseline-20260617/` (per-clip `fullvalidate.txt` + `probestats.txt` + kept
+workdirs; `A1-bandconfirm-0664/`, `A2-hdr-baseline1000/`, `A3-hdr1500/`; `STATUS.txt`, `SUMMARY.md`).
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
+- **Re-baseline accuracy ground truth on the fixed binary** -- done 2026-06-18 (see "Re-baseline
+  accuracy ground truth on the fixed binary"). Fresh preset-6 default-band encodes of 5 clips
+  (1080p SDR + easy/grainy/mixed 4K HDR + the near-floor sullyhv-15m stress) plus re-scores of the
+  flagged suspect workdirs, all on the post-fix ruler. The shipped config is clean everywhere (0
+  below band, 0 floored, 100% converged). The two suspect findings split: band-confirm chunk 0664 is
+  **real** (byte-identical re-score -- a rare max-CRF sampling miss), the HDR "8/33 below band" was
+  the **cascade** (dissolves on the fixed ruler). The accuracy record now rests on a trustworthy
+  ruler.
 - **GPU-scoring concurrency cascade** -- found + **fixed** 2026-06-16 (see "Cascade root cause +
   FIX"). Multiple coexisting VSHIP CVVDP handlers (one per metric worker) corrupted scores under
   >1 worker, producing a false constant sub-floor worst-window that tripped the floor guard and
