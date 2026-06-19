@@ -1798,7 +1798,8 @@ search + SVT-AV1 threading noise (~100x smaller than the cascade it replaced), n
 
 Outcome: **"Restore safe metric concurrency" RESOLVED** -- a one-flag libvship rebuild, not the external
 VSHIP isolation work the 2026-06-15 entry anticipated. `scripts/handlertest` kept as a standing
-concurrency-safety check to re-run after any libvship/GPU/driver change.
+concurrency-safety check to re-run after any libvship/GPU/driver change. The underlying Vship allocator
+race is written up as an upstream finding in `docs/VSHIP_CONCURRENCY_BUG.md` (recorded, not yet filed).
 
 ## Resolved questions (index -- full detail in the dated entries above)
 
