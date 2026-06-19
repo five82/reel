@@ -148,22 +148,31 @@ func EncodeTargetQuality(
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
 	cfg.LevelOfParallelism = resolveLevelOfParallelism(cfg.LevelOfParallelism, rampCeiling)
 
-	// One shared VSHIP/CUDA handler, reused by all metric workers. Multiple
-	// coexisting CVVDP handlers corrupt shared GPU state, garbling worst-window
-	// scores and cascading into ~9x output-size swings (see docs LOG "Cascade
-	// root cause"). The pool hands out the SAME handler MetricWorkers times so
-	// several workers can decode concurrently, while quality.gpuMu serializes the
-	// GPU compute on the single handler -- matching single-worker scoring exactly
-	// (verified byte-identical) without losing decode/compute overlap.
-	sharedProcessor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = sharedProcessor.Close() }()
+	// One VSHIP/CUDA handler PER metric worker, scored concurrently. CVVDP is a
+	// per-handler temporal metric and Vship forbids using one handler from two
+	// threads at once, so each worker owns a distinct handler; with that,
+	// concurrent scoring matches single-handler truth exactly (verified
+	// byte-identical, 8/8 reps). CORRECTNESS DEPENDS on libvship being built with
+	// MITIGATE_MALLOC_ASYNC -- the default cudaMallocAsync allocator races across
+	// coexisting handlers and silently corrupts scores ~50% of the time, trips
+	// the floor guard, and cascades into ~9x output-size swings (see docs LOG).
+	// The build script enforces the flag.
 	metricPool := make(chan *quality.VshipProcessor, tq.MetricWorkers)
 	for i := 0; i < tq.MetricWorkers; i++ {
-		metricPool <- sharedProcessor
+		processor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
+		if err != nil {
+			for j := 0; j < i; j++ {
+				_ = (<-metricPool).Close()
+			}
+			return 0, err
+		}
+		metricPool <- processor
 	}
+	defer func() {
+		for i := 0; i < tq.MetricWorkers; i++ {
+			_ = (<-metricPool).Close()
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

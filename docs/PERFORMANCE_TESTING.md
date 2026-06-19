@@ -49,7 +49,7 @@ with the full evidence. Update a row when its value changes.
 |------|---------------|-----|------------|
 | 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K is memory-bandwidth bound, not RAM-capacity bound; higher concurrency does not help and the slow ramp wasted time | 2026-06-12 "4K adaptive ramp: bandwidth, not capacity" |
 | Non-4K encode concurrency | ramps to full `maxWorkers` | GPU-metric bound, self-limits via utilization | 2026-06-12 "4K adaptive ramp" |
-| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | since the 2026-06-16 fix these gate DECODE concurrency only (one shared VSHIP handler does the serialized GPU compute); kept at the prior values for decode parallelism + VRAM headroom. The old "4 vs 6 scaling" rationale is superseded -- the worker-scaling speedup was the corruption | 2026-06-16 "Cascade root cause + FIX" |
+| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | each worker runs its OWN VSHIP CVVDP handler, scored concurrently (restored 2026-06-19). REQUIRES a libvship built with `MITIGATE_MALLOC_ASYNC` (the build script enforces it); without it, coexisting handlers race the CUDA async allocator and corrupt scores | 2026-06-19 "Metric concurrency RESTORED" |
 | `level_of_parallelism` | auto from resolution ramp ceiling → 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | lp is bitstream-neutral; higher lp fills cores when concurrency is low (~3-4% 4K gain) | 2026-06-13 "SVT-AV1 level_of_parallelism" |
 | TQ scheduling block | 32 chunks, largest-first within block | smaller blocks (8) regressed; 32 keeps priors useful | 2026-06-07 entries; "What did not work" |
 | TQ probe windows | 3×48 sampled; 5 windows on later probes after high spread; whole-chunk at/below full-probe threshold | sampled probes match full-probe accuracy at lower GPU cost | "Current target-quality strategy"; "What has worked" |
@@ -72,7 +72,7 @@ As of this document:
   - move more aggressively toward high CRF for flat, unbracketed high probes only when the highest-CRF probe is still at least 0.30 JOD above target.
 - Scoring is mean/worst blended when sampled-window spread is high.
 - A worst-window floor prevents convergence when any sampled window falls below tolerance.
-- GPU CVVDP scoring uses **one shared VSHIP handler** across all metric workers (the worker count now controls decode concurrency only); the GPU compute is serialized by `quality.gpuMu`. Do not revert to one handler per worker -- multiple coexisting CVVDP handlers corrupt GPU state and cascade into ~9x output-size swings (2026-06-16 "Cascade root cause + FIX"). Cost: serializing the metric slows a probe-heavy preset-8 4K encode ~1.7x vs a pre-fix clean run; see the open "restore safe metric concurrency" item.
+- GPU CVVDP scoring runs **one VSHIP handler per metric worker, concurrently** (restored 2026-06-19; `ComputeChunkCVVDP` is lock-free). This REQUIRES a libvship built with `MITIGATE_MALLOC_ASYNC`: with the default `cudaMallocAsync` allocator, coexisting handlers race a device-global memory pool and silently corrupt scores ~50% of runs (cascading into ~9x output-size swings; 2026-06-19 "Metric concurrency RESTORED"). The build script (`build_svt_av1_usr_local.sh`) enforces the flag, and `scripts/handlertest` re-checks concurrency safety after any libvship/GPU/driver change.
 
 The components above (sampled probes, adaptive priors, block-32 scheduling,
 full-first probe reuse, worst-window protections, conditional extra windows,
@@ -86,7 +86,7 @@ The two binding constraints are pinned by measurement, not guess (2026-06-14
 
 - **1080p TQ is GPU-CVVDP-throughput bound.** The clip sits at the GPU floor (metric ~65% of busy time). Scheduling/concurrency cannot help further -- the GPU scores at a fixed rate.
 - **4K TQ is memory-bandwidth bound *on the SVT-AV1 encoder*.** Active 4K encodes are capped at ~5 (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time. RAM is not the constraint (tens of GiB stay free).
-- **Post-fix, the serialized metric is the wall-clock bottleneck for BOTH tiers, not the encoder.** With the single shared VSHIP handler (`quality.gpuMu`), CVVDP compute is serialized, and at preset 6 it is 81-91% of video-encoding wall time on 4K and 1080p alike (2026-06-18 "Metric serialization is the preset-6 wall bottleneck"). The encoder's larger *compute* parallelizes across workers and compresses away; the serialized metric does not. This is why the "Restore safe metric concurrency" item is high priority -- the two encoder-side constraints above still hold for the encoder, but they are no longer what binds wall clock.
+- **The metric is no longer serialized (concurrency restored 2026-06-19).** Through 2026-06-18 the single-shared-handler scoring fix serialized CVVDP, making it 81-91% of preset-6 wall (2026-06-18 "Metric serialization is the preset-6 wall bottleneck"). That was undone by restoring N concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship, cutting sullyhv-15m wall ~1.5x (1963s -> ~1290s) with no quality change (2026-06-19 "Metric concurrency RESTORED"). The encoder-side constraints above (4K bandwidth cap, 1080p GPU throughput) again govern wall clock; probe count remains the shared multiplier across both.
 
 From there, the load-bearing facts for any future tuning:
 
@@ -105,13 +105,12 @@ are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
 Each open item carries a priority (critical / high / medium / low) with a brief
-reason, per AGENTS.md. One **high** item is open: restore safe metric concurrency
-(the single-handler scoring fix's serialization is 81-91% of wall at the shipped
-preset; see performance/infra below and LOG "Metric serialization is the preset-6
-wall bottleneck"). No critical items are open. (A GPU-scoring concurrency cascade
--- coexisting VSHIP handlers garbling CVVDP scores under >1 metric worker, ~9.2x
-output-size swings -- was found and **fixed** 2026-06-16: single shared handler +
-`quality.gpuMu`; see LOG "Cascade root cause + FIX".)
+reason, per AGENTS.md. No critical or high items are open. (The former high item,
+restore safe metric concurrency, was **resolved 2026-06-19**: the GPU-scoring
+cascade was root-caused to the libvship `cudaMallocAsync` allocator and fixed by a
+`MITIGATE_MALLOC_ASYNC` rebuild, so N concurrent handlers are back and the
+serialization tax is gone -- ~1.5x faster wall; see LOG "Metric concurrency
+RESTORED".)
 
 ### Latent (fixed root, optional hardening)
 
@@ -161,23 +160,12 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
 
 ### Open -- performance / infra
 
-- **Restore safe metric concurrency (recover the metric-serialization wall cost).** The
-  2026-06-16 scoring fix uses one shared VSHIP handler with serialized GPU compute (`quality.gpuMu`)
-  because multiple coexisting CVVDP handlers corrupt shared device state. **At the shipped preset 6
-  the serialized metric is 81-91% of video-encoding wall time -- for 4K and 1080p alike** (2026-06-18
-  "Metric serialization is the preset-6 wall bottleneck"): the encoder's larger compute parallelizes
-  across workers while the metric is pinned to one serial GPU lane, so the metric -- not the encoder
-  -- binds wall clock. The earlier "smaller at slower presets (encoder dominates)" rationale was
-  wrong; it conflated compute share with wall share. The proper fix is VSHIP-side: isolate each
-  handler's device buffers + give it its own stream so concurrent scoring is correct, then reel can
-  go back to N handlers. The cheap reel-side next step is a preset-6 serial-vs-concurrent A/B to
-  quantify the *recoverable* fraction before investing in the VSHIP work (the pre-fix preset-8
-  sullyhv recovered ~41% of wall / 1.7x -- confounded by the cascade but real). Until VSHIP isolates
-  handlers, single-handler is the only correct option.
-  _Priority: high -- the serialization tax falls on ~80-90% of wall at the production preset, a large
-  library-scale cost that the old "not urgent / encoder dominates" framing materially under-stated.
-  Caveats holding it short of critical: the realized win is bounded by GPU overlap headroom
-  (unmeasured at preset 6), and the fix itself is external (VSHIP-side)._
+- **Restore safe metric concurrency -- RESOLVED 2026-06-19.** Root-caused to the libvship
+  `cudaMallocAsync` device-global allocator pool racing across coexisting handlers (NOT an inherent
+  Vship design limit, as the 2026-06-16 fix assumed), and fixed by a `MITIGATE_MALLOC_ASYNC` rebuild
+  of libvship. N concurrent handlers restored, `quality.gpuMu` removed, ~1.5x faster wall, validated
+  end-to-end on 4K + 1080p. Full detail in LOG "Metric concurrency RESTORED".
+  _No action -- pointer only; `scripts/handlertest` is the standing re-check after libvship changes._
 - **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
   it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
   calibrated on this box's dual-channel DDR5 + 32 cores).

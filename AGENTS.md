@@ -29,6 +29,7 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 - Coordinate major trade-offs with the user; never unilaterally defer functionality.
 - Keep edits ASCII unless the file already uses extended characters.
 - When troubleshooting, gather evidence and test. Do not blindly guess.
+- Match conclusions to the evidence; do not let a tidy hypothesis outrun the data. For intermittent or nondeterministic behavior a couple of clean runs prove nothing -- replicate enough times to bound the failure rate before calling a bug fixed or absent. Test the real artifact you will ship (the actual build/library/config), and change one variable at a time so the result is attributable. (A 2-run "clean" on a ~50%-intermittent GPU scoring race nearly shipped a wrong "build misconfiguration" conclusion until an 8-run sweep on the real build exposed it; see `docs/PERFORMANCE_TESTING_LOG.md`.)
 - Prefer unit tests over real encodes; encoding is slow.
 - When running Reel with a timeout, use at least 120 seconds.
 - When performance tuning, record what was tried, why, measured results, and whether the change was kept or reverted. Add a dated entry to `docs/PERFORMANCE_TESTING_LOG.md` (the historical record), and update `docs/PERFORMANCE_TESTING.md` (the current-guidance summary: defaults table, strategy, open items) if a default or the active strategy changes. Read `docs/PERFORMANCE_TESTING.md` first for current state. This gives future agents context beyond git history.

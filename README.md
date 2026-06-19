@@ -33,7 +33,7 @@ This is a deliberately different point on the speed/quality/size curve from typi
 - libSvtAv1Enc (SVT-AV1 encoder shared library)
 - libopusenc shared library (for Opus audio encoding)
 - FFmpeg/libav development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
-- libvship + CUDA for the default CVVDP target-quality build, or build with `-tags no_vship` for fixed-CRF-only use
+- libvship + CUDA for the default CVVDP target-quality build, or build with `-tags no_vship` for fixed-CRF-only use. **Build libvship with `MITIGATE_MALLOC_ASYNC=on`** (e.g. `make build BACKEND=Cuda MITIGATE_MALLOC_ASYNC=on`): reel scores probes with one VSHIP handler per metric worker concurrently, and libvship's default `cudaMallocAsync` allocator races across coexisting handlers and silently corrupts scores without this flag.
 
 ```bash
 # Ubuntu/Debian

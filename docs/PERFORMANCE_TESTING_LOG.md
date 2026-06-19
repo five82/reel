@@ -1474,6 +1474,12 @@ hard-content test in the same A/B.
 
 ## 2026-06-15 Cascade root cause + FIX: concurrent VSHIP CVVDP handlers corrupt GPU scoring
 
+> ROOT CAUSE CORRECTED + SUPERSEDED 2026-06-19: the cause was the libvship build (the deprecated
+> `buildcuda` target's `cudaMallocAsync` device-global pool racing across handlers), NOT an inherent
+> Vship limitation. The one-shared-handler + `gpuMu` fix below was a correct workaround; metric
+> concurrency has since been RESTORED via a `MITIGATE_MALLOC_ASYNC` libvship rebuild. See
+> "2026-06-19 Metric concurrency RESTORED".
+
 While setting up a `probe_sample_frames` A/B, two runs of the *identical* config (sf48, default
 band, preset 8) on the same clip diverged enormously. Root-caused over 06-15/06-16 to a GPU
 concurrency bug in CVVDP scoring; **fixed** by using one shared VSHIP handler. RESOLVED.
@@ -1688,6 +1694,11 @@ workdirs; `A1-bandconfirm-0664/`, `A2-hdr-baseline1000/`, `A3-hdr1500/`; `STATUS
 
 ## 2026-06-18 Metric serialization is the preset-6 wall bottleneck (concurrency cost is NOT smaller at slow presets)
 
+> SUPERSEDED 2026-06-19: the "fix is VSHIP-side / parked pending concurrency work" framing is resolved --
+> the serialized metric has been REMOVED by restoring N concurrent handlers on a MITIGATE_MALLOC_ASYNC
+> libvship (~1.5x faster wall, validated). The 81-91%-of-wall measurement below stands as the *motivation*;
+> see "2026-06-19 Metric concurrency RESTORED".
+
 Follow-up to the re-baseline, prompted by pushback on the "Restore safe metric concurrency" open
 item's claim that the single-handler serialization cost "is smaller at slower presets (encoder
 dominates)". Re-read the per-probe `encode_seconds`/`metric_seconds` in the fixed-binary **preset 6**
@@ -1727,6 +1738,68 @@ preset-6 serial-vs-concurrent A/B to quantify the recoverable fraction. (Parked 
 go-ahead on concurrency work.) Source: `~/testing/rebaseline-20260617/*/.reel-*/target-quality.json`
 (`.probes[].encode_seconds` / `.metric_seconds`); wall from `STATUS.txt`.
 
+## 2026-06-19 Metric concurrency RESTORED: the cascade was a libvship allocator bug, not a Vship design limit
+
+Resolves the "Restore safe metric concurrency" open item and corrects the root-cause framing of the
+2026-06-15 "Cascade root cause + FIX" entry. That fix (one shared VSHIP handler + `quality.gpuMu`
+serializing GPU compute) was a correct *workaround* but mis-attributed the cause to an inherent Vship
+limitation ("the price of correctness until VSHIP supports isolated handlers"). The real cause is the
+**libvship build**, it is fixable, and N concurrent handlers are back -- the serialization tax (81-91%
+of preset-6 wall) is gone.
+
+### Method
+Throwaway harness `scripts/handlertest`: score a kept workdir's chunks two ways in one process -- one
+shared handler serial (truth) vs N distinct handlers concurrent (the pre-fix / xav design) -- comparing
+below-band count and run-to-run determinism. A/B'd libvship builds via `LD_LIBRARY_PATH` (no /usr/local
+clobber). Artifacts: `~/testing/vship-concurrency/`.
+
+### Controlled builds (sullyhv-15m near-floor, 4 handlers)
+| libvship build | optimization | allocator | concurrent result |
+|---|---|---|---|
+| installed (`buildcuda`) | `-g`, none | cudaMallocAsync | cascades: 30 below band, min 7.66, run-to-run delta 2.0 |
+| `buildcuda` @HEAD | `-g`, none | cudaMallocAsync | cascades: 2/3 reps below band (56, 3) |
+| `build` (proper) | `-O3 -DNDEBUG` | cudaMallocAsync | **4/8 reps cascade** -- NOT fixed by -O3 |
+| `build` + MITIGATE | `-O3 -DNDEBUG` | sync cudaMalloc | **8/8 reps byte-identical to truth, 0 below** |
+| (1080p/8 handlers, async) | `-g` | cudaMallocAsync | milder but present: 1/8 reps 1-below, nondeterministic |
+
+Root cause: each CVVDP handler allocates per-frame device memory via `cudaMallocAsync` from a
+DEVICE-GLOBAL stream-ordered pool shared by all handlers; concurrent alloc/free across handlers' streams
+races that pool and aliases memory -- corrupting scores even with serialized compute (which is why the
+2026-06-15 diagnostic saw N-handlers-serialized still corrupt, only 1-handler clean). `MITIGATE_MALLOC_ASYNC`
+swaps the async pool for synchronous `cudaMalloc`/`cudaFree`, removing the shared pool. Vship's CVVDP +
+shared-GPU source is byte-identical from the installed commit (7035000) to HEAD (b8e6a4e) -- only ssimu2
+changed -- so this is purely build flags + allocator, not a source regression.
+
+### The false turn (recorded as the AGENTS.md discipline lesson)
+A 2-rep run of the proper `-O3` build came back clean and I concluded "the bug was just the deprecated
+unoptimized `buildcuda` build -- a build misconfiguration." An 8-rep sweep on that *same* build then
+cascaded 4/8. At a ~50%-intermittent failure rate a 2-rep sample proves nothing; only replicating enough
+to bound the rate exposed that `-O3` *masks* but does not *fix* the race. Hence the testing-discipline
+bullet in AGENTS.md.
+
+### Fix (implemented)
+- `build_svt_av1_usr_local.sh` (encodescripts): `VSHIP_BUILD_TARGET` `buildcuda` -> `build BACKEND=Cuda
+  MITIGATE_MALLOC_ASYNC=on`. The deprecated unoptimized target was building the racy async allocator.
+  System libvship rebuilt + reinstalled to /usr/local with the sync allocator.
+- reel: restored ONE VSHIP handler PER metric worker, scored concurrently (`internal/encode/target_quality.go`,
+  `scripts/fullvalidate`); removed `quality.gpuMu` -- `ComputeChunkCVVDP` is lock-free. Correctness now
+  DEPENDS on the MITIGATE-built lib (documented at each call site, enforced by the build script).
+
+### Validation (end-to-end real encodes, installed MITIGATE lib + restored reel, preset 6 default band)
+| clip (handlers) | runs | wall | size | floored | min score |
+|---|---|---|---|---|---|
+| sullyhv-15m 4K (4) | 3 | 1260/1301/1291s | 177/177/178 MB | 0/0/0 | 9.169/9.157/9.185 |
+| im-5m 1080p (8) | 2 | 151/154s | 108/110 MB | 0/0 | 9.222/9.222 |
+
+Deterministic (size flat within ~1 MB, 0 floored every run, all in-band) vs the cascade's 0.21->1.91 GB /
+0-27-floored swings. **Speed: sullyhv 1260-1301s vs the serialized 1963s baseline = ~1.5x faster wall**, at
+both 4- and 8-handler counts. The few-percent run-to-run probe/score/size jitter is the normal adaptive-
+search + SVT-AV1 threading noise (~100x smaller than the cascade it replaced), not corruption.
+
+Outcome: **"Restore safe metric concurrency" RESOLVED** -- a one-flag libvship rebuild, not the external
+VSHIP isolation work the 2026-06-15 entry anticipated. `scripts/handlertest` kept as a standing
+concurrency-safety check to re-run after any libvship/GPU/driver change.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
 - **Re-baseline accuracy ground truth on the fixed binary** -- done 2026-06-18 (see "Re-baseline
@@ -1744,6 +1817,10 @@ go-ahead on concurrency work.) Source: `~/testing/rebaseline-20260617/*/.reel-*/
   Fixed with a single shared handler + `quality.gpuMu` serializing GPU compute; fullvalidate fixed
   the same way. Validated byte-identical (workers=4 == workers=1) and end-to-end (4 sullyhv runs
   now identical). Diagnostic tool `scripts/aligncheck` ruled out source frame-misalignment.
+  **Root cause later corrected and concurrency RESTORED 2026-06-19** (see "Metric concurrency
+  RESTORED"): the corruption was the `buildcuda` build's `cudaMallocAsync` device-global pool race,
+  fixed by a `MITIGATE_MALLOC_ASYNC` libvship rebuild -- so the single-handler serialization was
+  undone and N concurrent handlers are back (~1.5x faster wall).
 
 - **High-variance test clip (methodology/tooling)** -- built 2026-06-15, usable after the scoring
   fix. `sullyhv-15m-4k-hdr` (+ `build-highvar-clip.py`, `highvar-stats.py`) is now deterministic

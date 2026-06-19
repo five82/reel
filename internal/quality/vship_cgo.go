@@ -145,9 +145,7 @@ func NewVshipProcessor(width, height uint32, inf *video.Info, displayPath string
 	defer C.free(unsafe.Pointer(configPath))
 
 	var handler C.VshipCVVDPHandler
-	gpuMu.Lock()
 	ret := C.Vship_CVVDPInit2(&handler, srcColorspace, disColorspace, fps, C.bool(true), modelKey, configPath)
-	gpuMu.Unlock()
 	if ret != 0 {
 		return nil, fmt.Errorf("Vship_CVVDPInit2 failed: %s", vshipLastError())
 	}
@@ -159,9 +157,7 @@ func (p *VshipProcessor) Close() error {
 		return nil
 	}
 	p.closed = true
-	gpuMu.Lock()
 	ret := C.Vship_CVVDPFree(p.handler)
-	gpuMu.Unlock()
 	if ret != 0 {
 		return fmt.Errorf("Vship_CVVDPFree failed: %s", vshipLastError())
 	}
