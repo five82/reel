@@ -49,7 +49,7 @@ with the full evidence. Update a row when its value changes.
 |------|---------------|-----|------------|
 | 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K is memory-bandwidth bound, not RAM-capacity bound; higher concurrency does not help and the slow ramp wasted time | 2026-06-12 "4K adaptive ramp: bandwidth, not capacity" |
 | Non-4K encode concurrency | ramps to full `maxWorkers` | GPU-metric bound, self-limits via utilization | 2026-06-12 "4K adaptive ramp" |
-| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | each worker runs its OWN VSHIP CVVDP handler, scored concurrently (restored 2026-06-19). REQUIRES a libvship built with `MITIGATE_MALLOC_ASYNC` (the build script enforces it); without it, coexisting handlers race the CUDA async allocator and corrupt scores | 2026-06-19 "Metric concurrency RESTORED" |
+| Metric (VSHIP/CUDA) workers | 8 below UHD, 4 for UHD | each worker runs its OWN VSHIP CVVDP handler, scored concurrently (restored 2026-06-19). REQUIRES a libvship built with `MITIGATE_MALLOC_ASYNC` (the build script enforces it); without it, coexisting handlers race the CUDA async allocator and corrupt scores. **Count (8/4) is from the 2026-06-12 saturation benchmark on the OLD async-allocator build; the restore spot-confirmed 8 and 4 are correct and ~1.5x faster but did not re-sweep the curve on the sync allocator -- a re-tune candidate (see open items).** | 2026-06-12 "metric-worker scaling"; 2026-06-19 "Metric concurrency RESTORED" |
 | `level_of_parallelism` | auto from resolution ramp ceiling → 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | lp is bitstream-neutral; higher lp fills cores when concurrency is low (~3-4% 4K gain) | 2026-06-13 "SVT-AV1 level_of_parallelism" |
 | TQ scheduling block | 32 chunks, largest-first within block | smaller blocks (8) regressed; 32 keeps priors useful | 2026-06-07 entries; "What did not work" |
 | TQ probe windows | 3×48 sampled; 5 windows on later probes after high spread; whole-chunk at/below full-probe threshold | sampled probes match full-probe accuracy at lower GPU cost | "Current target-quality strategy"; "What has worked" |
@@ -81,12 +81,19 @@ the log.
 
 ## Bottlenecks and key tradeoffs
 
-The two binding constraints are pinned by measurement, not guess (2026-06-14
-"Where to go next"; 2026-06-12 "pipeline bottleneck attribution"):
+**Caveat (2026-06-19): the attribution below predates the metric-concurrency restore and is
+the top thing to re-confirm.** The 1080p/4K bottleneck split was measured when CVVDP scoring was
+either buggy-concurrent or serialized; with N concurrent handlers restored on a clean allocator,
+the current binding constraint has not been freshly measured. Treat the two bullets below as the
+*last known* attribution, not the present one, until the post-restore re-attribution run (see
+"Open questions / next tests") replaces them.
 
-- **1080p TQ is GPU-CVVDP-throughput bound.** The clip sits at the GPU floor (metric ~65% of busy time). Scheduling/concurrency cannot help further -- the GPU scores at a fixed rate.
-- **4K TQ is memory-bandwidth bound *on the SVT-AV1 encoder*.** Active 4K encodes are capped at ~5 (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time. RAM is not the constraint (tens of GiB stay free).
-- **The metric is no longer serialized (concurrency restored 2026-06-19).** Through 2026-06-18 the single-shared-handler scoring fix serialized CVVDP, making it 81-91% of preset-6 wall (2026-06-18 "Metric serialization is the preset-6 wall bottleneck"). That was undone by restoring N concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship, cutting sullyhv-15m wall ~1.5x (1963s -> ~1290s) with no quality change (2026-06-19 "Metric concurrency RESTORED"). The encoder-side constraints above (4K bandwidth cap, 1080p GPU throughput) again govern wall clock; probe count remains the shared multiplier across both.
+The two constraints as last measured (2026-06-14 "Where to go next"; 2026-06-12 "pipeline
+bottleneck attribution"):
+
+- **1080p TQ is GPU-CVVDP-throughput bound** *(pre-restore measurement).* The clip sat at the GPU floor (metric ~65% of busy time). Scheduling/concurrency could not help further -- the GPU scores at a fixed rate. Re-confirm post-restore.
+- **4K TQ is memory-bandwidth bound *on the SVT-AV1 encoder*** *(pre-restore measurement).* Active 4K encodes were capped at ~5 (`maxWorkers/6`); pushing higher *raised* per-encode time and worsened wall time. RAM is not the constraint (tens of GiB stay free). Re-confirm post-restore.
+- **The metric is no longer serialized (concurrency restored 2026-06-19).** Through 2026-06-18 the single-shared-handler scoring fix serialized CVVDP, making it 81-91% of preset-6 wall (2026-06-18 "Metric serialization is the preset-6 wall bottleneck"). That was undone by restoring N concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship, cutting sullyhv-15m wall ~1.5x (1963s -> ~1290s) with no quality change (2026-06-19 "Metric concurrency RESTORED"). **Consequence for the model:** the metric lane now carries *only probe scores*, while the encode lane carries *both* probe-window encodes *and* every chunk's final whole-chunk encode. While the metric was serialized it dominated wall and masked the encode lane; with it parallel again, the fixed per-chunk final preset-6 encodes (which no probe-tuning touches) are an unmasked and likely larger share of wall than the pre-restore attribution reflects. Whether wall is now encoder-bound or still GPU-bound -- and at what worker count the GPU saturates -- is an open re-measurement, not a settled inference. Probe count remains the shared multiplier on both lanes.
 
 From there, the load-bearing facts for any future tuning:
 
@@ -105,12 +112,59 @@ are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
 Each open item carries a priority (critical / high / medium / low) with a brief
-reason, per AGENTS.md. No critical or high items are open. (The former high item,
-restore safe metric concurrency, was **resolved 2026-06-19**: the GPU-scoring
-cascade was root-caused to the libvship `cudaMallocAsync` allocator and fixed by a
-`MITIGATE_MALLOC_ASYNC` rebuild, so N concurrent handlers are back and the
-serialization tax is gone -- ~1.5x faster wall; see LOG "Metric concurrency
-RESTORED".)
+reason, per AGENTS.md. The highest-value open work is the **post-restore re-baseline**
+below: the 2026-06-19 metric-concurrency restore changed the regime, and the current
+bottleneck attribution, metric-worker counts, and 4K encode-concurrency ceiling were all
+set on the *pre-restore / old-allocator* build. Two **high** items (re-attribute the
+bottleneck; re-tune metric workers on the fixed build) re-baseline those cheaply and
+unblock the rest. No critical items are open. (The former high item, restore safe metric
+concurrency, was **resolved 2026-06-19**: the GPU-scoring cascade was root-caused to the
+libvship `cudaMallocAsync` allocator and fixed by a `MITIGATE_MALLOC_ASYNC` rebuild, so N
+concurrent handlers are back and the serialization tax is gone -- ~1.5x faster wall; see
+LOG "Metric concurrency RESTORED".)
+
+### Open -- post-restore re-baseline (highest value)
+
+The metric-concurrency restore made CVVDP scoring parallel again, so the serialized-metric
+bottleneck (81-91% of wall) is gone. But the *current* binding constraint has not been
+re-measured -- the "Bottlenecks" attribution is inference carried over from the pre-restore
+era, and the worker-count and encode-concurrency defaults were tuned on the OLD
+async-allocator build. Re-baselining these is cheap (a couple of instrumented real encodes)
+and gates every downstream tuning decision, so it is now the top of the list.
+
+- **Re-attribute the bottleneck on the fixed build.** Instrument one 1080p and one 4K real
+  encode: total wall, sum(probe `encode_seconds`), sum(`metric_seconds`), final whole-chunk
+  encode time, GPU utilization (`nvidia-smi` sampled), and active encode/metric workers over
+  time. The per-probe `encode`/`metric` seconds are already logged per chunk in
+  `target-quality.json`; the missing pieces are the final-encode share, GPU saturation, and
+  live lane overlap. Output: a present-day breakdown of where wall goes at 1080p vs 4K that
+  replaces the inferred attribution in "Bottlenecks and key tradeoffs".
+  _Priority: high -- prerequisite for the worker / concurrency / preset decisions below, and
+  cheap (two real encodes plus sampling)._
+- **Re-tune metric worker count on the sync-allocator (MITIGATE) build.** The 8/4 defaults come
+  from the 2026-06-12 saturation benchmark on the async-allocator build; the restore only
+  confirmed 8 (1080p) and 4 (4K) are correct and ~1.5x faster -- it did not re-sweep the curve.
+  The sync `cudaMalloc`/`cudaFree` allocator has different per-frame overhead, so the saturation
+  point may have moved. Sweep worker count (e.g. 4/6/8/10/12 at 1080p, 3/4/5/6 at 4K) on the
+  shipping build, measuring wall + GPU util; fold the sweep into the re-attribution run above so
+  one harness answers both.
+  _Priority: high -- directly tunes throughput on the real build; cheap and high-confidence._
+- **Re-check the 4K encode-concurrency ceiling (`maxWorkers/6`) and lp on the fixed build.** Same
+  rationale -- the bandwidth-cap divisor and lp auto-derivation were calibrated pre-restore. If
+  re-attribution shows the 4K encoder is a larger wall share now, re-sweep the ceiling.
+  _Priority: medium -- gated on the re-attribution result; act only if 4K is encoder-bound now._
+- **Preset 6 -> 7 A/B (user-approved to test 2026-06-19; default move still needs sign-off).** With
+  the metric parallel again, the encode lane carries both probe-window encodes and every chunk's
+  final whole-chunk encode, so at preset 6 the final encodes are a larger, now-unmasked share of
+  wall -- making preset the biggest remaining throughput lever. Run a preset 6 vs 7 A/B on
+  representative 1080p + 4K HDR clips: measure wall / throughput and output size, and gate quality
+  on `scripts/fullvalidate` full-chunk CVVDP (not sampled scores) -- preset 7 must hold the JOD
+  center and the worst-window floor to qualify. The user has approved *running* the test; moving
+  the default still needs the ground-truth result reviewed with the user (AGENTS.md
+  "Target-Quality Encoding Philosophy"). Best run after the re-attribution confirms the encoder is
+  a meaningful wall share, so the measured throughput win is real and not masked by the GPU.
+  _Priority: medium -- potentially the biggest single throughput win; approved to test, but the
+  default move stays gated on fullvalidate ground truth + user review of results._
 
 ### Latent (fixed root, optional hardening)
 
@@ -122,12 +176,13 @@ RESTORED".)
   floored chunks propagate the floor via priors.
   _Priority: low -- the root scoring bug is fixed, so these never fire today; cheap insurance only._
 
-### Open -- search layer (probe-count tail; highest value)
+### Open -- search layer (probe-count tail)
 
 The 2026-06-14 feature-length run showed the probe tail is the dominant real-movie cost
 (probes/chunk 3.11, 21% of chunks maxing out, 37% not cleanly converging) and is invisible
 on short homogeneous clips. The biggest win for it -- widening the target band -- has now
-been taken (default 9.15-9.55). The three obvious cheap search-layer wins (content-prior
+been taken (default 9.15-9.55), so what remains here is genuinely low-value next to the
+post-restore re-baseline above. The three obvious cheap search-layer wins (content-prior
 seed, flat-low gate, worst-window early-out) are all rejected by simulation. What remains:
 
 - **Probe-sample noise vs sample-frame count** (unblocked now the scoring bug is fixed, but still
@@ -168,7 +223,9 @@ seed, flat-low gate, worst-window early-out) are all rejected by simulation. Wha
   _No action -- pointer only; `scripts/handlertest` is the standing re-check after libvship changes._
 - **Re-measure the 4K `maxWorkers/6` bandwidth divisor on non-dev hardware** before trusting
   it there (carried over from the resolved Q6 4K adaptive-ramp work; the divisor is
-  calibrated on this box's dual-channel DDR5 + 32 cores).
+  calibrated on this box's dual-channel DDR5 + 32 cores). Distinct from the post-restore
+  re-check of the same divisor on *this* box under the fixed build (see "post-restore re-baseline"
+  above) -- this item is specifically about a *different* encode host.
   _Priority: low -- single-user project that runs only on the calibrated box; matters only if the
   encode host changes._
 - **Feature-length fullvalidate ground-truth pass** on the kept baseline Sully workdir
