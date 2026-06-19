@@ -279,10 +279,12 @@ Conclusion: keep the conservative high-side jump gate. It improved `sully5`, pre
 
 ## 2026-06-12 metric-worker scaling benchmark
 
-> **SUPERSEDED by the 2026-06-16 scoring fix** (see "Cascade root cause + FIX" -> "Impact on prior
-> findings"). The GPU-throughput speedup from concurrent metric workers measured here came from
-> per-handler CUDA streams, which the single-shared-handler fix removes; metric workers now gate
-> decode concurrency only. The numbers were real but the scaling curve no longer applies.
+> **Status (2026-06-19): valid again, with one caveat.** The 2026-06-16 serialization fix briefly made
+> metric workers gate decode concurrency only; the 2026-06-19 restore (see "Metric concurrency RESTORED")
+> put N concurrent handlers back, so metric workers parallelize GPU compute again and this scaling curve
+> applies. Caveat: it was measured on the old async-allocator build, while the shipped build is now
+> synchronous (`MITIGATE_MALLOC_ASYNC`), so treat the exact saturation points as directional. The defaults
+> it set (8 below-4K / 4 for 4K) stand and were re-validated end-to-end by the restore.
 
 Goal: evaluate whether the current hardcoded 4 CVVDP/VSHIP metric workers should remain fixed for both 1080p and 4K, vary by resolution, or scale like encoding workers. No Reel code changes were made for this test.
 
@@ -546,10 +548,12 @@ Caveat for earlier entries: the soms and sully ground-truth numbers recorded und
 
 ## 2026-06-13 4K metric workers 4 vs 6 retest
 
-> **CONTAMINATED + now MOOT** (see "Cascade root cause + FIX" -> "Impact on prior findings"). The
-> "mw6 took more probes" result was the handler-corruption cascade (6 handlers cascade more than
-> 4), misread here as a prior-cascade *timing* confound. Keeping 4 is still fine, but with one
-> shared handler the 4-vs-6 question no longer exists (worker count = decode concurrency only).
+> **CONTAMINATED -- this raw comparison was the cascade.** The "mw6 took more probes" result was the
+> handler-corruption cascade (6 handlers cascade more than 4 on the old async build), misread here as a
+> prior-cascade *timing* confound. With concurrency restored 2026-06-19, worker count is again concurrent
+> GPU handlers (not "decode only"), so the 4-vs-6 question exists again -- but the 2026-06-12 scaling
+> benchmark already answers it (4K saturates ~6, default 4), so keep 4. Treat this entry's numbers as
+> cascade-era and do not cite them.
 
 Goal: open question 7. The 2026-06-12 metric-worker benchmark set the 4K default to 4, noting 6 was the *metric-only* saturation point but did not help the full pipeline because the adaptive encoder only sustained 2-3 active 4K workers. Since then the concurrency restructure (slot release during scoring, async scoring, decode/GPU overlap) plus the 4K bandwidth-aware ramp raised sustained concurrency, and CVVDP now overlaps frame decode with GPU compute. Retest whether 6 metric workers now beats 4 in a real 4K encode.
 
@@ -1287,11 +1291,11 @@ transparent-for-streaming. Kept workdir at `~/testing/band-confirm/.reel-Sully_t
 
 ## 2026-06-14 HDR display peak luminance 1000 vs 1500 (reviewed, tested, reverted)
 
-> **SUSPECT -- re-validate the full-chunk numbers** (see "Cascade root cause + FIX" -> "Impact on
-> prior findings"). The "8/33 below band" full-chunk result and the sampling-representativeness gap
-> rest on single `fullvalidate` runs on 4K HDR content (near-floor chunks present), which could be
-> partly the scoring cascade. Low stakes -- 1000 was kept regardless -- but treat the gap magnitude
-> as unconfirmed until rerun on the fixed binary.
+> **RESOLVED 2026-06-18: the "8/33 below band" was the scoring cascade, not under-sampling** (see
+> "Re-baseline accuracy ground truth on the fixed binary"). Re-scoring the same 1500-nit bits with the
+> fixed handler moves it to mean 9.448 / 0 below / gap 0.040 -- the catastrophic chunks collapse to ~0
+> gap. So the "sampling representativeness gap" described below is a cascade artifact, not a real
+> highlight-coverage deficit. The revert-to-1000 decision is unaffected (1500 still buys no real quality).
 
 Machine: dev box (32 cores, dual-channel DDR5, CUDA GPU). Clip: `sully-5m-4k-hdr`
 (7184 frames, 3840x2160 -> cropped 3840x1600, HDR PQ). Chosen because it is the
@@ -1478,11 +1482,13 @@ hard-content test in the same A/B.
 > `buildcuda` target's `cudaMallocAsync` device-global pool racing across handlers), NOT an inherent
 > Vship limitation. The one-shared-handler + `gpuMu` fix below was a correct workaround; metric
 > concurrency has since been RESTORED via a `MITIGATE_MALLOC_ASYNC` libvship rebuild. See
-> "2026-06-19 Metric concurrency RESTORED".
+> "2026-06-19 Metric concurrency RESTORED". This entry is kept for the cascade's symptom fingerprint,
+> the amplifier mechanism (still-latent robustness gaps), and the diagnostic method -- NOT the fix
+> mechanics, which are no longer in the tree.
 
 While setting up a `probe_sample_frames` A/B, two runs of the *identical* config (sf48, default
 band, preset 8) on the same clip diverged enormously. Root-caused over 06-15/06-16 to a GPU
-concurrency bug in CVVDP scoring; **fixed** by using one shared VSHIP handler. RESOLVED.
+concurrency bug in CVVDP scoring (final root cause: the libvship async-allocator race, see 2026-06-19).
 
 ### The instability (5 same-config runs, sullyhv-15m, preset 8, default band)
 
@@ -1499,7 +1505,7 @@ score, wasting bitrate. The cascade fingerprint is a **constant, CRF-independent
 value** across many chunks (r1: 8.165 on 89 probes; r4: 8.56 on 82) -- impossible for real
 scoring (the same 8.16 appears at CRF 6.5 and CRF 32.75), so a scoring fault, not content.
 
-### Root cause: multiple coexisting VSHIP handlers corrupt shared GPU state
+### Diagnosis (durable method; final attribution corrected 2026-06-19)
 
 The diagnosis ruled out, in order:
 
@@ -1508,19 +1514,18 @@ The diagnosis ruled out, in order:
   access pattern). Result: 0 mismatches sequential, **0/480 mismatches under 8-way concurrency,
   with the autocrop applied** -- source decode is correct and deterministic. (This also kills the
   "xav-style sequential source pairing" fix idea: the layer it changes is already correct.)
-- **NOT a concatenation/seek issue.** An earlier disambiguation (continuous hard cut clean) had
-  *suggested* concatenation; that was a red herring -- the concatenated clip simply has more
-  chunks (110) and so more concurrent-scoring exposure (see trigger below).
+- **NOT a concatenation/seek issue.** The concatenated clip simply has more chunks (110) and so
+  more concurrent-scoring exposure (see trigger below) -- a red herring, not a cause.
 - **NOT inherent metric noise.** `fullvalidate` at **workers=1** is byte-identical across two
-  passes (mean 9.4757, 0 below) and matches the clean encode; at **workers>1** it corrupts
-  (9.17/31-below). So the defect is *concurrency*.
-- **It is multiple coexisting CVVDP handlers.** Serializing the GPU *compute* with a mutex (both
-  per-call and whole-chunk granularity) reduced but did **not** fix it (~9.41, still off 9.4757,
-  still nondeterministic) -- so concurrent compute is not the whole story. Using **one shared
-  handler** across 4 workers (compute serialized by the mutex) is **byte-identical to workers=1**
-  (9.4757, 0 below, both passes). The differentiator is handler *count*: N coexisting VSHIP CVVDP
-  handlers share/clobber device state (`Vship_CVVDPInit2` allocates per handler but the library
-  shares global GPU resources), so even serialized compute on >1 handler is wrong.
+  passes (mean 9.4757, 0 below); at **workers>1** it corrupts (9.17/31-below). So the defect is
+  *concurrency*. Serializing GPU *compute* with a mutex reduced but did not fix it; only collapsing
+  to one handler did.
+
+This entry concluded "N coexisting handlers share/clobber global GPU state." The 2026-06-19
+root-cause work pinned it precisely: each handler's per-frame `cudaMallocAsync` draws from a
+device-global stream-ordered pool shared across handlers, and concurrent alloc/free races that pool --
+which is why even *serialized compute* on >1 handler stayed corrupt (the race is in alloc/free, not
+kernels). See "2026-06-19 Metric concurrency RESTORED".
 
 ### Trigger (corrected): concurrency x near-floor content x chunk-count -- NOT concatenation
 
@@ -1545,26 +1550,13 @@ These amplifiers are now untriggered (scoring is correct) but remain latent robu
 optional future hardening: a noise margin on the floor guard, and not letting floored chunks seed
 neighbors at the floor.
 
-### The fix (implemented, validated)
+### The fix (superseded -- see 2026-06-19 restore)
 
-- **One shared VSHIP handler.** `target_quality.go` now creates a single `VshipProcessor` and
-  fills the metric pool with that same pointer `MetricWorkers` times, so several workers decode
-  concurrently while the GPU compute runs on one handler. `fullvalidate` was fixed the same way
-  (it had the identical N-handler bug, which is why ground truth was unreliable on spliced input).
-- **`quality.gpuMu` serializes the GPU compute.** Each chunk's whole `ResetCVVDP`->`ComputeCVVDP`
-  sequence is held under the mutex as one unit (CVVDP is temporal; interleaving two sequences on
-  the shared handler still perturbs it). The per-chunk producer is started *before* the lock, so
-  other workers keep decoding while one holds the GPU.
-- **Throughput cost (real, accepted).** The old N-handler path overlapped CVVDP compute across
-  per-handler CUDA streams -- that overlap was the speedup *and* the corruption. Serializing it
-  slows the preset-8 `sullyhv` encode from ~18 min (a pre-fix *clean* run) to ~31 min (~1.7x); the
-  fixed run is ~the same as a pre-fix *cascade* run. The share is smaller at slower presets (the
-  encoder dominates) and on 4K (bandwidth-bound encoder). This is the price of correctness until
-  VSHIP can isolate handlers (separate device buffers + streams) to make concurrent scoring safe;
-  revisit if metric wall time becomes the priority.
-- **Validation.** `fullvalidate` workers=4 is now byte-identical to workers=1 (9.4757). End-to-end,
-  4 fresh `sullyhv` encodes are now **identical**: 1.55 probes/chunk, 0 floored, 0.281 GB each
-  (vs before: 1.49-2.94, 0-27 floored, 0.21-1.91 GB / 9.2x). `./check-ci.sh` passes (incl. -race).
+The original fix serialized scoring behind one shared VSHIP handler + `quality.gpuMu`, which removed the
+cascade at a real throughput cost (~1.7x slower preset-8 wall). The 2026-06-19 restore replaced it with N
+concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship -- same correctness, no serialization tax (~1.5x
+faster than the serialized build). Those serialization mechanics are no longer in the tree; see
+"2026-06-19 Metric concurrency RESTORED" for the current code state and end-to-end validation.
 
 ### Side conclusions (now reliable)
 
@@ -1587,15 +1579,15 @@ windows, can cascade -- full-probed chunks are immune), or on a single fullvalid
 **low risk** if it used fixed-CRF / byte-identical output (no metric), is architectural, or is an
 aggregate "0 below range" on easy high-scoring clips that replicated.
 
-- **2026-06-12 metric-worker scaling benchmark** -- SUPERSEDED. It measured GPU *throughput*
-  scaling from N concurrent handlers (1080p saturates ~8, 4K ~6). Those numbers were real but the
-  parallelism came from per-handler CUDA streams -- exactly what the fix removes. With one shared
-  handler, metric workers no longer parallelize GPU compute (they gate decode only); the worker
-  defaults persist but the scaling curve no longer applies.
-- **2026-06-13 4K metric workers 4 vs 6** -- CONTAMINATED + now MOOT. "mw6 took more probes"
-  (io a: 82 probes / 2.28 per chunk, the worst run) was the handler-corruption cascade (6 handlers
-  cascade more than 4), misattributed to prior-cascade *timing*. Keeping 4 is still fine, but the
-  4-vs-6 question is moot under one shared handler.
+- **2026-06-12 metric-worker scaling benchmark** -- VALID AGAIN post-restore. It measured GPU
+  *throughput* scaling from N concurrent handlers (1080p saturates ~8, 4K ~6). The serialization fix
+  briefly removed that parallelism; the 2026-06-19 restore put concurrent handlers back, so the curve
+  applies again (directional now, since it was measured on the old async build). Worker defaults (8/4)
+  stand and were re-validated.
+- **2026-06-13 4K metric workers 4 vs 6** -- CONTAMINATED (the raw mw6 comparison was the cascade:
+  io a: 82 probes / 2.28 per chunk was 6 handlers cascading more than 4 on the old async build). With
+  concurrency restored, the 4-vs-6 question exists again, but the 06-12 benchmark already answers it
+  (keep 4); do not cite this entry's raw numbers.
 - **2026-06-13 Accuracy-trading knobs (full-probe threshold 256 vs 144)** -- CONFOUNDED, re-test
   before trusting the magnitude. knobB (144) full-probes fewer chunks, so it had far more sampled
   chunks = far more cascade exposure than base (256). Its "accuracy collapse" (22/33 above range,
@@ -1692,51 +1684,21 @@ The two flagged sightings split cleanly:
 Artifacts: `~/testing/rebaseline-20260617/` (per-clip `fullvalidate.txt` + `probestats.txt` + kept
 workdirs; `A1-bandconfirm-0664/`, `A2-hdr-baseline1000/`, `A3-hdr1500/`; `STATUS.txt`, `SUMMARY.md`).
 
-## 2026-06-18 Metric serialization is the preset-6 wall bottleneck (concurrency cost is NOT smaller at slow presets)
+## 2026-06-18 Metric serialization was the preset-6 wall bottleneck (motivation for the restore)
 
-> SUPERSEDED 2026-06-19: the "fix is VSHIP-side / parked pending concurrency work" framing is resolved --
-> the serialized metric has been REMOVED by restoring N concurrent handlers on a MITIGATE_MALLOC_ASYNC
-> libvship (~1.5x faster wall, validated). The 81-91%-of-wall measurement below stands as the *motivation*;
-> see "2026-06-19 Metric concurrency RESTORED".
+> Resolved by the 2026-06-19 concurrency restore; kept as the "before" baseline and one durable lesson.
 
-Follow-up to the re-baseline, prompted by pushback on the "Restore safe metric concurrency" open
-item's claim that the single-handler serialization cost "is smaller at slower presets (encoder
-dominates)". Re-read the per-probe `encode_seconds`/`metric_seconds` in the fixed-binary **preset 6**
-re-baseline logs (no new encode). Under the single shared handler all CVVDP compute is serialized by
-`quality.gpuMu`, so `sum(metric_seconds)` is a hard floor on video-encoding wall time.
+Under the (since-removed) single-shared-handler serialization, all CVVDP compute ran on one serial GPU
+lane, so `sum(metric_seconds)` was a hard floor on wall time. Re-reading the fixed-binary preset-6
+re-baseline logs, the serialized metric was **81-91% of wall at preset 6, for 4K and 1080p alike** (e.g.
+sullyhv-15m 4K: metric 1796s of 1963s wall = 91%; im-5m 1080p: 128s of 151s = 85%). The **1963s serialized
+sullyhv baseline** is the reference the 2026-06-19 restore's "~1.5x faster" speedup is measured against.
 
-| clip | tier | enc_s (sum) | metric_s (sum) | wall_s | metric/wall |
-|------|------|-----:|-----:|-----:|-----:|
-| im-5m | 1080p SDR | 345 | 128 | 151 | 85% |
-| sully-5m | 4K HDR | 917 | 521 | 641 | 81% |
-| kbv1-5m | 4K HDR | 837 | 529 | 648 | 82% |
-| ko-5m | 4K HDR | 1283 | 641 | 744 | 86% |
-| sullyhv-15m | 4K HDR | 3209 | 1796 | 1963 | 91% |
-
-The serialized metric is **81-91% of wall at preset 6, for 4K and 1080p alike.** The "encoder
-dominates at slow presets" intuition conflates *compute* share with *wall* share: the encoder's
-compute is larger in sum (metric is only ~33-39% of total compute), but encodes run across several
-workers in parallel while the metric is pinned to one serial GPU lane -- so the encode work
-compresses away and the serialized metric becomes the binding wall-clock constraint. Slowing the
-encoder (preset 6 vs 8) does not shrink the metric's wall share, because the encoder parallelizes
-and the metric does not. (This also flips the older "4K TQ is memory-bandwidth bound" wall framing:
-the bandwidth cap still limits the *encoder*, but post-fix the serialized metric is what binds 4K
-wall clock.)
-
-Caveats on what this proves: (1) it is **not** a serial-vs-concurrent A/B -- it bounds the
-*potential* win (~80-90% of wall is serialized metric) but does not measure how much concurrency
-would actually recover, which depends on how much CVVDP overlaps on one physical GPU. (2) The one
-real recovery datapoint remains the pre-fix preset-8 sullyhv (~18 min clean -> ~31 min fixed = 1.7x,
-i.e. concurrency recovered ~41% of wall) -- confounded by the cascade and at a different preset, but
-it shows the overlap headroom is real and large, not hypothetical. If that ~halving-of-metric-wall
-ratio held at preset 6, the penalty would be comparable there (~1.5-1.7x), not smaller.
-
-Outcome: re-framed and **bumped the "Restore safe metric concurrency" open item from medium to
-high** -- the serialization tax falls on the large majority of wall at the production preset, not a
-slow-preset afterthought. The fix is still VSHIP-side (external); the cheap reel-side next step is a
-preset-6 serial-vs-concurrent A/B to quantify the recoverable fraction. (Parked pending user
-go-ahead on concurrency work.) Source: `~/testing/rebaseline-20260617/*/.reel-*/target-quality.json`
-(`.probes[].encode_seconds` / `.metric_seconds`); wall from `STATUS.txt`.
+Durable lesson: the "encoder dominates at slow presets" intuition was wrong. The encoder's compute is
+larger in sum (metric is only ~33-39% of total compute), but encodes parallelize across workers while a
+serial metric does not -- so the encode work compresses away and the serialized metric binds wall clock.
+Slowing the encoder (preset 6 vs 8) does not shrink the metric's wall share. This motivated restoring
+concurrency rather than treating the tax as a slow-preset afterthought.
 
 ## 2026-06-19 Metric concurrency RESTORED: the cascade was a libvship allocator bug, not a Vship design limit
 
@@ -1868,10 +1830,11 @@ race is written up as an upstream finding in `docs/VSHIP_CONCURRENCY_BUG.md` (re
   fix caps and starts 4K at `maxWorkers/6` rather than ramping higher. (Open sub-item -- the
   divisor retest on other hardware -- moved to the performance/infra list above.)
 - **Q7 -- 4K metric workers 4 vs 6** -- resolved 2026-06-13 (see "4K metric workers 4 vs 6
-  retest"). Keep 4. Throughput-normalized cost was identical (mw4 9.70 vs mw6 9.73 s/probe)
-  because the bandwidth-capped encoder sustains only ~5 active workers, so pending scoring
-  tasks rarely exceed 4 and the extra GPU workers idle. 6 added ~3.7 GiB peak VRAM for no
-  wall-time gain.
+  retest"). Keep 4. The retest's raw comparison was cascade-contaminated (mw6 cascaded more than mw4
+  on the old async build), so do not cite its s/probe numbers; the durable reason is structural -- the
+  bandwidth-capped encoder sustains only ~5 active workers, so pending scoring tasks rarely exceed 4
+  and extra GPU workers idle. The 2026-06-12 benchmark independently sets the 4K default to 4 (6 is the
+  metric-only saturation point, +~3.7 GiB VRAM, no full-pipeline gain).
 - **Q8 -- SVT-AV1 level_of_parallelism** -- resolved 2026-06-13 (see "SVT-AV1
   level_of_parallelism: bitstream identity and 4K scaling"). lp is byte-identical across
   values, so it is a free throughput knob; lp now scales off the resolution-aware worker
@@ -1879,11 +1842,12 @@ race is written up as an upstream finding in `docs/VSHIP_CONCURRENCY_BUG.md` (re
   identical output (TQ-mode wall time was uninterpretable due to the probe-cascade confound).
   New `--level-of-parallelism` flag added for overrides.
 - **Q9 -- Accuracy-trading TQ knobs** -- resolved 2026-06-13 (see "Accuracy-trading TQ
-  knobs"). Keep all three as-is. fullvalidate A/B showed lowering the 256 full-probe threshold
-  to 144 wrecks accuracy (sully mean_abs_error 0.075 -> 0.302, 22/33 chunks above range) *and
-  raises* GPU work (+30% probes) because noisier samples force more probes; the window size is
-  only a 4-9% GPU lever and not worth more sample degradation; the 12s cap binds on 0-2 of
-  ~35 chunks so there is nothing to gain.
+  knobs"). Keep all three as-is. The full-probe-threshold A/B (256 vs 144) showed lowering it both
+  *hurts* accuracy and *raises* GPU work (noisier samples force more probes) -- but its magnitude
+  (sully mean_abs_error 0.075 -> 0.302, 22/33 above range, +30% probes) is cascade-CONFOUNDED (144
+  full-probes fewer chunks, so more sampled-chunk cascade exposure); the direction is robust, the
+  number needs a re-test on the fixed binary. The window size is only a 4-9% GPU lever and not worth
+  more sample degradation; the 12s cap binds on 0-2 of ~35 chunks so there is nothing to gain.
 - **Q10 -- Overlap pre-encode head with encoding** -- resolved/deferred 2026-06-14 (see
   "Overlapping the pre-encode head (shot detection) with encoding"). Shot detection scales
   linearly (4K ~5ms/frame -> ~14-15 min on a 2hr feature; 1080p ~2.7 min), so the overlap
@@ -1896,12 +1860,10 @@ race is written up as an upstream finding in `docs/VSHIP_CONCURRENCY_BUG.md` (re
   fullvalidate) plus incremental plan/encoder/resume plumbing. Revisit only if 4K
   feature-length wall time becomes the priority.
 - **HDR display peak luminance 1000 vs 1500** -- reviewed and rejected 2026-06-14 (see "HDR
-  display peak luminance 1000 vs 1500"). Raising the HDR display model to cvvdp's standard 1500
-  (to match bright OLED panels) gives no quality upside and slightly *worse* delivered quality on
-  4000-nit content: the 1000-trained encode already passes the 1500 ruler (0/33 below band, mean
-  9.467). The sharp finding is a **sampling representativeness gap** -- the 3x48 windows under-cover
-  a chunk's brightest (>1000-nit) frames, so a highlight-sensitive metric exposes divergence the
-  search is blind to (full-chunk truth drops to 9.345, 8/33 below band, while sampled score/CRF
-  barely move). Latent at the shipped 1000 config (gap at noise floor, 0/33 below band). Remedy:
-  luminance-aware window placement (one window on the brightest segment; luma already available).
-  Keep 1000 until that exists.
+  display peak luminance 1000 vs 1500"). Raising the HDR display model to cvvdp's standard 1500 (to
+  match bright OLED panels) buys no quality upside, so 1000 was kept. NOTE: the entry's dramatic
+  "full-chunk truth drops to 9.345, 8/33 below band, sampling representativeness gap" was the
+  **scoring cascade**, not real under-sampling -- the 2026-06-18 re-baseline re-scored the same
+  1500-nit bits on the fixed handler at mean 9.448 / 0 below / gap 0.040. The only real residual
+  sampling-coverage datapoint is the band-confirm 0664 max-CRF miss, which is the narrow motivation
+  for the "smarter sampling" item -- not this test.
