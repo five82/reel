@@ -35,7 +35,7 @@ reel encode -v -i input.mkv -o output/
 - `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.15-9.55`)
 - `--crf-range <LOW-HIGH>`: target-quality search bounds (default `4.25-63.75`)
 - `--cvvdp-display <PATH>`: optional VSHIP/CVVDP display JSON; otherwise Reel generates a normal-viewing `reel` model. Custom JSON must contain a top-level `reel` model.
-- `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (default `4`)
+- `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (resolution-aware default: `6` below 4K, `4` for 4K/UHD)
 - `--max-probes <N>`: maximum target-quality probes per chunk (default `6`)
 - `--crf <VALUE>`: fixed CRF, `1-70` in `0.25` increments. Supplying `--crf` without `--quality-mode` selects `crf` mode for compatibility.
   - Single value: `--crf 26.25` (use for all resolutions)

@@ -1763,6 +1763,63 @@ VSHIP isolation work the 2026-06-15 entry anticipated. `scripts/handlertest` kep
 concurrency-safety check to re-run after any libvship/GPU/driver change. The underlying Vship allocator
 race is written up as an upstream finding in `docs/VSHIP_CONCURRENCY_BUG.md` (recorded, not yet filed).
 
+## 2026-06-19 Post-restore re-attribution + metric-worker sweep: 1080p GPU-bound, 4K encoder-bound, below-UHD workers 8->6
+
+The metric-concurrency restore changed the regime (CVVDP scoring parallel again), so the bottleneck
+attribution and the 8/4 metric-worker defaults -- both set on the pre-restore / async-allocator build --
+needed re-measuring on the shipping sync-allocator build. One sweep answers both: re-attribution falls out
+of the default-worker runs, the rest is the saturation curve.
+
+### Method
+Harness `~/testing/perf-ab/post-restore/` (`orchestrate.sh`, `run-one.sh`, `analyze.py`). Strictly
+sequential (one GPU process at a time -- the shared-allocator invariant), two interleaved rounds. Per run:
+wall (external), GPU utilization + VRAM sampled every 2s via `nvidia-smi`, and the kept
+`target-quality.json` (which carries per-probe `encode_seconds`/`metric_seconds` and per-chunk
+`final_encode_seconds` -- the full encode-vs-metric work split, no verbose log needed). Clips: `im-5m`
+(1080p SDR, default mw8), `sully-5m-4k-hdr` (4K HDR, default mw4). Sweep mw4-12 (1080p) / mw3-6 (4K), n=2.
+Reel `0442dfa` (restored N-handler build, MITIGATE libvship). All 18 runs rc=0; output sizes deterministic
+(4K pinned 57.8-57.9 MB, 1080p within ~3%) -- the fixed allocator confirmed clean end-to-end under the sweep.
+
+### 1080p is GPU-CVVDP-throughput bound
+| im-5m mw | 4 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|
+| wall (s, n=2) | 156 | 152 | 152 | 153 | 154 |
+| peak VRAM (GB) | 3.0 | 4.1 | 5.2 | 5.9 | 7.8 |
+| GPU p90 | 96 | 96 | 96 | 96 | 97 |
+
+Wall is **flat mw4->mw12** while VRAM climbs linearly and the GPU stays pinned (p90 96-97%). At mw8 the
+metric lane is 926s of work; metric wall-equivalent `Sigma_metric/8` = 116s = **76% of the 152s wall**. The
+encode lane (472s = 354s probe-window + 118s final) parallelizes across the full worker ramp to a tiny
+per-chunk wall, so it is not co-limiting. A single GPU saturates CVVDP scoring at ~4 workers; extra workers
+just make each score slower (Sigma_metric grows 515s->1324s as mw 4->12) and burn VRAM. **Conclusion:
+1080p is GPU-bound; metric workers past ~4 buy no throughput, only VRAM headroom.**
+
+### 4K is encoder-bound -- and the GPU now visibly sits idle
+| sully-5m mw | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|
+| wall (s, n=2) | 464 | 446 | 444 | 436 |
+| GPU util mean | 34 | 37 | 35 | 37 |
+| peak VRAM (GB) | 4.1-4.5 | 5.5-5.9 | 6.9-7.0 | 7.9-8.0 |
+
+GPU **mean util only ~35%** (p90 ~85%), encode lane **1.44x** the metric lane (1321s vs 915s), and more
+metric workers barely move wall (mw3->mw6 = 464->436s, ~6%). The GPU is starved waiting on the SVT-AV1
+encoder. This confirms the prior "4K bandwidth-bound on the encoder" framing (active 4K encodes capped at
+~5 via `maxWorkers/6`, RAM tens of GiB free) with the smoking gun: 65% GPU idle. **Conclusion: 4K is
+encoder-bound; the throughput lever is the encoder (preset, encode-concurrency), not metric workers.**
+
+### Change kept
+`DefaultMetricWorkersBelowUHD` 8 -> **6** (`internal/config/config.go`; UHD stays 4). 6 sits a margin above
+the ~4-worker GPU saturation knee (safety for higher-variance content) while shedding ~1 GB VRAM vs 8 at
+zero wall cost. Help text and `config_test.go` reference the constant symbolically, so they follow.
+`docs/USAGE.md` default corrected (it wrongly said `4`). 4K untouched. The bottleneck section of
+`docs/PERFORMANCE_TESTING.md` updated from inferred to measured.
+
+### What this redirects
+Metric-worker re-tuning is **not** a throughput win (1080p VRAM-only, 4K negligible) -- it rules out that
+avenue cheaply. With 4K confirmed encoder-bound and the GPU 65% idle, the remaining throughput levers are
+encoder-side: the preset sweep (a faster encoder converts ~directly to 4K wall) and the 4K
+encode-concurrency ceiling. These are now the top open items.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
 - **Re-baseline accuracy ground truth on the fixed binary** -- done 2026-06-18 (see "Re-baseline

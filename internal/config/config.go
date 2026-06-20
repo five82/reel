@@ -40,7 +40,11 @@ const (
 	AutoMetricWorkers = 0
 
 	// DefaultMetricWorkersBelowUHD is the default for content below 4K/UHD.
-	DefaultMetricWorkersBelowUHD = 8
+	// 6, not 8: the post-restore metric-worker sweep (2026-06-19) found 1080p wall
+	// is flat from mw4 to mw12 -- a single GPU saturates CVVDP scoring at ~4 workers,
+	// so workers past that only add VRAM (~1 GB per +2 workers) with no throughput
+	// gain. 6 keeps a margin above the saturation knee while shedding ~1 GB vs 8.
+	DefaultMetricWorkersBelowUHD = 6
 
 	// DefaultMetricWorkersUHD is the default for 4K/UHD content.
 	DefaultMetricWorkersUHD = 4
