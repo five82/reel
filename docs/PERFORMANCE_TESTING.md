@@ -88,7 +88,7 @@ The 1080p/4K split survives the metric-concurrency restore, now confirmed by dir
 
 - **1080p TQ is GPU-CVVDP-throughput bound.** On `im-5m`, wall is **flat (~152s) from mw4 to mw12** while VRAM climbs 3.0->7.8 GB; GPU p90 = 96-97%. The single GPU saturates CVVDP scoring at ~4 workers, so the metric lane (~926s of work / 8 ~= 116s, *76% of the 152s wall*) is the binding constraint and extra workers only buy VRAM headroom. The encode lane (472s) parallelizes across the full worker ramp to a tiny per-chunk wall, so it is not co-limiting. Default lowered 8->6 (margin above the knee, ~1 GB less VRAM, zero wall cost).
 - **4K TQ is encoder-bound -- and the GPU now visibly sits idle.** On `sully-5m`, **GPU mean util is only ~35%** (p90 ~85%) and the encode lane is **1.44x** the metric lane (1321s vs 915s); more metric workers barely move wall (mw3->mw6 is only 464->436s, ~6%). The encoder is the wall and the GPU is starved waiting on it. This is consistent with the prior "4K bandwidth-bound on the SVT-AV1 encoder" framing (active 4K encodes capped at ~5 via `maxWorkers/6`; RAM stays tens of GiB free), now with the smoking gun -- 65% GPU idle. Keep 4 metric workers (8->6 only touches below-UHD).
-- **What the restore changed.** Through 2026-06-18 the single-shared-handler fix serialized CVVDP at 81-91% of wall; restoring N concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship cut sullyhv-15m wall ~1.5x (2026-06-19 "Metric concurrency RESTORED"). The metric lane now carries *only probe scores*; the encode lane carries probe-window encodes *and* every chunk's final whole-chunk encode. The practical upshot: **the 4K throughput lever is the encoder (preset, encode-concurrency cap), not metric workers or probe-search tweaks** -- with the GPU 65% idle at 4K, a faster encoder converts almost directly to wall (the motivation for the preset 6->7 A/B in the open items). Probe count remains the shared multiplier on both lanes.
+- **What the restore changed.** Through 2026-06-18 the single-shared-handler fix serialized CVVDP at 81-91% of wall; restoring N concurrent handlers on a `MITIGATE_MALLOC_ASYNC` libvship cut sullyhv-15m wall ~1.5x (2026-06-19 "Metric concurrency RESTORED"). The metric lane now carries *only probe scores*; the encode lane carries probe-window encodes *and* every chunk's final whole-chunk encode. The practical upshot was that **the 4K throughput lever is the encoder, not metric workers or probe-search tweaks** -- with the GPU 65% idle at 4K, a faster encoder converts almost directly to wall. That motivated the preset 4-8 sweep, which (2026-06-20, LOG "Preset sweep 4/5/6/7/8") found preset 6 already optimal: at 4K a faster preset *does* cut wall but costs disproportionately more bits (+6-16% size for +3-13% wall, and p8 breaks the worst-window floor on clean 4K), so it is the wrong trade for a storage-bound library, and at 1080p the curve is flat (+-4% across 4-8). So the encoder-side knob with real headroom left is the **4K encode-concurrency cap**, not preset. Probe count remains the shared multiplier on both lanes.
 
 From there, the load-bearing facts for any future tuning:
 
@@ -107,21 +107,24 @@ are indexed at the bottom of `docs/PERFORMANCE_TESTING_LOG.md`; the dated
 entries there carry the full detail. Open items are intentionally unnumbered.
 
 Each open item carries a priority (critical / high / medium / low) with a brief
-reason, per AGENTS.md. The **post-restore re-baseline is now DONE** (2026-06-19): a
-metric-worker sweep on the fixed build re-attributed the bottleneck (1080p GPU-CVVDP-bound;
-4K encoder-bound with the GPU only ~35% utilized) and lowered the below-UHD metric default
-8->6. That result redirects the remaining highest-value work to the **encoder-side levers**
-it exposed -- the preset sweep and the 4K encode-concurrency ceiling -- because at 4K the GPU
-sits ~65% idle, so a faster encoder converts almost directly to wall. No critical items are
-open. (The earlier high item, restore safe metric concurrency, was resolved 2026-06-19 by the
-`MITIGATE_MALLOC_ASYNC` libvship rebuild -- N concurrent handlers back, serialization tax
-gone, ~1.5x faster wall; see LOG "Metric concurrency RESTORED".)
+reason, per AGENTS.md. The **post-restore re-baseline is DONE** (2026-06-19) and the
+**encoder-side preset lever it pointed to is now also resolved** (2026-06-20): the metric-worker
+sweep re-attributed the bottleneck (1080p GPU-CVVDP-bound; 4K encoder-bound, GPU ~35% utilized)
+and lowered the below-UHD metric default 8->6, then the preset 4-8 sweep tested the headline
+encoder hope and found **preset 6 already optimal for both resolutions** -- faster presets cost far
+more bits than wall at 4K and do nothing at 1080p (LOG "Preset sweep 4/5/6/7/8"). That leaves the
+4K encode-concurrency ceiling as the only unspent encoder-side lever, and it is bounded by the
+memory-bandwidth cap earlier work already found -- so the highest-value throughput avenues are now
+largely exhausted. No critical items are open. (The earlier high item, restore safe metric
+concurrency, was resolved 2026-06-19 by the `MITIGATE_MALLOC_ASYNC` libvship rebuild -- N concurrent
+handlers back, serialization tax gone, ~1.5x faster wall; see LOG "Metric concurrency RESTORED".)
 
-### Open -- encoder-side throughput levers (highest value)
+### Open -- encoder-side throughput levers (mostly resolved)
 
 The post-restore re-attribution (2026-06-19) showed 4K wall is bound by the SVT-AV1 encoder
-with the GPU ~65% idle, so the throughput levers worth pursuing are now on the encoder side,
-not the metric/search side. The two re-baseline items that pointed here are resolved:
+with the GPU ~65% idle, so the throughput levers worth pursuing are on the encoder side, not the
+metric/search side. Three of the four pointers here are now resolved (re-attribute, re-tune
+workers, preset sweep); only the 4K concurrency ceiling remains:
 
 - **Re-attribute the bottleneck -- DONE 2026-06-19** (LOG "Post-restore re-attribution +
   metric-worker sweep"). Measured 1080p GPU-CVVDP-bound (wall flat mw4->mw12, GPU p90 96-97%)
@@ -131,26 +134,24 @@ not the metric/search side. The two re-baseline items that pointed here are reso
   on the sync-allocator build; below-UHD default lowered 8->6 (margin above the ~4-worker GPU
   saturation knee, ~1 GB less VRAM, zero wall cost), 4K kept at 4. _No action -- pointer only._
 
-Actionable, in priority order:
+The actionable encoder-side lever (preset) is now **resolved -- preset 6 confirmed, default
+unchanged** (see below); the remaining one is the 4K encode-concurrency ceiling:
 
-- **Preset sweep 4/5/6/7/8 A/B (user-approved; expanded from 6->7 on 2026-06-19; default move
-  still needs sign-off).** Now the clearest highest-value lever: with 4K encoder-bound and the
-  GPU 65% idle, a faster preset should convert almost directly to wall. Sweep presets 4-8 on a
-  1080p + clean-4K + grainy-4K clip set; per (clip, preset) measure wall (the gain) and output
-  size (the efficiency cost), and gate quality on `scripts/fullvalidate` full-chunk CVVDP (not
-  sampled scores) -- a faster preset must still hold the JOD center and worst-window floor. The
-  decision is speed gained vs bits spent at equal delivered quality. Harness is staged at
-  `~/testing/perf-ab/preset-ab/`. Moving the default needs the ground-truth result reviewed with
-  the user (AGENTS.md "Target-Quality Encoding Philosophy").
-  _Priority: high -- the biggest remaining throughput lever now that 4K is confirmed
-  encoder-bound; approved to run, default move gated on fullvalidate + user review._
+- **Preset sweep 4/5/6/7/8 -- DONE 2026-06-20** (LOG "Preset sweep 4/5/6/7/8"). Swept all three
+  clips x five presets x two rounds, each encode ground-truthed with `fullvalidate`. The bottleneck
+  splits by resolution as predicted (1080p flat/GPU-bound, 4K steep/encoder-bound) but the **optimal
+  preset does not**: 1080p wall moves only +-4% across the whole 4-8 range, and at 4K preset 6 sits
+  on the size-vs-wall efficiency knee -- going faster costs **+6-16% file size for only +3-13% wall**
+  (and p8 breaks the worst-window floor on clean 4K, 1 chunk below band). For a storage-bound library
+  that is the wrong trade (permanent bits for one-time wall). **No default change; preset is not made
+  resolution-aware.** This closes the headline encoder-side hope. _No action -- pointer only._
 - **Re-check the 4K encode-concurrency ceiling (`maxWorkers/6`) and lp on the fixed build.**
   Re-attribution confirms 4K is encoder-bound, so the active-encode cap (~5) and lp directly set
   4K throughput. The pre-restore finding was that pushing past `maxWorkers/6` *raised* per-encode
   time (memory-bandwidth wall); re-confirm that still holds on the fixed build, since the GPU is
-  now idle and any spare bandwidth would help. Pairs naturally with the preset sweep.
-  _Priority: medium -- now ungated (4K is encoder-bound); the second encoder-side lever after
-  preset, but bounded by the memory-bandwidth cap the earlier work already found._
+  now idle and any spare bandwidth would help.
+  _Priority: medium -- now ungated (4K is encoder-bound) and, with the preset sweep resolved, the
+  only encoder-side lever left; but bounded by the memory-bandwidth cap the earlier work found._
 
 ### Latent (fixed root, optional hardening)
 

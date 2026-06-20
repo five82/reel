@@ -1820,8 +1820,86 @@ avenue cheaply. With 4K confirmed encoder-bound and the GPU 65% idle, the remain
 encoder-side: the preset sweep (a faster encoder converts ~directly to 4K wall) and the 4K
 encode-concurrency ceiling. These are now the top open items.
 
+## 2026-06-20 Preset sweep 4/5/6/7/8: preset 6 confirmed optimal for BOTH 1080p and 4K (default unchanged)
+
+The post-restore re-attribution (2026-06-19) showed 4K is encoder-bound with the GPU ~65% idle, so a faster
+SVT-AV1 preset should convert almost directly to 4K wall -- making preset the clearest remaining throughput
+lever. The user's encode default is preset 6. The open question, and the user's standing hunch, was whether
+the optimal preset differs by resolution (4K is encoder-bound so preset moves its wall; 1080p is GPU-bound
+so it should not). User-approved, expanded from a 6->7 A/B to a full 4-8 curve to see the whole picture.
+
+### Method
+Harness `~/testing/perf-ab/preset-ab/` (`orchestrate.sh`, `run-one.sh`, `analyze.py`). Strictly sequential
+(one GPU process at a time). Per run: timed encode (wall external, GPU sampled), then `fullvalidate` on the
+KEPT workdir for ground-truth full-chunk CVVDP -- run serially AFTER the encode so only one GPU process is
+ever live. reel is target-quality, so every preset aims at the same `9.15-9.55` JOD band; preset shows up as
+wall (the gain) vs output size at held quality (the efficiency cost), with `fullvalidate` proving the band +
+worst-window floor hold. Clips: `im-5m-1080p-sdr` (GPU-bound control), `sully-5m-4k-hdr` (clean 4K,
+encoder-bound), `kbv1-5m-4k-hdr` (grainy 4K -- grain is where fast presets blow up size worst). Presets 8->4
+(fast first), 2 rounds. Reel `151d6b1` rebuilt at HEAD (mw6 below-UHD / mw4 UHD default). All 30 runs rc=0;
+rounds a/b reproduce within 1-3s wall and a few MB size (deterministic encoder + MITIGATE allocator).
+
+### 1080p (im-5m) -- flat, as the GPU-bound prediction requires
+| preset | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|
+| wall (s) | 160 | 156 | 152 | 152 | 148 |
+| vs p6 wall | -5% (slower) | -3% | -- | +0% | +3% (faster) |
+| size (MB) | 107 | 112 | 115 | 112 | 118 |
+| vs p6 size | -7% | -3% | -- | -3% | +3% |
+| full_mean / full_min | 9.434 / 9.152 | 9.440 / 9.192 | 9.450 / 9.222 | 9.425 / 9.176 | 9.415 / 9.208 |
+| below-band | 0 | 0 | 0 | 0 | 0 |
+
+The entire 4-8 range moves the wall only **+-4%** (148-160s over a 152s baseline) -- confirms GPU-bound, the
+encoder is not the wall so preset barely touches it. Size is non-monotone within ~3-7 MB of noise. Faster
+(7/8) buys ~3% wall but costs size and a touch of quality; slower (4/5) costs wall for a marginal, noisy
+size gain with no quality improvement (full_min actually drops at p4). **Nothing meaningful on the table
+either direction at 1080p.**
+
+### 4K (sully clean + kbv1 grainy) -- steep, as the encoder-bound prediction requires; but faster is a bad bit-trade
+| sully-5m clean | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|
+| wall (s) | 542 | 483 | 444 | 431 | 389 |
+| vs p6 wall | -22% | -9% | -- | +3% | **+12% (faster)** |
+| size (MB) | 55.3 | 56.4 | 57.9 | 63.0 | 67.1 |
+| vs p6 size | -4% | -2% | -- | **+9%** | **+16%** |
+| full_min / below | 9.233 / 0 | 9.195 / 0 | 9.179 / 0 | 9.213 / 0 | **9.024 / 1** |
+
+| kbv1-5m grainy | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|
+| wall (s) | 456 | 440 | 420 | 408 | 366 |
+| vs p6 wall | -9% | -5% | -- | +3% | **+13% (faster)** |
+| size (MB) | 153.0 | 154.7 | 163.5 | 172.9 | 181.3 |
+| vs p6 size | -6% | -5% | -- | **+6%** | **+11%** |
+| full_min / below | 9.157 / 0 | 9.179 / 0 | 9.202 / 0 | 9.213 / 0 | 9.186 / 0 |
+
+Preset *does* move the 4K wall (encoder-bound, as predicted) -- but the bit cost is steep and superlinear,
+and the user's upfront caveat ("not a free tradeoff, encoder efficiency drops") decides it:
+- **Faster is a bad deal.** p7 costs **+6-9% size for only +3% wall**; p8 costs **+11-16% size for +12-13%
+  wall**, and on clean 4K p8 **breaks the worst-window floor** (full_min 9.024, 1 chunk below band). You
+  trade a one-time ~13% encode speedup for a *permanent* +11-16% on every stored 4K file -- backwards for a
+  storage-bound library where files persist and encode time is paid once.
+- **Slower does not pay either.** p6->p5/p4 saves only 2-6% size for 9-22% more wall. The size-vs-preset
+  curve has a clean **knee at preset 6**: sully size runs 67->63->**58**->56->55 (big drops down to p6, then
+  flat); kbv1 181->173->**163**->155->153 likewise. Below 6 you pay lots of wall for almost no bits.
+- Grain note: kbv1's files are ~3x sully's (grain costs bits), and the +11% p8 penalty is ~+18 MB absolute.
+  Interestingly the band breach showed on the *clean* clip (sully p8), not grainy -- a single hard scene in
+  sully, not a grain effect.
+
+### Conclusion -- keep preset 6 for both; do NOT make it resolution-aware
+The bottleneck differs by resolution exactly as predicted (1080p flat/GPU-bound, 4K steep/encoder-bound),
+but the **optimal preset does not**: preset 6 is the joint optimum. At 1080p the curve is too flat to care;
+at 4K preset 6 sits on the efficiency knee where faster presets start costing far more bits than wall (and
+p8 breaks quality). The resolution-aware *preset* idea was reasonable but the data closes it. **No default
+change** -- the `DefaultSVTAV1Preset = 6` row stands; this entry is the evidence that 6 is confirmed, not
+just inherited. Encoder-side throughput hopes now rest on the 4K encode-concurrency ceiling, not preset.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
+- **Preset sweep 4/5/6/7/8 -- preset 6 confirmed optimal for both resolutions** -- done 2026-06-20
+  (see "Preset sweep 4/5/6/7/8"). The bottleneck differs by resolution (1080p flat/GPU-bound, 4K
+  steep/encoder-bound) but the optimal preset does not: 1080p moves only +-4% across 4-8, and at 4K
+  preset 6 sits on the size-vs-wall efficiency knee -- faster presets cost +6-16% bits for +3-13%
+  wall (p8 also breaks the worst-window floor on clean 4K). No default change; not resolution-aware.
 - **Re-baseline accuracy ground truth on the fixed binary** -- done 2026-06-18 (see "Re-baseline
   accuracy ground truth on the fixed binary"). Fresh preset-6 default-band encodes of 5 clips
   (1080p SDR + easy/grainy/mixed 4K HDR + the near-floor sullyhv-15m stress) plus re-scores of the
