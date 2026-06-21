@@ -87,7 +87,6 @@ hypotheses.
 
 | Priority | Item | Why / next action |
 |----------|------|-------------------|
-| High | Reusable perf suite over the standard matrix | The corpus boundary is now established: the clip matrix manifest (`scripts/perf/clips.tsv`) and corpus knowledge (`docs/PERF_CORPUS.md`) live in the repo, while clip bytes and run outputs stay under `$REEL_TESTING_DIR` (default `~/testing`). Remaining work: add harness scripts under `scripts/perf/` (for example `run-suite.sh`, `analyze-tq.py`, `compare-runs.py`) that resolve clips through the manifest + root, record git commit/binary, SVT-AV1 version, libvship/MITIGATE status, GPU/driver, wall, size, TQ probe histogram, stop reasons, encode-vs-metric seconds, p90/max window spread, GPU util, and VRAM, and read `.reel-*/perf.json` for per-phase wall time and worker history instead of parsing verbose logs. Consolidate with existing `scripts/` tools (`compare-tq.py`, `tqreplay.py`, `fullvalidate`, `chunkbench`) rather than duplicating them. Start with the standard matrix: `air-5m`, `im-5m`, `bts-5m`, `sully-5m`, `kbv1-5m`, and `sullyhv-15m`. Reason: high priority because it prevents re-learning old lessons and gives future A/Bs comparable evidence. |
 | Medium | A/B disabling per-probe IVF `fsync` | `internal/encoder/encoder.go` calls `out.Sync()` for every IVF, including temporary probe-window files. This may be pure I/O overhead, especially outside fast local NVMe. Test a variant that skips sync for probe IVFs first; if useful, consider whether final chunk IVFs can safely skip sync without weakening resume semantics too much. Run interleaved TQ A/Bs on `sully-5m`, `kbv1-5m`, `im-5m`, and `sullyhv-15m`; compare wall, summed encode seconds, probe counts, output size, and bitstream/size identity where applicable. Fullvalidate is not required unless the encoded bits change. |
 | Medium | Shot-detection worker cap A/B | Shot detection is linear and feature-length 4K costs about 12-15 minutes, but `chunkplan.shotDetectWorkers` is capped at 4 workers. Use `scripts/chunkbench` to test cap 4/current vs 6 vs 8 on 20-minute 4K clips and a feature if available. Boundary hash must remain identical; if it does, this is a safe isolated throughput win. Reason: medium priority because the prize is modest but the experiment is cheap and does not need a full encode. |
 | Medium | Reduce duplicate media probes and post-encode scans | The orchestration path re-opens/probes the same files several times (`GetVideoProperties`, `GetHDRInfo`, audio stream probes, `video.Probe`, validation probes), and `GetVideoStreamBytes` scans packet payloads for both input and output after encode. First use `perf.json` to size this overhead, especially on large/network media and batches. Then consolidate initial video/HDR/audio analysis into one per-file result, reuse output probe results during validation, and consider making exact stream-byte scans optional or metadata-backed when reliable. |
@@ -100,7 +99,12 @@ hypotheses.
 Completed and removed from the active list: the structured phase and worker
 timing artifact shipped as `.reel-*/perf.json` (see the 2026-06-21 `perf.json`
 log entry); it records per-phase wall time and adaptive-worker history when the
-work directory is kept.
+work directory is kept. The reusable perf suite also shipped under `scripts/perf/`
+(`run-suite.sh`, `analyze.py`, `compare-runs.py`, plus the `clips.tsv` manifest);
+it runs the standard matrix, captures env/wall/size/GPU plus the per-encode
+`perf.json` and `target-quality.json`, and reads them instead of parsing verbose
+logs. It is smoke-tested but not yet exercised on a full matrix sweep (see the
+2026-06-21 perf-suite log entry).
 
 Also removed from the active list: historical-only fullvalidate of the old
 `9.25-9.52` band, the fixed-MITIGATE 4K encode-concurrency/lp retest, and the

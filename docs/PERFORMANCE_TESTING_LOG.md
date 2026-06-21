@@ -1677,6 +1677,47 @@ saturated probe/score duty cycle on longer content).
 Next: the second High open item (reusable perf suite under `~/testing`) can now
 consume `perf.json` for phase attribution instead of bespoke log parsing.
 
+## 2026-06-21 Reusable perf suite under `scripts/perf/`
+
+**Status: CURRENT / METHODOLOGY.** Closes the second High open item. Infrastructure,
+not a tuning conclusion -- no default changed, no encoded bits affected.
+
+First established the repo/testing boundary (commit `5584485`): the clip matrix
+manifest (`scripts/perf/clips.tsv`) and corpus knowledge (`docs/PERF_CORPUS.md`)
+live in the repo; clip bytes and run outputs stay under `$REEL_TESTING_DIR`
+(default `~/testing`). Then added the harness:
+
+- `scripts/perf/run-suite.sh` -- runs reel over a clip set strictly sequentially
+  (single-GPU CVVDP allocator invariant), into a timestamped run dir. Captures
+  `run-meta.json` (git commit/dirty, reel sha + version, SVT-AV1 version, GPU
+  name/driver, libvship path), and per clip: wall, output size + sha256, GPU
+  util/VRAM via a background `nvidia-smi` sampler, and the harvested `perf.json`
+  / `target-quality.json`. Reclaims the bulky `.reel-*` workdir after harvest
+  unless `--keep-workdirs` (for a later `fullvalidate`). Clips resolve by glob
+  under `$REEL_TESTING_DIR`; nothing machine-specific is hardcoded.
+- `scripts/perf/analyze.py` -- per-clip summary from `perf.json` (phase timing,
+  worker history) + `target-quality.json` (probe histogram, stop reasons, JOD
+  min/mean/max + mean-abs-error, encode-vs-metric seconds, final-probe window
+  spread p90/max) + the GPU log. Writes `summary.json`.
+- `scripts/perf/compare-runs.py` -- run-level A/B (wall, size, probes/chunk,
+  JOD). Distinct from `scripts/compare-tq.py`, which stays the per-chunk diff.
+
+The conventions formalize the bespoke `~/testing/perf-ab/*` harnesses (the
+`nvidia-smi util,mem` 2s sampler, strict sequencing, TSV + per-run JSON
+sidecars); the window-spread metric matches reel's own `finalProbe` so it lines
+up with the `TQ window_spread` verbose line.
+
+Verification: smoke-tested end-to-end on a 30s 1080p clip in both fixed-CRF and
+target-quality modes -- env capture, GPU/VRAM sampling, artifact harvest, and
+the analyze/compare tables all produced sane output (the TQ run showed
+`metric_s > encode_s` and `in_flight > active`, as expected). A three-lens
+adversarial review (shell robustness, python field-name/semantics, design/YAGNI)
+ran 15 agents; all confirmed findings were fixed (GPU-sampler cleanup trap,
+missing-arg and numeric-interval guards, final-probe spread parity, and
+dead-code/column/field trims). NOT yet run on a full matrix sweep -- the first
+real `air-5m`/`im-5m`/`bts-5m`/`sully-5m`/`kbv1-5m`/`sullyhv-15m` run is the next
+step and will be the first dated suite result.
+
 ## Resolved questions (compact index)
 
 Use the status-tagged index at the top of this file to decide which dated entry
