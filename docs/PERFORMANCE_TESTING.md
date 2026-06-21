@@ -74,20 +74,31 @@ Useful artifacts:
 
 ## Active open items
 
-No critical, high-priority, or medium-priority performance items are currently open.
+The top open work is measurement infrastructure, not another broad default
+sweep. Current defaults are well-supported; future changes should make it easier
+to attribute performance on the real Reel pipeline and only then test narrow
+hypotheses.
 
 | Priority | Item | Why / next action |
 |----------|------|-------------------|
-| Low | Floor-guard + seed amplifier hardening | The scoring cascade is fixed, but two latent amplifiers remain: hard 9.15 floor with no noise margin, and CRF-floored chunks seeding neighbors. Optional defense-in-depth only. |
-| Low | Probe-sample noise vs sample-frame count | Structurally gated because most chunks are full-probed; rerun only on deterministic `sullyhv-15m-4k-hdr` if this becomes interesting. |
-| Low | Provisional priors from in-progress chunks | Nontrivial change; consider only if probe-count tails recur across multiple current-band clips. |
-| Low | Watch high-spread chunks | Single known sighting (`knives5` chunk `0001`); monitor, do not tune from one case. |
-| Low | Smarter sampling for rare under-represented sub-segments | One confirmed feature chunk (Sully 0664) was a real max-CRF sampling miss; worst/brightest-segment window placement is the likely remedy if this recurs. |
-| Low | Re-measure 4K `maxWorkers/6` divisor on non-dev hardware | The divisor is calibrated on the current dev box; only relevant if the encode host changes. |
+| High | Structured phase and worker timing artifact | Attribution still depends on verbose logs and throwaway scripts. Add a workdir artifact such as `perf.json` that records phase wall time for video/HDR/audio analysis, crop detection, shot detection, chunk planning, resume setup, audio extraction, video encode/TQ, merge, mux, validation, and post-encode stream-size scans. Include TQ/adaptive history where cheap: active/target/max workers, in-flight chunks, metric workers, and ideally encode-slot wait time. Reason: high leverage for every future tuning decision, low quality risk. |
+| High | Reusable perf suite rooted in `~/testing` | Existing artifacts under `~/testing/` are rich but bespoke. Add a stable harness (for example `scripts/perf/run-suite.sh`, `scripts/perf/analyze-tq.py`, `scripts/perf/compare-runs.py`) that records git commit/binary, SVT-AV1 version, libvship/MITIGATE status, GPU/driver, wall, size, TQ probe histogram, stop reasons, encode-vs-metric seconds, p90/max window spread, GPU util, and VRAM. Start with the standard matrix: `air-5m`, `im-5m`, `bts-5m`, `sully-5m`, `kbv1-5m`, and `sullyhv-15m`. Reason: high priority because it prevents re-learning old lessons and gives future A/Bs comparable evidence. |
+| Medium | A/B disabling per-probe IVF `fsync` | `internal/encoder/encoder.go` calls `out.Sync()` for every IVF, including temporary probe-window files. This may be pure I/O overhead, especially outside fast local NVMe. Test a variant that skips sync for probe IVFs first; if useful, consider whether final chunk IVFs can safely skip sync without weakening resume semantics too much. Run interleaved TQ A/Bs on `sully-5m`, `kbv1-5m`, `im-5m`, and `sullyhv-15m`; compare wall, summed encode seconds, probe counts, output size, and bitstream/size identity where applicable. Fullvalidate is not required unless the encoded bits change. |
+| Medium | Shot-detection worker cap A/B | Shot detection is linear and feature-length 4K costs about 12-15 minutes, but `chunkplan.shotDetectWorkers` is capped at 4 workers. Use `scripts/chunkbench` to test cap 4/current vs 6 vs 8 on 20-minute 4K clips and a feature if available. Boundary hash must remain identical; if it does, this is a safe isolated throughput win. Reason: medium priority because the prize is modest but the experiment is cheap and does not need a full encode. |
+| Medium | Reduce duplicate media probes and post-encode scans | The orchestration path re-opens/probes the same files several times (`GetVideoProperties`, `GetHDRInfo`, audio stream probes, `video.Probe`, validation probes), and `GetVideoStreamBytes` scans packet payloads for both input and output after encode. First use `perf.json` to size this overhead, especially on large/network media and batches. Then consolidate initial video/HDR/audio analysis into one per-file result, reuse output probe results during validation, and consider making exact stream-byte scans optional or metadata-backed when reliable. |
+| Low | Direct mux / avoid merged IVF if I/O shows up | Reel currently writes chunk IVFs, merges them to `video.ivf`, then muxes. Directly muxing chunk IVFs could avoid one full video read/write, but encode/CVVDP dominate today. Keep deferred until structured timing shows merge+mux are material on the target storage. |
+| Low | Floor-guard + seed amplifier hardening | The scoring cascade is fixed, but two latent amplifiers remain: a hard 9.15 floor with no noise margin, and extreme/floored/bounds/max-probe chunks seeding neighbors. Prefer prior hardening before softening quality decisions: quarantine CRF-min/CRF-max, `max_probes`, or `bounds_crossed` chunks from neighbor seeding, or clamp/fall back to median. Replay existing `target-quality.json` logs before running real encodes. |
+| Low | Probe-sample noise vs sample-frame count | Structurally gated because most chunks are full-probed and the current band converges well. Revisit only if multiple current-band clips show recurring probe tails or sampled-vs-full gaps. Use deterministic `sullyhv-15m-4k-hdr` plus an easy control, and run `scripts/fullvalidate` for any kept sampling change. |
+| Low | Provisional priors from in-progress chunks | Nontrivial scheduling/search change. Consider only if the perf suite shows recurring probe-count tails at the current band across multiple clips; otherwise the existing completed-chunk prior plus 32-block schedule is good enough. |
+| Low | Monitor high-spread and rare under-represented segments | Merge of the old "watch high-spread chunks" and "smarter sampling" items. Known clean evidence is limited: `knives5` chunk `0001` had high spread, and Sully feature chunk `0664` was one real max-CRF sampled miss (true 8.689 vs sampled 9.679). Do not tune from one-off sightings. If repeats appear, test a narrow rule: only for sampled chunks near CRF max whose sampled windows are all high/low-spread, add one targeted hard/bright/texture window. The old temporal shot-activity score is not a reliable global CRF predictor, so any targeting should use a better cheap spatial/luma/texture signal. |
 
 Removed from the active list: historical-only fullvalidate of the old `9.25-9.52`
-band, and the fixed-MITIGATE 4K encode-concurrency/lp retest. The shipped
-`9.15-9.55` band already has feature-length ground truth.
+band, the fixed-MITIGATE 4K encode-concurrency/lp retest, and the non-dev
+hardware 4K cap retest. The shipped `9.15-9.55` band already has feature-length
+ground truth, the cap/lp retest is resolved on this dev box, and there is no
+near-term intent to encode on other hardware. The old high-spread and
+smarter-sampling monitor items are now merged into one narrower low-priority
+sampling-watch item.
 
 ## Do not revisit without new evidence
 
