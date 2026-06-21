@@ -24,6 +24,7 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 
 ## Critical Expectations
 
+- Apply YAGNI ("You Aren't Gonna Need It") and KISS ("Keep It Simple, Stupid"). Build only what the current task requires -- do not add abstractions, generality, or "future-proofing" for needs that do not yet exist. When two approaches work, take the simpler one. (Configuration/knobs are covered by the next bullet.)
 - Prefer opinionated defaults over exposing more user-facing knobs. Add configuration only when there is a clear recurring need that cannot be handled well by Reel's default behavior.
 - Keep the library-first design suitable for Spindle embedding.
 - Coordinate major trade-offs with the user; never unilaterally defer functionality.
