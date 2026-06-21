@@ -189,15 +189,21 @@ func EncodeTargetQuality(
 		BytesComplete:  resume.TotalEncodedSize(),
 	}
 	limiter.observeProgress(progress.FramesComplete)
+
+	// inFlight counts chunks currently probing/scoring/encoding. It is mutated
+	// only under flightMu (so the dispatch cond stays correct) but stored
+	// atomically so progress snapshots can read it lock-free.
+	var inFlight atomic.Int64
 	snapshotProgress := func() worker.Progress {
 		p := progress
 		p.ActiveWorkers, p.TargetWorkers, p.MaxWorkers = limiter.stats()
+		p.InFlight = int(inFlight.Load())
+		p.EncodeSlotWaitSeconds = limiter.slotWaitSeconds()
 		return p
 	}
 
 	var flightMu sync.Mutex
 	flightCond := sync.NewCond(&flightMu)
-	inFlight := 0
 
 	var encodeErr atomic.Pointer[error]
 	setError := func(err error) {
@@ -273,7 +279,7 @@ func EncodeTargetQuality(
 	}
 	chunkDone := func() {
 		flightMu.Lock()
-		inFlight--
+		inFlight.Add(-1)
 		flightCond.Broadcast()
 		flightMu.Unlock()
 	}
@@ -325,10 +331,10 @@ func EncodeTargetQuality(
 				return
 			}
 			flightMu.Lock()
-			for inFlight >= flightCap() && ctx.Err() == nil && getError() == nil {
+			for int(inFlight.Load()) >= flightCap() && ctx.Err() == nil && getError() == nil {
 				flightCond.Wait()
 			}
-			inFlight++
+			inFlight.Add(1)
 			flightMu.Unlock()
 			if ctx.Err() != nil || getError() != nil {
 				return

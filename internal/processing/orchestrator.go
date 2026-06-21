@@ -10,6 +10,7 @@ import (
 	encodepipe "codeberg.org/five82/reel/internal/encode"
 	"codeberg.org/five82/reel/internal/encoder"
 	"codeberg.org/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/perf"
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/util"
@@ -71,6 +72,7 @@ func ProcessVideos(
 		}
 
 		fileStartTime := time.Now()
+		perfc := perf.New()
 
 		// Show file progress for multiple files
 		if len(filesToProcess) > 1 {
@@ -96,7 +98,7 @@ func ProcessVideos(
 		}
 
 		// Analyze video properties
-		finishStep := startVerboseStep(rep, "Video property analysis")
+		finishStep := startPhase(perfc, rep, "Video property analysis")
 		videoProps, err := media.GetVideoProperties(inputPath)
 		finishStep()
 		if err != nil {
@@ -109,7 +111,7 @@ func ProcessVideos(
 			continue
 		}
 
-		finishStep = startVerboseStep(rep, "HDR analysis")
+		finishStep = startPhase(perfc, rep, "HDR analysis")
 		hdrInfo, err := media.GetHDRInfo(inputPath)
 		finishStep()
 		if err != nil {
@@ -129,7 +131,7 @@ func ProcessVideos(
 		isHDR := hdrInfo.IsHDR
 
 		// Get audio info
-		finishStep = startVerboseStep(rep, "Audio analysis")
+		finishStep = startPhase(perfc, rep, "Audio analysis")
 		audioChannels := GetAudioChannels(inputPath)
 		audioStreams := GetAudioStreamInfo(inputPath)
 		audioDescription := FormatAudioDescription(audioChannels)
@@ -171,13 +173,45 @@ func ProcessVideos(
 			SVTAV1Params:       encoder.SvtParamsDisplay(fileCfg.SVTAV1ACBias, fileCfg.SVTAV1EnableVarianceBoost, fileCfg.SVTAV1Tune),
 		})
 
+		// Record the file-level facts now that resolution, HDR, and quality are
+		// known. Frame count, chunk count, and worker counts are filled in by the
+		// chunked pipeline once probing settles them.
+		perfc.UpdateMeta(func(m *perf.Meta) {
+			m.InputFile = inputFilename
+			m.OutputFile = util.GetFilename(outputPath)
+			m.Width = videoProps.Width
+			m.Height = videoProps.Height
+			m.HDR = isHDR
+			m.DurationSeconds = videoProps.DurationSecs
+			m.QualityMode = fileCfg.QualityMode
+			m.Preset = fileCfg.SVTAV1Preset
+			m.MetricWorkers = fileCfg.MetricWorkers
+			m.MaxAdaptiveWorkers = encodepipe.MaxAdaptiveWorkers()
+			m.Hostname = sysInfo.Hostname
+			m.SVTAV1Version = encoder.SVTVersion()
+			if fileCfg.QualityMode == config.QualityModeTarget {
+				m.TargetQuality = fileCfg.TargetQuality
+			} else {
+				m.CRF = quality
+			}
+		})
+
 		// Run chunked encoding with FFmpeg/libav + SVT-AV1 library
 		finishStep = startVerboseStep(rep, "Chunked encode pipeline")
-		cropResult, encodeError := ProcessChunked(ctx, &fileCfg, inputPath, outputPath, videoProps, audioStreams, quality, rep)
+		cropResult, encodeError := ProcessChunked(ctx, &fileCfg, inputPath, outputPath, videoProps, audioStreams, quality, rep, perfc)
 		finishStep()
 		encodeSuccess := encodeError == nil
 
 		if !encodeSuccess {
+			// A failed encode keeps its work directory for resume whenever the
+			// final output was not produced (and always with --keep-workdir), so
+			// emit the timing artifact for the partial run too -- phase timing up
+			// to the failure is exactly what attribution wants here.
+			if cfg.KeepWorkDir || !util.FileExists(outputPath) {
+				if err := perfc.Write(); err != nil {
+					rep.Verbose(fmt.Sprintf("Could not write perf.json: %v", err))
+				}
+			}
 			// Check if the user canceled the operation (Ctrl+C / SIGTERM)
 			if ctx.Err() == context.Canceled {
 				rep.OperationComplete(fmt.Sprintf("Encoding canceled: %s", inputFilename))
@@ -206,8 +240,12 @@ func ProcessVideos(
 
 		inputSize, _ := util.GetFileSize(inputPath)
 		outputSize, _ := util.GetFileSize(outputPath)
+		finishStep = startPhase(perfc, rep, "Stream size scan (input)")
 		inputVideoSize := videoStreamBytes(inputPath, "input", rep)
+		finishStep()
+		finishStep = startPhase(perfc, rep, "Stream size scan (output)")
 		outputVideoSize := videoStreamBytes(outputPath, "output", rep)
+		finishStep()
 		encodingSpeed := float32(videoProps.DurationSecs) / float32(fileElapsedTime.Seconds())
 
 		// Calculate expected dimensions after crop
@@ -219,7 +257,7 @@ func ProcessVideos(
 		expectedAudioTracks := len(audioChannels)
 		expectedDisplayAspect := expectedDisplayAspectAfterCrop(videoProps, expectedWidth, expectedHeight)
 
-		finishStep = startVerboseStep(rep, "Output validation")
+		finishStep = startPhase(perfc, rep, "Output validation")
 		validationResult, err := validation.ValidateOutputVideo(inputPath, outputPath, validation.Options{
 			ExpectedDimensions:    expectedDims,
 			ExpectedDuration:      &expectedDuration,
@@ -288,6 +326,16 @@ func ProcessVideos(
 			AverageSpeed:      encodingSpeed,
 			OutputPath:        outputPath,
 		})
+
+		// Write the perf.json timing artifact. It lives in the work directory,
+		// which only survives when the user keeps it, so only write it then.
+		if cfg.KeepWorkDir {
+			if err := perfc.Write(); err != nil {
+				rep.Verbose(fmt.Sprintf("Could not write perf.json: %v", err))
+			} else {
+				rep.Verbose("Wrote perf.json timing artifact to work directory")
+			}
+		}
 
 		// Cooldown between encodes
 		if len(filesToProcess) > 1 && fileIdx < len(filesToProcess)-1 && cfg.EncodeCooldownSecs > 0 {

@@ -29,6 +29,8 @@ If the test changes a default, update the matching row below.
 Useful artifacts:
 
 - Human log: `*-reellog*`
+- Phase + worker timing: `.reel-*/perf.json` (per-phase wall time and adaptive
+  worker history; written only with `--keep-workdir`)
 - Aggregate TQ log: `.reel-*/target-quality.json`
 - Per-chunk TQ logs: `.reel-*/tq/*.json`
 - Chunk plan: `.reel-*/chunk-plan.txt` and `.reel-*/chunk-plan.json`
@@ -81,8 +83,7 @@ hypotheses.
 
 | Priority | Item | Why / next action |
 |----------|------|-------------------|
-| High | Structured phase and worker timing artifact | Attribution still depends on verbose logs and throwaway scripts. Add a workdir artifact such as `perf.json` that records phase wall time for video/HDR/audio analysis, crop detection, shot detection, chunk planning, resume setup, audio extraction, video encode/TQ, merge, mux, validation, and post-encode stream-size scans. Include TQ/adaptive history where cheap: active/target/max workers, in-flight chunks, metric workers, and ideally encode-slot wait time. Reason: high leverage for every future tuning decision, low quality risk. |
-| High | Reusable perf suite rooted in `~/testing` | Existing artifacts under `~/testing/` are rich but bespoke. Add a stable harness (for example `scripts/perf/run-suite.sh`, `scripts/perf/analyze-tq.py`, `scripts/perf/compare-runs.py`) that records git commit/binary, SVT-AV1 version, libvship/MITIGATE status, GPU/driver, wall, size, TQ probe histogram, stop reasons, encode-vs-metric seconds, p90/max window spread, GPU util, and VRAM. Start with the standard matrix: `air-5m`, `im-5m`, `bts-5m`, `sully-5m`, `kbv1-5m`, and `sullyhv-15m`. Reason: high priority because it prevents re-learning old lessons and gives future A/Bs comparable evidence. |
+| High | Reusable perf suite rooted in `~/testing` | Existing artifacts under `~/testing/` are rich but bespoke. Add a stable harness (for example `scripts/perf/run-suite.sh`, `scripts/perf/analyze-tq.py`, `scripts/perf/compare-runs.py`) that records git commit/binary, SVT-AV1 version, libvship/MITIGATE status, GPU/driver, wall, size, TQ probe histogram, stop reasons, encode-vs-metric seconds, p90/max window spread, GPU util, and VRAM. It can now read `.reel-*/perf.json` for per-phase wall time and worker history instead of parsing verbose logs. Start with the standard matrix: `air-5m`, `im-5m`, `bts-5m`, `sully-5m`, `kbv1-5m`, and `sullyhv-15m`. Reason: high priority because it prevents re-learning old lessons and gives future A/Bs comparable evidence. |
 | Medium | A/B disabling per-probe IVF `fsync` | `internal/encoder/encoder.go` calls `out.Sync()` for every IVF, including temporary probe-window files. This may be pure I/O overhead, especially outside fast local NVMe. Test a variant that skips sync for probe IVFs first; if useful, consider whether final chunk IVFs can safely skip sync without weakening resume semantics too much. Run interleaved TQ A/Bs on `sully-5m`, `kbv1-5m`, `im-5m`, and `sullyhv-15m`; compare wall, summed encode seconds, probe counts, output size, and bitstream/size identity where applicable. Fullvalidate is not required unless the encoded bits change. |
 | Medium | Shot-detection worker cap A/B | Shot detection is linear and feature-length 4K costs about 12-15 minutes, but `chunkplan.shotDetectWorkers` is capped at 4 workers. Use `scripts/chunkbench` to test cap 4/current vs 6 vs 8 on 20-minute 4K clips and a feature if available. Boundary hash must remain identical; if it does, this is a safe isolated throughput win. Reason: medium priority because the prize is modest but the experiment is cheap and does not need a full encode. |
 | Medium | Reduce duplicate media probes and post-encode scans | The orchestration path re-opens/probes the same files several times (`GetVideoProperties`, `GetHDRInfo`, audio stream probes, `video.Probe`, validation probes), and `GetVideoStreamBytes` scans packet payloads for both input and output after encode. First use `perf.json` to size this overhead, especially on large/network media and batches. Then consolidate initial video/HDR/audio analysis into one per-file result, reuse output probe results during validation, and consider making exact stream-byte scans optional or metadata-backed when reliable. |
@@ -92,9 +93,14 @@ hypotheses.
 | Low | Provisional priors from in-progress chunks | Nontrivial scheduling/search change. Consider only if the perf suite shows recurring probe-count tails at the current band across multiple clips; otherwise the existing completed-chunk prior plus 32-block schedule is good enough. |
 | Low | Monitor high-spread and rare under-represented segments | Merge of the old "watch high-spread chunks" and "smarter sampling" items. Known clean evidence is limited: `knives5` chunk `0001` had high spread, and Sully feature chunk `0664` was one real max-CRF sampled miss (true 8.689 vs sampled 9.679). Do not tune from one-off sightings. If repeats appear, test a narrow rule: only for sampled chunks near CRF max whose sampled windows are all high/low-spread, add one targeted hard/bright/texture window. The old temporal shot-activity score is not a reliable global CRF predictor, so any targeting should use a better cheap spatial/luma/texture signal. |
 
-Removed from the active list: historical-only fullvalidate of the old `9.25-9.52`
-band, the fixed-MITIGATE 4K encode-concurrency/lp retest, and the non-dev
-hardware 4K cap retest. The shipped `9.15-9.55` band already has feature-length
+Completed and removed from the active list: the structured phase and worker
+timing artifact shipped as `.reel-*/perf.json` (see the 2026-06-21 `perf.json`
+log entry); it records per-phase wall time and adaptive-worker history when the
+work directory is kept.
+
+Also removed from the active list: historical-only fullvalidate of the old
+`9.25-9.52` band, the fixed-MITIGATE 4K encode-concurrency/lp retest, and the
+non-dev hardware 4K cap retest. The shipped `9.15-9.55` band already has feature-length
 ground truth, the cap/lp retest is resolved on this dev box, and there is no
 near-term intent to encode on other hardware. The old high-spread and
 smarter-sampling monitor items are now merged into one narrower low-priority

@@ -147,6 +147,10 @@ func EncodeAll(
 		}
 		p.FramesComplete = min(p.FramesComplete, p.FramesTotal)
 		p.ActiveWorkers, p.TargetWorkers, p.MaxWorkers = limiter.stats()
+		// Fixed-CRF work is slot-bound: a chunk is in flight exactly while it
+		// holds an encode slot, so in-flight equals active workers.
+		p.InFlight = p.ActiveWorkers
+		p.EncodeSlotWaitSeconds = limiter.slotWaitSeconds()
 		return p
 	}
 	chunkProgressCb := func(chunkIdx, frames int) {

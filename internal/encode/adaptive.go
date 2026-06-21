@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codeberg.org/five82/reel/internal/util"
@@ -59,6 +60,11 @@ type adaptiveLimiter struct {
 	rampCeiling int
 	target      int
 	active      int
+
+	// slotWaitNanos accumulates wall time workers spend blocked in acquire
+	// waiting for a free encode slot, summed across all workers. Read lock-free
+	// for performance attribution (perf.json); never gates encoding.
+	slotWaitNanos atomic.Int64
 
 	status statusCallback
 
@@ -186,14 +192,27 @@ func (l *adaptiveLimiter) acquire(ctx context.Context) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	var waitStart time.Time
 	for l.active >= l.target {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
+		if waitStart.IsZero() {
+			waitStart = time.Now()
+		}
 		l.cond.Wait()
+	}
+	if !waitStart.IsZero() {
+		l.slotWaitNanos.Add(int64(time.Since(waitStart)))
 	}
 	l.active++
 	return l.active, nil
+}
+
+// slotWaitSeconds returns the cumulative encode-slot wait time across all
+// workers. Safe to call concurrently with encoding.
+func (l *adaptiveLimiter) slotWaitSeconds() float64 {
+	return float64(l.slotWaitNanos.Load()) / float64(time.Second)
 }
 
 func (l *adaptiveLimiter) release() {

@@ -1,7 +1,10 @@
 package encode
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"codeberg.org/five82/reel/internal/util"
 )
@@ -137,7 +140,7 @@ func TestLevelOfParallelismFromRampCeiling(t *testing.T) {
 		height     uint32
 		want       uint32
 	}{
-		{"4k big machine", 32, 3840, 2160, 3},   // ceiling max(3,32/6)=5 -> lp 3
+		{"4k big machine", 32, 3840, 2160, 3},    // ceiling max(3,32/6)=5 -> lp 3
 		{"1080p big machine", 32, 1920, 1080, 2}, // ceiling 32 -> lp 2
 		{"4k small machine", 8, 3840, 2160, 3},   // ceiling max(3,8/6)=3 -> lp 3
 		{"4k huge machine", 64, 3840, 2160, 2},   // ceiling max(3,64/6)=10 -> lp 2
@@ -209,6 +212,37 @@ func sampleUtilization(l *adaptiveLimiter, active, ticks int, memoryStable bool)
 		l.active = active
 		l.recordUtilization()
 		l.maybeRampUp(memoryStable)
+	}
+}
+
+func TestAdaptiveLimiterAccumulatesSlotWait(t *testing.T) {
+	limiter := newAdaptiveLimiter(4, 1, 4, 0, nil)
+	ctx := context.Background()
+
+	// The only slot is taken without waiting, so no time is charged.
+	if _, err := limiter.acquire(ctx); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if got := limiter.slotWaitSeconds(); got != 0 {
+		t.Fatalf("slot wait after unblocked acquire = %v, want 0", got)
+	}
+
+	// A second acquire must block until the held slot is released. Whatever the
+	// scheduler does, that second acquire cannot return until release() runs, so
+	// the charged wait is strictly positive.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = limiter.acquire(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	limiter.release()
+	wg.Wait()
+
+	if got := limiter.slotWaitSeconds(); got <= 0 {
+		t.Fatalf("slot wait after blocked acquire = %v, want > 0", got)
 	}
 }
 

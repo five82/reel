@@ -17,6 +17,7 @@ import (
 	"codeberg.org/five82/reel/internal/config"
 	"codeberg.org/five82/reel/internal/encode"
 	"codeberg.org/five82/reel/internal/media"
+	"codeberg.org/five82/reel/internal/perf"
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/video"
@@ -33,6 +34,7 @@ func ProcessChunked(
 	audioStreams []media.AudioStreamInfo,
 	qualitySetting float32,
 	rep reporter.Reporter,
+	perfc *perf.Collector,
 ) (CropResult, error) {
 	if cfg.QualityMode == config.QualityModeTarget && !quality.VshipBuildEnabled() {
 		return CropResult{}, fmt.Errorf("target-quality mode is not available in this build; rebuild without -tags no_vship and with libvship installed, or use --quality-mode crf")
@@ -43,6 +45,7 @@ func ProcessChunked(
 	if err := chunk.CreateWorkDir(workDir); err != nil {
 		return CropResult{}, fmt.Errorf("failed to create work directory: %w", err)
 	}
+	perfc.SetWorkDir(workDir)
 
 	if cfg.KeepWorkDir {
 		rep.Verbose(fmt.Sprintf("Work directory: %s", workDir))
@@ -64,7 +67,7 @@ func ProcessChunked(
 	// ========================================================================
 	rep.StageProgress(reporter.StageProgress{Stage: "Preparing", Message: "Analyzing video and detecting crop"})
 
-	finishStep := startVerboseStep(rep, "Video probe")
+	finishStep := startPhase(perfc, rep, "Video probe")
 	vidInf, err := video.Probe(inputPath)
 	finishStep()
 	if err != nil {
@@ -76,7 +79,7 @@ func ProcessChunked(
 		cfg = &fileCfg
 	}
 
-	finishStep = startVerboseStep(rep, "Crop detection")
+	finishStep = startPhase(perfc, rep, "Crop detection")
 	cropResult := DetectCrop(inputPath, vidInf, cfg.CropMode == "none")
 	finishStep()
 
@@ -121,7 +124,7 @@ func ProcessChunked(
 	chunkPlanMetadataFile := filepath.Join(workDir, "chunk-plan.json")
 	lastPlanProgress := time.Now().Add(-10 * time.Second)
 	lastPlanPercent := -1
-	finishStep = startVerboseStep(rep, "Shot cut detection")
+	finishStep = startPhase(perfc, rep, "Shot cut detection")
 	planResult, err := chunkplan.PlanToFileIfNeeded(ctx, inputPath, chunkPlanFile, chunkPlanMetadataFile, vidInf, chunkplan.Options{
 		MaxFrames:    maxChunkFrames,
 		MinFrames:    minChunkFrames,
@@ -162,7 +165,7 @@ func ProcessChunked(
 	rep.Verbose(fmt.Sprintf("Chunk boundaries: %d natural shot cuts, %d duration splits", retainedNaturalCuts, planResult.SyntheticSplits))
 
 	// Load planned chunk boundaries
-	finishStep = startVerboseStep(rep, "Chunk planning")
+	finishStep = startPhase(perfc, rep, "Chunk planning")
 	segments, err := chunk.LoadSegments(chunkPlanFile, vidInf.Frames)
 	if err != nil {
 		finishStep()
@@ -202,7 +205,7 @@ func ProcessChunked(
 		}
 	}
 
-	finishStep = startVerboseStep(rep, "Resume setup")
+	finishStep = startPhase(perfc, rep, "Resume setup")
 	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting)
 	if err != nil {
 		finishStep()
@@ -223,6 +226,10 @@ func ProcessChunked(
 	// Adaptive encoding starts conservatively, tests higher worker counts by
 	// throughput, and backs off on real RAM/swap pressure.
 	maxWorkers := encode.MaxAdaptiveWorkers()
+	perfc.UpdateMeta(func(m *perf.Meta) {
+		m.Frames = vidInf.Frames
+		m.Chunks = len(chunks)
+	})
 	rep.StageProgress(reporter.StageProgress{
 		Stage:   "Encoding",
 		Message: fmt.Sprintf("Starting adaptive chunked encoding with up to %d workers", maxWorkers),
@@ -301,6 +308,16 @@ func ProcessChunked(
 			TargetWorkers:  progress.TargetWorkers,
 			MaxWorkers:     progress.MaxWorkers,
 		})
+
+		perfc.RecordWorkerSample(perf.WorkerSample{
+			Active:                progress.ActiveWorkers,
+			Target:                progress.TargetWorkers,
+			Max:                   progress.MaxWorkers,
+			InFlight:              progress.InFlight,
+			ChunksComplete:        progress.ChunksComplete,
+			FramesComplete:        progress.FramesComplete,
+			EncodeSlotWaitSeconds: progress.EncodeSlotWaitSeconds,
+		})
 	}
 
 	// ========================================================================
@@ -315,12 +332,19 @@ func ProcessChunked(
 
 	finishAudioStep := func() {}
 
-	// Start audio encoding in background (only reads source file)
+	// Start audio encoding in background (only reads source file). The verbose
+	// start/stop lines stay on this goroutine and bracket the join, but the perf
+	// phase is recorded from inside the goroutine when extraction actually
+	// finishes -- otherwise its duration would span the whole concurrent video
+	// encode/merge window (the orchestration goroutine only joins after merge),
+	// massively over-reporting audio cost in perf.json.
 	if len(audioStreams) > 0 {
 		finishAudioStep = startVerboseStep(rep, "Audio extraction")
+		audioPhaseStart := time.Now()
 		go func() {
 			defer close(audioDone)
 			encodedAudio, audioErr = chunk.ExtractAudio(encodeCtx, inputPath, workDir, audioStreams)
+			perfc.RecordPhase("Audio extraction", audioPhaseStart, time.Now())
 			if audioErr != nil {
 				cancelEncode()
 			}
@@ -330,7 +354,7 @@ func ProcessChunked(
 	}
 
 	// Run parallel video encode
-	finishStep = startVerboseStep(rep, "Video encoding")
+	finishStep = startPhase(perfc, rep, "Video encoding")
 	var encodeErr error
 	if cfg.QualityMode == config.QualityModeTarget {
 		displayPath, err := quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
@@ -391,7 +415,7 @@ func ProcessChunked(
 
 	// Merge IVF files
 	rep.StageProgress(reporter.StageProgress{Stage: "Merging", Message: "Merging encoded chunks"})
-	finishStep = startVerboseStep(rep, "Video merge")
+	finishStep = startPhase(perfc, rep, "Video merge")
 	if err := chunk.MergeOutput(workDir, vidInf, len(chunks)); err != nil {
 		finishStep()
 		<-audioDone
@@ -415,7 +439,7 @@ func ProcessChunked(
 
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
-	finishStep = startVerboseStep(rep, "Final mux")
+	finishStep = startPhase(perfc, rep, "Final mux")
 	if err := chunk.MuxFinal(inputPath, workDir, outputPath, encodedAudio, displayAspect); err != nil {
 		finishStep()
 		return CropResult{}, fmt.Errorf("final mux failed: %w", err)

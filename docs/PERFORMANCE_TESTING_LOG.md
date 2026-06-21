@@ -1617,6 +1617,66 @@ Conclusion: **keep the current defaults** -- 4K target ceiling `maxWorkers/6`
 change and no fullvalidate were run; this was a performance-only retest and the
 final decision preserves the shipped behavior.
 
+## 2026-06-21 Structured phase + worker timing artifact (`perf.json`)
+
+**Status: CURRENT / METHODOLOGY.** Implements the top High open item in
+`docs/PERFORMANCE_TESTING.md`: a structured timing artifact so attribution no
+longer depends on grepping verbose logs and throwaway scripts. This is
+infrastructure, not a tuning conclusion -- no default changed and the encoded
+bits are unaffected (no fullvalidate needed).
+
+What landed:
+
+- New leaf package `internal/perf` with a concurrency-safe `Collector` that
+  records per-phase wall windows and a sampled adaptive-scheduler history, then
+  writes `perf.json` into the work directory.
+- Phases timed via a new `startPhase` helper that wraps the existing
+  `startVerboseStep` verbose lines: video property analysis, HDR analysis, audio
+  analysis, video probe, crop detection, shot cut detection, chunk planning,
+  resume setup, audio extraction, video encoding (TQ or fixed-CRF), video merge,
+  final mux, output validation, and the two post-encode stream-size scans (input
+  and output, timed separately because the input scan dominates). Phases carry
+  `start_seconds` + `duration_seconds` relative to run start and may overlap
+  (audio extraction runs concurrently with encode/merge), so the phase sum can
+  exceed `total_seconds`.
+- Worker history sampled from the existing encode progress callback:
+  active/target/max workers, in-flight chunks, chunks/frames complete, and
+  cumulative encode-slot wait time. `worker.Progress` gained `InFlight` and
+  `EncodeSlotWaitSeconds`; the adaptive limiter now accumulates blocked-acquire
+  time (`slotWaitNanos`, read lock-free); the TQ `inFlight` counter became an
+  `atomic.Int64` so snapshots read it without the dispatch lock. Samples are
+  throttled (kept on any worker-count change, else >=2s apart) to bound size.
+- The "Audio extraction" phase is recorded from inside the audio goroutine when
+  extraction actually returns, not at the orchestration join. Audio runs
+  concurrently with the whole video encode/merge, and the join is only reached
+  after merge, so a join-stamped duration over-reported audio cost by the entire
+  encode window. The verbose start/stop log lines are unchanged (still bracket
+  the join); only the perf phase reflects real audio work time.
+- `perf.json` is written wherever the work directory will be kept: after a
+  successful encode with `--keep-workdir`, and after a failed encode whose
+  workdir survives for resume (output not produced). Failure-path timing up to
+  the failure is exactly what attribution wants, and matters for the
+  hundreds-of-titles batch where resumable failures occur. Always-known worker
+  metadata (metric workers, max adaptive workers) is set in the orchestrator so
+  it survives even an early failure before chunk planning.
+
+Verification: full `./check-ci.sh` passes (tests, `-race`, build, golangci-lint
+0 issues, govulncheck); a focused unit test asserts the limiter charges positive
+slot-wait only when an acquire actually blocks. A three-lens adversarial review
+(concurrency, completeness, simplicity) confirmed the atomic/cond invariant and
+drove the audio-phase and failure-path fixes above. Real-encode spot-check on a
+30s 1080p clip (`--keep-workdir`) both modes: fixed-CRF and target-quality
+produced well-formed `perf.json` (`schema_version: 1`) with all 15 phases in
+order, full metadata, and worker history. Confirmed on the artifact: the audio
+phase reads ~0.58s (real work) rather than the ~16s video-encode window, and the
+target-quality run shows `in_flight > active` (peak `in_flight=3, active=1` --
+chunks scoring with their encode slots released). `encode_slot_wait` stayed 0 on
+this tiny clip (4 chunks < 8 slots = no contention; it accumulates only under a
+saturated probe/score duty cycle on longer content).
+
+Next: the second High open item (reusable perf suite under `~/testing`) can now
+consume `perf.json` for phase attribution instead of bespoke log parsing.
+
 ## Resolved questions (compact index)
 
 Use the status-tagged index at the top of this file to decide which dated entry
