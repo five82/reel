@@ -1893,8 +1893,53 @@ p8 breaks quality). The resolution-aware *preset* idea was reasonable but the da
 change** -- the `DefaultSVTAV1Preset = 6` row stands; this entry is the evidence that 6 is confirmed, not
 just inherited. Encoder-side throughput hopes now rest on the 4K encode-concurrency ceiling, not preset.
 
+## 2026-06-20 1080p preset 4 vs 6 across grain tiers: bound-ness is content-dependent, preset 6 stands
+
+The preset 4-8 sweep used one 1080p clip (`im-5m`, moderate grain) and found a near-flat wall curve, fitting
+the "1080p is GPU-CVVDP-bound" attribution. To check whether that generalizes -- and whether the slower
+preset 4 buys free efficiency on GPU-bound 1080p -- ran preset **4 vs 6** on the three remaining 1080p clips
+(air clean-light, soms light, bts moderate/heavier-in-dark). First verified the main sweep's resolution
+classification was correct: reel reported `im` 1920x1080 -> mw6, `sully`/`kbv1` 3840x2160 -> mw4, classifying
+on *input* width (`width>=3840`, before crop; sully/kbv1 crop to 3840x1600 letterbox but stay UHD).
+
+### Method
+Harness `~/testing/perf-ab/preset-1080p-ab/` (clone of the preset-ab harness, new OUTBASE). Strictly
+sequential, 2 rounds, each run timed encode + `fullvalidate` ground-truth. Reel `52b3735` (mw6 below-UHD).
+All 12 runs rc=0; rounds a/b reproduce within ~1-3% wall (bts p6 had the most scatter, 202/190s, but the
+p4-vs-p6 gap dwarfs it). Clips are 5m cuts to match `im-5m`.
+
+### Result -- the p4 wall penalty tracks output bitrate, not resolution
+Both-round means, preset 4 vs preset-6 baseline:
+
+| clip | grain | p6 size | p4 wall vs p6 | p4 size vs p6 | p4 full_min | below |
+|---|---|---|---|---|---|---|
+| air-5m | clean-light | 53 MB | **+1%** (1s slower) | -8% | 9.191 (^ vs 9.164) | 0 |
+| im-5m* | moderate | 115 MB | +5% (8s) | -7% | 9.208 | 0 |
+| soms-5m | light | 338 MB | +13% (27s) | -3% | 9.230 (^) | 0 |
+| bts-5m | moderate/dark | 598 MB | **+38%** (75s) | -7% | 9.225 | 0 |
+
+\*im from the 4-8 sweep entry above. The p4 wall penalty is **monotonic in output size**: +1% -> +5% -> +13%
+-> +38% as size goes 53 -> 115 -> 338 -> 598 MB. So **"1080p is GPU-bound" is only true for low-bitrate
+1080p**: light content (air, 53 MB) is genuinely GPU-bound and the slower preset is ~free (-8% size, +1%
+wall, even slightly better quality); heavy 1080p (bts, 598 MB grain-in-dark) is **encoder-bound like 4K**,
+where the slower preset costs +38% wall. bts also needs more probes at p4 (1.10 -> 1.43/chunk), compounding
+the cost. Quality held everywhere (0 below band, full_min >= 9.164; p4 often marginally *higher* mean).
+
+### Conclusion -- keep preset 6 (no change)
+A slower 1080p default pays only on light content, which is exactly where the absolute size saving is
+smallest (~4 MB off 53 MB). The trade worsens as content gets heavier (the wall cost is worst precisely
+where bitrate is highest -- an unfavorable correlation) while the size gain stays modest (3-8%). Reel cannot
+predict per-title which regime a clip is in, so a static preset-4 1080p default would lightly help air-like
+titles and heavily punish bts-like ones. **Preset 6 stands across all resolutions and grain tiers** -- no
+resolution-aware preset split in either direction. This also refines the "1080p GPU-bound" framing in
+`PERFORMANCE_TESTING.md`: the bound depends on content bitrate, not resolution alone.
+
 ## Resolved questions (index -- full detail in the dated entries above)
 
+- **1080p preset 4 vs 6 across grain tiers** -- done 2026-06-20 (see "1080p preset 4 vs 6 across grain
+  tiers"). 1080p bound-ness is content-dependent: the p4 wall penalty tracks output bitrate (air +1% / im
+  +5% / soms +13% / bts +38% as size 53->598 MB), so only low-bitrate 1080p is GPU-bound. Slower preset
+  pays only on light content and punishes heavy content; preset 6 stays the universal default.
 - **Preset sweep 4/5/6/7/8 -- preset 6 confirmed optimal for both resolutions** -- done 2026-06-20
   (see "Preset sweep 4/5/6/7/8"). The bottleneck differs by resolution (1080p flat/GPU-bound, 4K
   steep/encoder-bound) but the optimal preset does not: 1080p moves only +-4% across 4-8, and at 4K
