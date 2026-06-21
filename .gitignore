@@ -25,6 +25,10 @@ test-output/
 docs/_build/
 site/
 
+# Python bytecode (perf scripts import each other)
+__pycache__/
+*.pyc
+
 # Type checking
 .pytype/
 .pyre/
