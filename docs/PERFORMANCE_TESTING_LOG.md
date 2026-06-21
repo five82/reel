@@ -31,6 +31,7 @@ Most large artifacts live under `~/testing/`:
 |------|----------|
 | `~/testing/perf-ab/post-restore/` | Post-restore metric-worker sweep and bottleneck attribution. |
 | `~/testing/perf-ab/preset-ab/` | Preset 4-8 sweep for 1080p/4K. |
+| `~/testing/perf-ab/cap-lp-retest/` | 4K encode-concurrency ceiling and lp retest on the fixed MITIGATE build. |
 | `~/testing/perf-ab/preset-1080p-ab/` | 1080p preset 4-vs-6 grain-tier sweep. |
 | `~/testing/rebaseline-20260617/` | Fixed-ruler accuracy re-baseline and suspect re-scores. |
 | `~/testing/vship-concurrency/` | libvship allocator/concurrency diagnosis. |
@@ -42,6 +43,7 @@ Most large artifacts live under `~/testing/`:
 
 | Status | Entry | Current use |
 |--------|-------|-------------|
+| CURRENT | 2026-06-21 4K encode-concurrency ceiling + lp retest | `maxWorkers/6` and 4K lp3 remain current on the dev box. |
 | CURRENT | 2026-06-20 1080p preset 4 vs 6 across grain tiers | Preset 6 remains universal; 1080p bound-ness depends on bitrate. |
 | CURRENT | 2026-06-20 Preset sweep 4/5/6/7/8 | Preset 6 is the size/wall knee for both resolutions. |
 | CURRENT | 2026-06-19 Post-restore re-attribution + metric-worker sweep | Current bottleneck split and metric-worker defaults. |
@@ -1514,6 +1516,107 @@ titles and heavily punish bts-like ones. **Preset 6 stands across all resolution
 resolution-aware preset split in either direction. This also refines the "1080p GPU-bound" framing in
 `PERFORMANCE_TESTING.md`: the bound depends on content bitrate, not resolution alone.
 
+## 2026-06-21 4K encode-concurrency ceiling + lp retest on the fixed MITIGATE build
+
+**Status: CURRENT / NO DEFAULT CHANGE.** Resolves the medium open item to re-check the
+4K `maxWorkers/6` encode-concurrency ceiling and `level_of_parallelism` after the
+libvship `MITIGATE_MALLOC_ASYNC` restore.
+
+Environment: dev box (`white`), AMD Ryzen 9 7950X (32 logical CPUs), 61 GiB RAM,
+RTX 5060 Ti 16 GB (driver 610.43.02). Reel source `46c7eb3` was copied under
+`~/testing/perf-ab/cap-lp-retest/src/` and rebuilt into variant binaries under
+`~/testing/perf-ab/cap-lp-retest/bin/`; the main repo was not modified for the
+sweep. Variants changed only `uhdCoreDivisor`: cap4/div8, cap5/div6 (current),
+cap6/div5, cap8/div4, cap10/div3, and cap16/div2. Target-quality runs used the
+current UHD metric-worker default (4) and the current MITIGATE libvship install.
+Harness/artifacts: `~/testing/perf-ab/cap-lp-retest/` (`build-variants.sh`,
+`run-one.sh`, `orchestrate-crf.sh`, `orchestrate-tq.sh`, per-run logs/GPU logs,
+`target-quality.json` snapshots, and `analysis.txt`). Runs were strict sequential
+(one Reel/CVVDP process at a time).
+
+### Fixed-CRF encoder-only instrument
+
+Fixed CRF (`--quality-mode crf --crf 32`) removes the target-quality probe cascade
+and metric duty-cycle, so it is the clean encoder-throughput instrument. It is
+not by itself a sufficient default decision for Reel's target-quality mode, but
+it isolates cap/lp effects. All fixed-CRF outputs were byte-identical per clip
+across cap/lp variants.
+
+Mean total wall / video-encoding-stage seconds:
+
+| Config | Effective 4K cap / lp | `sully-5m` (n) | `kbv1-5m` (n) |
+|--------|-----------------------|----------------|---------------|
+| cap4 auto | 4 / lp3 | 235.5 / 179.2 (2) | 234.0 / 180.6 (2) |
+| cap5 forced lp2 | 5 / lp2 | 227.0 / 170.2 (2) | 219.0 / 162.7 (2) |
+| cap5 auto (current) | 5 / lp3 | 220.0 / 162.9 (2) | 213.5 / 158.9 (2) |
+| cap6 auto | 6 / lp2 | 213.0 / 155.7 (2) | 206.0 / 152.9 (2) |
+| cap6 forced lp3 | 6 / lp3 | 209.5 / 151.9 (2) | 202.5 / 148.9 (2) |
+| cap8 auto | 8 / lp2 | 201.5 / 144.7 (2) | 197.0 / 139.9 (2) |
+| cap10 auto | 10 / lp2 | 202.0 / 145.2 (1) | 195.0 / 140.9 (1) |
+| cap16 auto | ramped to 11 / lp2 | 203.0 / 145.9 (1) | 195.0 / 141.3 (1) |
+
+Findings from the clean encoder instrument:
+
+- Fixed-CRF throughput improves from cap5 to cap8 and then plateaus. The old
+  "higher always regresses" timing does not hold for whole-chunk CRF encodes on
+  this current build.
+- lp3 still beats lp2 at low 4K caps: cap5 lp3 is ~4-5% faster than cap5 lp2;
+  cap6 lp3 is ~2-3% faster than cap6 lp2. This re-confirms the current lp3
+  choice for the shipped cap5 path.
+
+### Target-quality full-pipeline confirmation
+
+Target-quality is the shipping workload, and it answers whether the fixed-CRF
+throughput gain converts to Reel wall time once sampled probes, CVVDP scoring,
+prior timing, and final encodes interact. Two clips, two interleaved rounds,
+configs cap5 auto, cap6 auto, cap6 forced lp3, cap8 auto, cap10 auto.
+
+Mean total wall / video-encoding-stage seconds, plus probe count and aggregate
+encode-lane work (`sum(probe encode_seconds) + sum(final_encode_seconds)`):
+
+| Config | `sully-5m` wall/video | `sully` probes / enc-lane | `kbv1-5m` wall/video | `kbv1` probes / enc-lane |
+|--------|----------------------:|--------------------------:|---------------------:|-------------------------:|
+| cap5 auto (current, lp3) | 431.0 / 373.6 | 45 / 1278s | **409.5 / 355.3** | 44 / 1084s |
+| cap6 auto (lp2) | 429.5 / 372.4 | 45 / 1433s | 418.0 / 364.1 | 44 / 1207s |
+| cap6 forced lp3 | **428.0 / 370.7** | 45 / 1374s | 411.5 / 357.8 | 44 / 1128s |
+| cap8 auto (lp2) | 438.0 / 380.4 | 45 / 1589s | 420.0 / 366.7 | 45 / 1345s |
+| cap10 auto (lp2) | 438.0 / 381.1 | 45 / 1684s | 423.0 / 369.8 | 45 / 1422s |
+
+TQ summaries:
+
+- `sully-5m`: 33 chunks, 45 probes (1.36/chunk), probe histogram
+  `{1:23, 2:9, 4:1}`, all stops `converged`. Sampled JOD across variants stayed
+  in-band: min 9.179, mean 9.387-9.392, max 9.548; mean absolute error to the
+  9.35 target 0.091-0.099. Window-spread p90/max 0.1595/0.4667; one chunk hit
+  4 probes.
+- `kbv1-5m`: 37 chunks, 44-46 probes (1.19-1.24/chunk), all stops `converged`.
+  The cap5/cap6 runs used histogram `{1:34, 3:2, 4:1}`; cap8/cap10 sometimes
+  added one more 3-probe chunk. Sampled JOD stayed in-band: min 9.172-9.202,
+  mean 9.371-9.381, max 9.546; mean absolute error 0.080-0.087. Window-spread
+  p90/max 0.0/0.224; 3-4 chunks had >=3 probes.
+- GPU mean utilization stayed low at ~35-38% and peak VRAM stayed around
+  5.3-5.9 GiB, matching the existing 4K encoder-bound attribution.
+
+Interpretation:
+
+- The fixed-CRF cap8 gain does **not** convert to target-quality wall. In TQ,
+  higher caps make individual short probe/final encodes slower enough that the
+  aggregate encode lane grows sharply (cap5 -> cap8: +24% sully, +24% kbv1;
+  cap5 -> cap10: +32% sully, +31% kbv1). The extra active encodes only hide part
+  of that work and cap8/cap10 end up slower wall-clock.
+- cap6 forced-lp3 is a statistical tie with current cap5: +3s on sully, -2s on
+  kbv1, a two-clip average difference under 1s. That is not enough evidence to
+  change the default, especially because cap8/cap10 show the curve turning the
+  wrong way immediately above it.
+- If a future change raises the 4K cap to 6, it should probably also revisit the
+  lp mapping (cap6 lp3 beat cap6 lp2 in fixed-CRF and TQ), but this retest does
+  not justify raising the cap.
+
+Conclusion: **keep the current defaults** -- 4K target ceiling `maxWorkers/6`
+(start at that ceiling) and 4K auto lp3 on this 32-logical-core dev box. No code
+change and no fullvalidate were run; this was a performance-only retest and the
+final decision preserves the shipped behavior.
+
 ## Resolved questions (compact index)
 
 Use the status-tagged index at the top of this file to decide which dated entry
@@ -1530,9 +1633,9 @@ is authoritative. Compact current answers:
 | Flat-low early stop | Rejected; all-low population was too small. | 2026-06-14 monotonicity_guard diagnostic |
 | Content-prior seed | Rejected; activity-vs-CRF sign flips across clips. | 2026-06-14 Content-prior seed |
 | Full-length attribution | Feature-scale encode exposed tight-band probe cost; current wider band resolved the main tail. | 2026-06-14 Full-length attribution; 2026-06-14 Target band WIDTH |
-| 4K adaptive ramp | 4K is memory-bandwidth bound; cap/start at `maxWorkers/6`. | 2026-06-12 4K adaptive ramp |
+| 4K adaptive ramp / encode cap | 4K target-quality still keeps cap/start at `maxWorkers/6`; fixed-CRF cap8 is faster, but shipping TQ is flat/slower above cap5. | 2026-06-21 cap/lp retest; 2026-06-12 ramp |
 | 4K metric workers 4 vs 6 | Keep 4 for UHD; old mw4/mw6 A/B was contaminated, current answer from post-restore sweep. | 2026-06-19 Post-restore sweep |
-| `level_of_parallelism` | Auto derives from resolution ramp ceiling; 4K lp 3 on dev box. | 2026-06-13 SVT-AV1 level_of_parallelism |
+| `level_of_parallelism` | Auto derives from resolution ramp ceiling; 4K lp 3 on the cap5 dev box remains confirmed. | 2026-06-21 cap/lp retest; 2026-06-13 SVT-AV1 level_of_parallelism |
 | Accuracy-trading TQ knobs | Keep shipped knobs; re-test on fixed build before changing threshold/window/chunk cap. | 2026-06-18 Re-baseline; archived 2026-06-13 knobs entry |
 | Pre-encode head overlap | Deferred; requires accuracy-affecting streaming planner and low ROI. | 2026-06-14 Overlapping pre-encode head |
 | HDR display peak 1000 vs 1500 | Keep 1000; clean re-score showed no 1500 benefit. | 2026-06-18 Re-baseline; archived HDR entry |

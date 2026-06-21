@@ -37,11 +37,11 @@ Useful artifacts:
 
 | Knob | Current value | Current reason | Provenance in LOG |
 |------|---------------|----------------|-------------------|
-| 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K SVT-AV1 is memory-bandwidth/encoder bound; higher active encode counts raised per-encode time | 2026-06-12 "4K adaptive ramp"; re-check still open |
+| 4K encode concurrency | ceiling `maxWorkers/6` (min 3), start at ceiling | 4K SVT-AV1 is memory-bandwidth/encoder bound; fixed-CRF throughput improves above 5 workers, but full target-quality wall is flat/slower once probe/scoring duty-cycle and per-encode slowdown are included | 2026-06-12 "4K adaptive ramp"; 2026-06-21 cap/lp retest |
 | Non-4K encode concurrency | ramps to full `maxWorkers` | Usually metric/GPU-bound on light content; self-limits by utilization | 2026-06-12 "4K adaptive ramp" |
 | Metric workers | 6 below UHD, 4 for UHD | Single GPU saturates near 4 workers; 6 below UHD keeps margin with less VRAM; UHD stays 4 because 4K is encoder-bound | 2026-06-19 "Post-restore re-attribution" |
 | VSHIP/libvship requirement | one handler per metric worker; libvship must be built with `MITIGATE_MALLOC_ASYNC` | Default async allocator corrupts concurrent CVVDP scores; mitigated build restores safe concurrency | 2026-06-19 "Metric concurrency RESTORED"; `docs/VSHIP_CONCURRENCY_BUG.md` |
-| `level_of_parallelism` | auto from resolution ramp ceiling: 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | Bitstream-neutral; higher lp helps low 4K concurrency by ~3-4% | 2026-06-13 "SVT-AV1 level_of_parallelism" |
+| `level_of_parallelism` | auto from resolution ramp ceiling: 4K lp 3, non-4K lp 2 (`--level-of-parallelism` overrides) | Bitstream-neutral; fixed-CRF retests still favor lp3 at 4K cap5/cap6, and target-quality did not justify raising the cap | 2026-06-13 "SVT-AV1 level_of_parallelism"; 2026-06-21 cap/lp retest |
 | SVT-AV1 preset | 6 | Joint efficiency knee: faster costs too many bits, slower costs too much wall; no resolution-aware split | 2026-06-20 preset entries |
 | TQ scheduling block | 32 chunks, largest-first inside block | Keeps priors useful while reducing long-tail chunks | 2026-06-07 scheduling entries |
 | TQ probe windows | 3x48 sampled; 5 windows after high spread; whole-chunk at/below 256 frames | Good speed/accuracy tradeoff; lower full-probe threshold was rejected directionally and needs fixed-binary evidence before revisiting | "What has worked"; 2026-06-13 "Accuracy-trading TQ knobs" caveat |
@@ -67,18 +67,17 @@ Useful artifacts:
 |------|-----------------|--------------------|-------------------|
 | 1080p, light/low-bitrate | GPU CVVDP-throughput bound; wall was flat from metric workers 4->12 while VRAM climbed | Extra metric workers do not improve wall; keep default 6 for margin | 2026-06-19 post-restore sweep |
 | 1080p, heavy/grainy/high-bitrate | Can become encoder-bound; preset-4 wall penalty tracked output size (+1% air -> +38% bts) | Do not assume encoder changes are free at 1080p; preset 6 still wins overall | 2026-06-20 1080p grain-tier sweep |
-| 4K | Encoder/memory-bandwidth bound; GPU often sits mostly idle; metric workers barely affect wall | Throughput levers are encoder-side, but preset sweep found preset 6 optimal; only 4K concurrency cap remains worth re-checking | 2026-06-19 post-restore sweep; 2026-06-20 preset sweep |
+| 4K | Encoder/memory-bandwidth bound; GPU often sits mostly idle; metric workers barely affect wall | Encoder-side defaults have been rechecked: preset 6 stands, and raising encode concurrency above `maxWorkers/6` did not improve target-quality wall | 2026-06-19 post-restore sweep; 2026-06-20 preset sweep; 2026-06-21 cap/lp retest |
 | Probe count | Every probe costs both an encode and CVVDP scoring | Reducing probes is the only lever that helps both lanes, but search-only shortcuts had no free lunch | 2026-06-14 search diagnostics and target-band entry |
 | Band width | Probe noise is ~0.075 JOD; too-tight bands force extra probes | Keep default half-width 0.20 unless a user-approved quality/size/speed trade is validated | 2026-06-14 target-band entry |
 | Accuracy changes | Sampled scores are the search's belief, not ground truth | Use `scripts/fullvalidate` for any window count/size, probe threshold, chunk cap, display model, or boundary change | repeated fullvalidate findings |
 
 ## Active open items
 
-No critical or high-priority performance items are currently open.
+No critical, high-priority, or medium-priority performance items are currently open.
 
 | Priority | Item | Why / next action |
 |----------|------|-------------------|
-| Medium | Re-check 4K encode-concurrency ceiling (`maxWorkers/6`) and lp on the fixed MITIGATE build | 4K is encoder-bound, so active encode count directly affects wall. Prior evidence says higher counts hit memory-bandwidth limits; re-confirm on the current build before changing. |
 | Low | Floor-guard + seed amplifier hardening | The scoring cascade is fixed, but two latent amplifiers remain: hard 9.15 floor with no noise margin, and CRF-floored chunks seeding neighbors. Optional defense-in-depth only. |
 | Low | Probe-sample noise vs sample-frame count | Structurally gated because most chunks are full-probed; rerun only on deterministic `sullyhv-15m-4k-hdr` if this becomes interesting. |
 | Low | Provisional priors from in-progress chunks | Nontrivial change; consider only if probe-count tails recur across multiple current-band clips. |
@@ -87,7 +86,8 @@ No critical or high-priority performance items are currently open.
 | Low | Re-measure 4K `maxWorkers/6` divisor on non-dev hardware | The divisor is calibrated on the current dev box; only relevant if the encode host changes. |
 
 Removed from the active list: historical-only fullvalidate of the old `9.25-9.52`
-band. The shipped `9.15-9.55` band already has feature-length ground truth.
+band, and the fixed-MITIGATE 4K encode-concurrency/lp retest. The shipped
+`9.15-9.55` band already has feature-length ground truth.
 
 ## Do not revisit without new evidence
 
@@ -97,6 +97,7 @@ band. The shipped `9.15-9.55` band already has feature-length ground truth.
 | More metric workers | Rejected for current hardware; extra workers add VRAM and little/no wall benefit. |
 | Tight target band | Rejected as a default; it buys unmeasurable consistency and costs probes. |
 | Search shortcuts | Content-prior seed, flat-low early stop, and worst-window/straddle early-out were rejected; the last is a speed-vs-size knob, not an accuracy-neutral win. |
+| Raising the 4K encode cap above `maxWorkers/6` on the dev box | Fixed-CRF encoder throughput improved, but target-quality wall was flat at cap6 and slower at cap8/cap10; keep the current cap unless new hardware or feature-scale evidence changes the tradeoff. |
 | More complex chunk boundaries | Avoid unless fullvalidate shows a repeatable failure that sampling/search cannot solve. |
 | HDR display peak >1000 | Rejected for now; the scary 1500-nit failure was cascade-contaminated, and the clean re-score showed no need to change. |
 | Lowering the 256-frame full-probe threshold | Do not change without a fixed-binary fullvalidate A/B; the previous magnitude was cascade-confounded, but the direction was bad and the current shipped config is clean. |
