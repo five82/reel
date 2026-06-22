@@ -28,6 +28,12 @@ type EncConfig struct {
 	EnableVarianceBoost   bool
 	VarianceBoostStrength uint8
 	VarianceOctile        uint8
+
+	// SkipSync omits the final fsync of the IVF. Safe only for ephemeral
+	// probe-window files that are deleted after scoring and never relied on for
+	// resume; durable artifacts (final chunks, reusable full-chunk probes) must
+	// leave this false so a crash cannot leave unflushed bytes on disk.
+	SkipSync bool
 }
 
 // EncodeChunkToIVF encodes a chunk of video frames to an IVF file using the SVT-AV1 library.
@@ -113,8 +119,10 @@ func EncodeChunkToIVF(ctx context.Context, cfg *EncConfig, readFrame func([]byte
 		progressCb(encoded)
 	}
 
-	if err := out.Sync(); err != nil {
-		return fmt.Errorf("failed to sync output file: %w", err)
+	if !cfg.SkipSync {
+		if err := out.Sync(); err != nil {
+			return fmt.Errorf("failed to sync output file: %w", err)
+		}
 	}
 
 	return nil

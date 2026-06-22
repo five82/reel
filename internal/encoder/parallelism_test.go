@@ -89,3 +89,71 @@ func TestLevelOfParallelismBitstreamIdentical(t *testing.T) {
 		}
 	}
 }
+
+// TestSkipSyncBitstreamIdentical verifies that omitting the final fsync
+// (SkipSync, used for ephemeral probe windows) produces byte-identical output.
+// fsync only flushes already-written bytes, so the encoded IVF must not change;
+// this is the guarantee that lets the probe-sync A/B skip full re-validation.
+func TestSkipSyncBitstreamIdentical(t *testing.T) {
+	const (
+		width  = 320
+		height = 240
+		frames = 24
+	)
+
+	inf := &video.Info{
+		FPSNum:  24000,
+		FPSDen:  1001,
+		Frames:  frames,
+		Is10Bit: true,
+	}
+
+	frameSize := video.Calc10BitSize(width, height)
+	makeReadFrame := func() func([]byte) error {
+		frameIdx := 0
+		return func(buf []byte) error {
+			if len(buf) < frameSize {
+				t.Fatalf("frame buffer too small: %d < %d", len(buf), frameSize)
+			}
+			for i := 0; i+1 < frameSize; i += 2 {
+				v := uint16((i/2 + frameIdx*37) % 1000)
+				buf[i] = byte(v & 0xff)
+				buf[i+1] = byte((v >> 8) & 0x03)
+			}
+			frameIdx++
+			return nil
+		}
+	}
+
+	dir := t.TempDir()
+	var ref string
+	for _, skip := range []bool{false, true} {
+		out := filepath.Join(dir, fmt.Sprintf("skip%v.ivf", skip))
+		cfg := &EncConfig{
+			Inf:      inf,
+			CRF:      30,
+			Preset:   8,
+			Tune:     0,
+			Output:   out,
+			Width:    width,
+			Height:   height,
+			Frames:   frames,
+			SkipSync: skip,
+		}
+		if err := EncodeChunkToIVF(context.Background(), cfg, makeReadFrame(), nil); err != nil {
+			t.Fatalf("encode at SkipSync=%v failed: %v", skip, err)
+		}
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("read output for SkipSync=%v: %v", skip, err)
+		}
+		sum := sha256.Sum256(data)
+		got := hex.EncodeToString(sum[:])
+		t.Logf("SkipSync=%v: %d bytes sha256=%s", skip, len(data), got)
+		if ref == "" {
+			ref = got
+		} else if got != ref {
+			t.Errorf("bitstream differs with SkipSync=%v: %s != %s", skip, got, ref)
+		}
+	}
+}

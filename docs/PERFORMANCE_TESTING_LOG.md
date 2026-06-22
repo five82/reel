@@ -1718,6 +1718,79 @@ dead-code/column/field trims). NOT yet run on a full matrix sweep -- the first
 real `air-5m`/`im-5m`/`bts-5m`/`sully-5m`/`kbv1-5m`/`sullyhv-15m` run is the next
 step and will be the first dated suite result.
 
+## 2026-06-21 Probe-IVF fsync skip: byte-identical, safe, negligible on NVMe (KEPT)
+
+`EncodeChunkToIVF` fsynced every IVF, including ephemeral probe-window files.
+Hypothesis: that sync is pure I/O overhead, worst outside fast local NVMe.
+
+### Change
+Added `EncConfig.SkipSync`, gating the single `out.Sync()`. Set true **only**
+for ephemeral sampled-probe windows (`!isFullChunk`, deleted right after
+scoring). Everything durable keeps its fsync: final chunk re-encode, reusable
+full-chunk probes (which can be hardlinked into the final output via
+`copyFile`), and fixed-CRF final chunks. A `skipSync=true` window can never be
+promoted to a durable artifact -- `fullProbePath` is assigned iff `isFullChunk`,
+the same predicate that forces `skipSync=false`. So Phase-1 resume durability is
+untouched. Verified by unit test `TestSkipSyncBitstreamIdentical` (SkipSync
+false vs true -> identical sha256) and an adversarial review that ran
+`go test -race` across `encode`/`encoder`/`chunk`.
+
+### Ceiling first (microbench)
+`Create+write+Sync` on the testing fs (ext4 on consumer NVMe): ~**6.2 ms/op**,
+size-independent (128KB-1MB all ~6.2-8.0 ms; drive flush latency dominates). So
+max saving = (ephemeral probe IVFs) x 6.2 ms. This bounds the whole experiment
+to sub-second per encode before any real encode ran.
+
+### A/B (two binaries differing only by this change; interleaved base/nosync, 2 reps each, TQ default)
+| clip | probes | chunks | ephemIVF | wall base->nosync | dWall | base-noise | dProbeEnc_s | predicted_s | sha256 |
+|------|--------|--------|----------|-------------------|-------|-----------|-------------|-------------|--------|
+| im-5m-1080p-sdr | 41 | 32 | 69 | 151.4->151.5 | +0.1 (0.1%) | 0.1 | **-0.50** | -0.43 | all 4 differ (base r1!=r2) |
+| sully-5m-4k-hdr | 45 | 33 | 36 | 442.2->441.4 | -0.8 | 0.4 | -2.88 | -0.22 | 3 of 4 identical |
+| kbv1-5m-4k-hdr | 44 | 37 | 12 | 415.4->415.7 | +0.4 | 1.7 | +5.56 | -0.07 | **all 4 identical** |
+| sullyhv-15m-4k-hdr | 165.5/167.5 | 110 | ~192 | 1270->1289 | +18.4 (1.4%) | 22.0 | +91.65 | -1.18 | all 4 differ |
+
+### Reading the data
+- **One clean signal, and it matches the microbench.** Only `im-5m` had
+  identical probe counts across base/nosync (41=41), so its summed-probe-encode
+  delta is uncontaminated: **-0.50 s measured vs -0.43 s predicted** (69 x
+  6.2 ms). That is 0.14% of the 353 s probe-encode lane and invisible in wall
+  (+0.1 s = the base-vs-base noise floor) -- parallel workers dilute it.
+- **Every clip's wall delta sits inside its own base-vs-base noise floor.**
+  `sullyhv` looks like a +18.4 s nosync regression, but the two baseline reps
+  differ by 22.0 s; the predicted fsync effect (1.18 s) is ~18x smaller than the
+  noise. This is the AGENTS.md cautionary pattern -- 2 reps cannot resolve a ~1 s
+  signal against ~20 s wall noise. No real regression; the change cannot slow
+  encoding (it only removes work).
+- **Summed-probe-encode is confounded on 3 of 4 clips** by TQ scoring
+  nondeterminism: `sullyhv` nosync happened to run +2 probes (167.5 vs 165.5),
+  adding encode work unrelated to fsync; `kbv1` jitter (+5.6 s) dwarfs its tiny
+  12-IVF / 0.07 s ceiling. Only matched-probe-count clips are interpretable here.
+- **Bitstream identity holds exactly where the encode is deterministic.** `kbv1`
+  is deterministic and produced byte-identical output across all 4 runs incl.
+  nosync == base -- the strongest empirical proof the bytes are unchanged. Where
+  hashes diverge (`im`, `sullyhv`), baseline diverges from *itself* too, so the
+  difference is inherent CVVDP-scoring nondeterminism, not the sync change.
+  Output sizes stay within 0.2-1.5% (noise). No fullvalidate needed: encoded
+  bits are unchanged by construction (fsync flushes already-written bytes) and
+  confirmed by the unit test + `kbv1`.
+
+### Decision -- KEPT
+Real, safe, byte-identical, zero resume-durability change, race-clean. On this
+NVMe dev box the win is ~0.1-0.5 s/encode (below wall noise), but it scales with
+probe count and grows ~linearly with fsync latency, so it is materially larger
+on slow/networked media storage -- exactly the production case (library batches
+may not be on local NVMe). A free win that can only help, with minimal,
+self-documenting code; consistent with "speed is first-class, take free wins."
+
+**Phase 2 (skip final-chunk fsync) declined.** Final chunks are the resume
+durability guarantee; skipping their sync trades a few hundred ms for crash
+safety of the resume artifact (and many finals are hardlink reuses that are not
+re-synced anyway). Bad trade, not pursued.
+
+Artifacts: harvested `perf.json`/`target-quality.json` per run under
+`~/testing/perf-ab/skipsync/`; experiment-only interleaving driver + analyzer
+were one-offs (not added to the repo; the reusable harness is `scripts/perf/`).
+
 ## Resolved questions (compact index)
 
 Use the status-tagged index at the top of this file to decide which dated entry

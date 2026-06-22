@@ -87,7 +87,6 @@ hypotheses.
 
 | Priority | Item | Why / next action |
 |----------|------|-------------------|
-| Medium | A/B disabling per-probe IVF `fsync` | `internal/encoder/encoder.go` calls `out.Sync()` for every IVF, including temporary probe-window files. This may be pure I/O overhead, especially outside fast local NVMe. Test a variant that skips sync for probe IVFs first; if useful, consider whether final chunk IVFs can safely skip sync without weakening resume semantics too much. Run interleaved TQ A/Bs on `sully-5m`, `kbv1-5m`, `im-5m`, and `sullyhv-15m`; compare wall, summed encode seconds, probe counts, output size, and bitstream/size identity where applicable. Fullvalidate is not required unless the encoded bits change. |
 | Medium | Shot-detection worker cap A/B | Shot detection is linear and feature-length 4K costs about 12-15 minutes, but `chunkplan.shotDetectWorkers` is capped at 4 workers. Use `scripts/chunkbench` to test cap 4/current vs 6 vs 8 on 20-minute 4K clips and a feature if available. Boundary hash must remain identical; if it does, this is a safe isolated throughput win. Reason: medium priority because the prize is modest but the experiment is cheap and does not need a full encode. |
 | Medium | Reduce duplicate media probes and post-encode scans | The orchestration path re-opens/probes the same files several times (`GetVideoProperties`, `GetHDRInfo`, audio stream probes, `video.Probe`, validation probes), and `GetVideoStreamBytes` scans packet payloads for both input and output after encode. First use `perf.json` to size this overhead, especially on large/network media and batches. Then consolidate initial video/HDR/audio analysis into one per-file result, reuse output probe results during validation, and consider making exact stream-byte scans optional or metadata-backed when reliable. |
 | Low | Direct mux / avoid merged IVF if I/O shows up | Reel currently writes chunk IVFs, merges them to `video.ivf`, then muxes. Directly muxing chunk IVFs could avoid one full video read/write, but encode/CVVDP dominate today. Keep deferred until structured timing shows merge+mux are material on the target storage. |
@@ -105,6 +104,15 @@ it runs the standard matrix, captures env/wall/size/GPU plus the per-encode
 `perf.json` and `target-quality.json`, and reads them instead of parsing verbose
 logs. It is smoke-tested but not yet exercised on a full matrix sweep (see the
 2026-06-21 perf-suite log entry).
+
+Also completed: the per-probe IVF `fsync` skip. Ephemeral sampled-probe windows
+no longer fsync (`EncConfig.SkipSync`); durable artifacts (final chunks, reusable
+full-chunk probes) still do, so resume durability is unchanged and output is
+byte-identical. The interleaved TQ A/B confirmed the saving is real but
+negligible on local NVMe (~6.2 ms/probe-IVF, sub-second per encode, below wall
+noise); kept because it is free, safe, and scales with fsync latency on
+slow/networked media storage. Final-chunk fsync was deliberately left in place.
+See the 2026-06-21 probe-IVF fsync log entry.
 
 Also removed from the active list: historical-only fullvalidate of the old
 `9.25-9.52` band, the fixed-MITIGATE 4K encode-concurrency/lp retest, and the

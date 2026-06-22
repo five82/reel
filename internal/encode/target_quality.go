@@ -460,7 +460,8 @@ func encodeTargetQualityChunk(
 		}
 	} else {
 		encodeStart := time.Now()
-		finalResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, finalPath, best.CRF)
+		// Final chunk output that resume depends on; must be fsynced.
+		finalResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, finalPath, best.CRF, false)
 		if finalResult.Error != nil {
 			return targetQualityResult{EncodeResult: finalResult, Log: log}
 		}
@@ -600,7 +601,9 @@ func encodeSampledProbe(
 		probePath := sampledProbePath(workDir, ch.Idx, crf, sampleIdx, sample, isFullChunk)
 
 		encodeStart := time.Now()
-		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, sampleChunk, probePath, crf)
+		// Ephemeral windows (deleted after scoring) skip fsync; a reusable
+		// full-chunk probe keeps it so the durable copy is flushed.
+		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, sampleChunk, probePath, crf, !isFullChunk)
 		if probeResult.Error != nil {
 			encodeErr = probeResult.Error
 			break
@@ -674,7 +677,8 @@ func encodeFullFirstSampledProbe(
 	fullProbePath := sampledProbePath(workDir, ch.Idx, crf, 0, probeSampleWindow{Frames: ch.Frames()}, true)
 
 	encodeStart := time.Now()
-	probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, fullProbePath, crf)
+	// Full-chunk probe; may be reused as the final chunk, so keep the fsync.
+	probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, fullProbePath, crf, false)
 	if probeResult.Error != nil {
 		return quality.Probe{}, "", probeResult.Error
 	}
@@ -1059,13 +1063,17 @@ func clampCRF(crf, minCRF, maxCRF float32) float32 {
 	return crf
 }
 
-func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32) worker.EncodeResult {
+// encodeProbe encodes a single probe window or final chunk. skipSync omits the
+// fsync; pass true only for ephemeral sample windows that are deleted after
+// scoring, false for full-chunk probes (reusable as the final output) and final
+// chunk encodes that resume depends on.
+func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32, skipSync bool) worker.EncodeResult {
 	src, err := video.Open(inputPath, 1)
 	if err != nil {
 		return worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("failed to open source for probe: %w", err)}
 	}
 	defer src.Close()
-	return encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, outputPath, crf, width, height, nil)
+	return encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, outputPath, crf, width, height, nil, skipSync)
 }
 
 func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
