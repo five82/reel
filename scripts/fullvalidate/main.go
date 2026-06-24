@@ -104,7 +104,8 @@ func main() {
 	// One VSHIP handler per worker, scored concurrently. CVVDP is per-handler
 	// temporal state, so each worker owns a distinct handler. Requires a libvship
 	// built with MITIGATE_MALLOC_ASYNC -- the default cudaMallocAsync allocator
-	// races across coexisting handlers and corrupts scores (see docs LOG).
+	// races across coexisting handlers and corrupts scores. See
+	// docs/VSHIP_CONCURRENCY_BUG.md.
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)

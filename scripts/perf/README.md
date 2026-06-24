@@ -1,10 +1,11 @@
 # Reel performance suite
 
 A reproducible harness for running reel over the standard clip matrix and
-comparing runs. The repo holds this harness and the clip manifest
+comparing runs. The repo holds this harness and the contiguous-cut manifest
 (`clips.tsv`); the clip bytes and run outputs live under `$REEL_TESTING_DIR`
-(default `~/testing`). See `docs/PERF_CORPUS.md` for the boundary and
-`docs/PERFORMANCE_TESTING.md` for current tuning guidance.
+(default `~/testing`). The `sullyhv` stress clip is a derived local asset rather
+than a single-row manifest cut. See `docs/PERFORMANCE_TESTING.md` for the corpus,
+artifact boundary, and current tuning guidance.
 
 ## Files
 

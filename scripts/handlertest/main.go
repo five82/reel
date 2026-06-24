@@ -11,8 +11,7 @@
 // on any divergence: that means this libvship build races across coexisting
 // handlers and corrupts scores. The fix is a libvship built with
 // MITIGATE_MALLOC_ASYNC (the default cudaMallocAsync allocator shares a
-// device-global pool across handlers); see docs/PERFORMANCE_TESTING_LOG.md
-// "Metric concurrency RESTORED".
+// device-global pool across handlers); see docs/VSHIP_CONCURRENCY_BUG.md.
 //
 // Re-run after any libvship / GPU / driver change. A near-floor 4K clip such as
 // sullyhv-15m at the UHD worker count is the most sensitive input.

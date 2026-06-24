@@ -28,8 +28,8 @@ const (
 	// setting: probe measurement noise is ~0.075 JOD, so a half-width below
 	// ~2x that wastes probes landing just outside the band and marching the
 	// search to extra probes. At +-0.20 chunks converge in 1-2 probes with no
-	// streaming-visible quality loss. See AGENTS.md "Target CVVDP range" and
-	// docs/PERFORMANCE_TESTING_LOG.md "Target band WIDTH is the real probe-tail lever".
+	// streaming-visible quality loss. See docs/PERFORMANCE_TESTING.md and the
+	// log entry "Target band WIDTH is the real probe-tail lever".
 	DefaultTargetQuality = "9.15-9.55"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.
@@ -40,13 +40,13 @@ const (
 	AutoMetricWorkers = 0
 
 	// DefaultMetricWorkersBelowUHD is the default for content below 4K/UHD.
-	// 6, not 8: the post-restore metric-worker sweep (2026-06-19) found 1080p wall
-	// is flat from mw4 to mw12 -- a single GPU saturates CVVDP scoring at ~4 workers,
-	// so workers past that only add VRAM (~1 GB per +2 workers) with no throughput
-	// gain. 6 keeps a margin above the saturation knee while shedding ~1 GB vs 8.
+	// A single GPU saturates CVVDP scoring near 4 workers; 6 keeps headroom
+	// without the extra VRAM cost of the old 8-worker default.
 	DefaultMetricWorkersBelowUHD = 6
 
-	// DefaultMetricWorkersUHD is the default for 4K/UHD content.
+	// DefaultMetricWorkersUHD is the default for 4K/UHD content. 4K target-quality
+	// encodes are encoder-bound under the maxWorkers/6 cap, so extra metric
+	// workers add VRAM with little wall-time benefit.
 	DefaultMetricWorkersUHD = 4
 
 	// DefaultTargetQualityMaxProbes caps per-chunk target-quality probes.
@@ -59,6 +59,8 @@ const (
 	UHDWidthThreshold uint32 = 3840
 
 	// DefaultSVTAV1Preset is the SVT-AV1 preset (0-13, lower is slower/better).
+	// Preset 6 is the measured wall/size knee: faster presets cost too many
+	// permanent bits, while slower presets cost too much one-time wall time.
 	DefaultSVTAV1Preset uint8 = 6
 
 	// DefaultSVTAV1Tune is the SVT-AV1 tune parameter.
@@ -89,7 +91,9 @@ const (
 	DefaultChunkDurationUHD float64 = 45.0 // 4K: slower encode, needs longer warmup
 
 	// DefaultTargetQualityMaxChunkDuration caps chunks in target-quality mode.
-	// Shorter chunks reduce sampled-probe misses in gradual or high-variance scenes.
+	// The search samples windows inside each chunk; shorter chunks reduce the
+	// chance that gradual/high-variance content hides a weak segment between
+	// sampled windows.
 	DefaultTargetQualityMaxChunkDuration float64 = 12.0
 )
 

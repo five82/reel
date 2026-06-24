@@ -124,8 +124,8 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 	// Reset->Compute sequence runs concurrently with other workers' handlers and
 	// needs no locking. CORRECTNESS DEPENDS on libvship being built with
 	// MITIGATE_MALLOC_ASYNC: the default cudaMallocAsync allocator races across
-	// coexisting handlers and silently corrupts scores ~50% of the time (the
-	// build script enforces the flag; see docs/PERFORMANCE_TESTING_LOG.md).
+	// coexisting handlers and silently corrupts scores. Verify the linked library
+	// with scripts/handlertest; see docs/VSHIP_CONCURRENCY_BUG.md.
 	if err := opts.Processor.ResetCVVDP(); err != nil {
 		return CVVDPResult{}, err
 	}

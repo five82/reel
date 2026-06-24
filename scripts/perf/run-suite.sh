@@ -6,8 +6,8 @@
 #
 # The repo holds this harness and the clip manifest (scripts/perf/clips.tsv);
 # the clip bytes and run outputs live under $REEL_TESTING_DIR (default
-# ~/testing). See docs/PERF_CORPUS.md for the boundary, and
-# docs/PERFORMANCE_TESTING.md for current tuning guidance.
+# ~/testing). See docs/PERFORMANCE_TESTING.md for the corpus, artifact
+# boundary, and current tuning guidance.
 #
 # Runs are strictly sequential: the single GPU and its CVVDP allocator must
 # never have two reel processes at once.
@@ -31,6 +31,7 @@
 # Clips are resolved under $REEL_TESTING_DIR by prefix (e.g. `sully-5m` ->
 # sully-5m-4k-hdr.mkv) or given as a direct path to an .mkv. With no clips the
 # standard matrix is used: air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m.
+# sullyhv is a derived local stress asset, not a single-row clips.tsv cut.
 
 set -euo pipefail
 
@@ -112,7 +113,7 @@ resolve_clip() {
 		printf '  %s\n' "${matches[@]}" >&2
 		return 1
 	fi
-	echo "run-suite: clip '$token' not found under $REEL_TESTING_DIR (see scripts/perf/clips.tsv)" >&2
+	echo "run-suite: clip '$token' not found under $REEL_TESTING_DIR (see docs/PERFORMANCE_TESTING.md and scripts/perf/clips.tsv)" >&2
 	return 1
 }
 

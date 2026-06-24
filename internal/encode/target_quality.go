@@ -20,19 +20,29 @@ import (
 )
 
 const (
-	// DefaultTargetQualitySampleFrames is the per-window probe length for target-quality search.
+	// DefaultTargetQualitySampleFrames is long enough to reduce window noise while
+	// keeping sampled probes much cheaper than full-chunk CVVDP.
 	DefaultTargetQualitySampleFrames = 48
 
-	// DefaultTargetQualityFullProbeFrames is the largest chunk size probed as a whole.
+	// DefaultTargetQualityFullProbeFrames keeps small chunks on whole-chunk
+	// scoring. Sampling below this size looked cheaper on paper but loses
+	// full-probe reuse and can make the search spend more probes.
 	DefaultTargetQualityFullProbeFrames = 256
 
-	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully encode for a reliable first probe.
+	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully
+	// encode when the first CRF comes from the title median. Median starts are
+	// less locally trustworthy, and a converged full-first probe can be reused as
+	// the final chunk instead of encoded twice.
 	DefaultTargetQualityFullFirstFrames = 720
 
-	// targetQualityScheduleBlockChunks keeps target-quality work near timeline order while balancing chunk sizes.
+	// targetQualityScheduleBlockChunks keeps work close enough to timeline order
+	// for neighbor priors while still starting large chunks early enough to avoid
+	// a final long-tail. Smaller blocks measured slower because early priors were worse.
 	targetQualityScheduleBlockChunks = 32
 
-	// targetQualityExtraWindowSpread enables denser sampling on later probes for high-variance chunks.
+	// targetQualityExtraWindowSpread enables denser sampling only after a probe
+	// shows high within-chunk variance, targeting uncertainty without charging
+	// every easy chunk for more windows.
 	targetQualityExtraWindowSpread = 0.30
 
 	// targetQualityPriorPrimeChunks is how many completed chunks must seed the
@@ -150,13 +160,12 @@ func EncodeTargetQuality(
 
 	// One VSHIP/CUDA handler PER metric worker, scored concurrently. CVVDP is a
 	// per-handler temporal metric and Vship forbids using one handler from two
-	// threads at once, so each worker owns a distinct handler; with that,
-	// concurrent scoring matches single-handler truth exactly (verified
-	// byte-identical, 8/8 reps). CORRECTNESS DEPENDS on libvship being built with
-	// MITIGATE_MALLOC_ASYNC -- the default cudaMallocAsync allocator races across
-	// coexisting handlers and silently corrupts scores ~50% of the time, trips
-	// the floor guard, and cascades into ~9x output-size swings (see docs LOG).
-	// The build script enforces the flag.
+	// threads at once, so each worker owns a distinct handler. CORRECTNESS DEPENDS
+	// on libvship being built with MITIGATE_MALLOC_ASYNC: the default
+	// cudaMallocAsync allocator races across coexisting handlers, silently
+	// corrupts scores, trips the floor guard, and can cascade into huge output-size
+	// swings. Verify the linked library with scripts/handlertest; see
+	// docs/VSHIP_CONCURRENCY_BUG.md.
 	metricPool := make(chan *quality.VshipProcessor, tq.MetricWorkers)
 	for i := 0; i < tq.MetricWorkers; i++ {
 		processor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
