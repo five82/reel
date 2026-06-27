@@ -49,6 +49,12 @@ type Options struct {
 	// against final CRF). The production path leaves this false so the scores
 	// slice is freed after boundary detection.
 	RetainScores bool
+
+	// ShotDetectWorkers, when > 0, requests that many parallel shot-detection
+	// workers instead of the auto cap. It is a benchmarking hook
+	// (scripts/chunkbench A/B); the production path leaves it 0. The per-worker
+	// frame floor still applies, and boundary output is worker-count invariant.
+	ShotDetectWorkers int
 }
 
 // BoundaryKind explains why a planned chunk boundary exists.
@@ -77,6 +83,11 @@ type Result struct {
 	// FrameScores holds the per-frame shot-change scores when Options.RetainScores
 	// is set; nil otherwise. Index i is the score for frame i (frame 0 is 0).
 	FrameScores []float64
+
+	// ShotDetectWorkersUsed reports how many parallel workers scored the frames.
+	// Benchmarking info (scripts/chunkbench); 0 when scoring was skipped or
+	// served from a cached boundary file.
+	ShotDetectWorkersUsed int
 }
 
 // Metadata records the inputs that produced a chunk boundary file.
@@ -152,7 +163,7 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	minFrames := normalizeMinFrames(opts.MinFrames, maxFrames)
 	targetFrames := normalizeTargetFrames(opts.TargetFrames, minFrames, maxFrames)
 
-	scores, err := scoreVideo(ctx, inputPath, inf, opts)
+	workers, scores, err := scoreVideo(ctx, inputPath, inf, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -160,15 +171,16 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 	naturalCuts := detectNaturalCuts(scores)
 	plan := planBoundaries(naturalCuts, frameCount, maxFrames, minFrames, targetFrames, scores)
 	result := Result{
-		Boundaries:       plan.Boundaries,
-		BoundaryKinds:    plan.BoundaryKinds,
-		NaturalCuts:      max(0, len(naturalCuts)-1),
-		NaturalCutFrames: naturalCutFrames(naturalCuts),
-		SyntheticSplits:  plan.SyntheticSplits,
-		MergedShortShots: plan.MergedShortShots,
-		MergedWeakCuts:   plan.MergedWeakCuts,
-		Frames:           frameCount,
-		MergedScenes:     plan.MergedShortShots,
+		Boundaries:            plan.Boundaries,
+		BoundaryKinds:         plan.BoundaryKinds,
+		NaturalCuts:           max(0, len(naturalCuts)-1),
+		NaturalCutFrames:      naturalCutFrames(naturalCuts),
+		SyntheticSplits:       plan.SyntheticSplits,
+		MergedShortShots:      plan.MergedShortShots,
+		MergedWeakCuts:        plan.MergedWeakCuts,
+		Frames:                frameCount,
+		MergedScenes:          plan.MergedShortShots,
+		ShotDetectWorkersUsed: workers,
 	}
 	if opts.RetainScores {
 		result.FrameScores = scores
@@ -179,8 +191,8 @@ func Plan(ctx context.Context, inputPath string, inf *video.Info, opts Options) 
 // scoreVideo computes per-frame shot-change scores. The decode is split into
 // contiguous segments scored by parallel workers; each worker decodes one
 // extra leading frame so segment-boundary scores match the sequential pass.
-func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) ([]float64, error) {
-	workers := shotDetectWorkers(inf.Frames)
+func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Options) (int, []float64, error) {
+	workers := shotDetectWorkers(inf.Frames, opts.ShotDetectWorkers)
 	threads := max(2, decoderThreads()/workers)
 	if workers == 1 {
 		threads = decoderThreads()
@@ -222,7 +234,7 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 	frameCount := inf.Frames
 	for w, outcome := range outcomes {
 		if outcome.err != nil {
-			return nil, outcome.err
+			return 0, nil, outcome.err
 		}
 		if w == workers-1 {
 			frameCount = outcome.decodedEnd
@@ -231,7 +243,7 @@ func scoreVideo(ctx context.Context, inputPath string, inf *video.Info, opts Opt
 	if opts.Progress != nil {
 		opts.Progress(frameCount, frameCount)
 	}
-	return scores[:frameCount], nil
+	return workers, scores[:frameCount], nil
 }
 
 // scoreVideoSegment scores frames [segStart, segEnd). It decodes from
@@ -285,11 +297,23 @@ func scoreVideoSegment(
 	return segEnd, nil
 }
 
-func shotDetectWorkers(frames int) int {
+func shotDetectWorkers(frames, requested int) int {
 	const minFramesPerWorker = 1500
-	workers := min(4, max(util.PhysicalCores(), 1)/4)
-	workers = min(workers, frames/minFramesPerWorker)
-	return max(workers, 1)
+	maxByFrames := frames / minFramesPerWorker
+	if requested > 0 {
+		// Benchmark override (Options.ShotDetectWorkers): honor the explicit
+		// request, still floored by the per-worker frame count.
+		return max(1, min(requested, maxByFrames))
+	}
+	// Half the physical cores. decoderThreads()/workers is floored at 2, so
+	// cores/2 workers (8 on a 16-core box) keep total decoder threads at the
+	// core count while maximizing segment parallelism. A/B over four 4K 20m
+	// clips plus the Sully feature (2026-06-27, see
+	// docs/PERFORMANCE_TESTING_LOG.md) had cores/2 beat cores/4 by 2-21% with
+	// identical boundary hashes; 6 workers is a trap (16/6 floors to 2
+	// threads/worker = 12 total, fewer than cap4's 16).
+	workers := max(util.PhysicalCores(), 1) / 2
+	return max(1, min(workers, maxByFrames))
 }
 
 func decoderThreads() int {

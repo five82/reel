@@ -319,3 +319,24 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   wall noise), but it scales with probe count and slow/network storage latency.
 - **Decision:** Kept only for ephemeral sampled-probe windows. Durable final
   chunks and reusable full-chunk probes still fsync for resume safety.
+
+## 2026-06-27 Shot-detection worker cap 4 vs 6 vs 8
+
+- **Question:** Should the shot-detection worker cap (cores/4 = 4 on the 16-core
+  dev box) rise to 6 or 8? Boundaries must stay identical across worker counts.
+- **Method/artifacts:** `scripts/chunkbench` with a new
+  `REEL_SHOT_DETECT_WORKERS` override (`Options.ShotDetectWorkers`, left 0 by
+  Reel) added for the A/B; artifacts under `~/testing/shot-cap-ab/`
+  (`summary-20m.txt`, `summary-feature.tsv`, per-run `.log`). Four 4K 20m clips
+  (io/kbv1/ko/sully, 2 reps/cell) plus the Sully feature (96m, 1 rep/cell).
+  Idle 7950X, `powersave` governor; idle run-to-run variance was <1%, so 2 reps
+  bounded the small deltas.
+- **Decisive result:** Boundary hash identical across 4/6/8 on all five inputs
+  (exactly one unique hash each), so parallelism never perturbs boundaries.
+  cap8 (cores/2) beat cap4 (cores/4) on every input: 20m clips -2% to -20%
+  (io -15%, kbv1 -8%, ko -2%, sully -20%) and the Sully feature -21%
+  (715s -> 565s, ~2.5 min). cap6 was a trap: slower than or barely better than
+  cap4 everywhere, because `decoderThreads()/workers` floors at 2 threads/worker,
+  so 6 workers get only 12 total decoder threads vs cap4's 16.
+- **Decision:** Changed the default cap from cores/4 to cores/2 (8 on this box);
+  boundary-equivalent (same hashes). cap6 rejected (do not use).

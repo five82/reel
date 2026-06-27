@@ -69,6 +69,7 @@ Useful artifacts:
 | Safety floor | Worst sampled window must not fall below the target floor | Protects chunks whose mean is fine but a sampled sub-segment is weak. | 2026-06-14 monotonicity diagnostic |
 | Metric workers | 6 below UHD, 4 for UHD | One GPU saturates near 4 CVVDP workers; 6 below UHD keeps margin with less VRAM, while 4K is encoder-bound so extra metric workers barely affect wall. | 2026-06-19 post-restore sweep |
 | VSHIP/libvship | One handler per metric worker; libvship must be built with `MITIGATE_MALLOC_ASYNC` | Default `cudaMallocAsync` allocator corrupts concurrent CVVDP scores across handlers. | 2026-06-19 restore; `docs/VSHIP_CONCURRENCY_BUG.md` |
+| Shot-detection workers | `cores/2` (8 on the 16-core dev box) | With `decoderThreads()/workers` floored at 2 threads/worker, `cores/2` keeps total decoder threads at the core count while maximizing segment parallelism; boundary output is worker-count invariant. A/B had it beat `cores/4` by 2-21% with identical hashes. | 2026-06-27 shot-detect cap entry |
 | 4K encode concurrency | Ceiling `maxWorkers/6` (min 3), start at ceiling | Shipping target-quality mode is flat/slower above cap5 on the dev box; fixed-CRF cap8 is faster but does not convert to TQ wall. | 2026-06-12 ramp; 2026-06-21 cap/lp retest |
 | Non-4K encode concurrency | Ramps to full `maxWorkers` | Lower resolutions usually self-limit on GPU CVVDP throughput. | 2026-06-12 ramp; 2026-06-19 attribution |
 | SVT-AV1 preset | 6 | Joint wall/size knee for tested 1080p and 4K. Faster costs too many bits; slower costs too much wall. | 2026-06-20 preset entries |
@@ -92,7 +93,6 @@ Useful artifacts:
 
 | Priority | Item | Next action / reason |
 |----------|------|----------------------|
-| Medium | Shot-detection worker cap A/B | Use `scripts/chunkbench` to test cap 4/current vs 6 vs 8 on 20-minute 4K clips and a feature if available. Boundary hash must match. Prize is modest but experiment is cheap and isolated. |
 | Medium | Reduce duplicate media probes and post-encode scans | Use `perf.json` to size repeated `GetVideoProperties` / HDR / audio / validation probes and exact stream-byte scans, especially on large or network media. Consolidate only if timing shows material overhead. |
 | Low | Direct mux / avoid merged IVF | Defer until `perf.json` shows merge+mux I/O is material. Encode and CVVDP dominate today. |
 | Low | Floor-guard + seed amplifier hardening | Replay existing TQ logs before real encodes. Prefer quarantining CRF-min/CRF-max, `max_probes`, or `bounds_crossed` chunks from neighbor seeding over softening quality decisions. |
@@ -113,6 +113,7 @@ Useful artifacts:
 | HDR display peak >1000 nits | Rejected for now. The scary 1500-nit result was scoring-cascade contamination, and the clean re-score showed no need to change. |
 | Lowering the 256-frame full-probe threshold | Do not change without a fixed-binary fullvalidate A/B. The old magnitude was confounded, but direction was bad and current config is clean. |
 | Overlapping pre-encode head with encoding | Deferred. Requires accuracy-affecting streaming planner changes and only saves the shot-detection head. |
+| Shot-detection worker cap of 6 | Rejected. `decoderThreads()/workers` floors at 2 threads/worker, so 6 workers get only 12 total decoder threads vs cap4's 16; 6 is slower than or barely better than 4 on every tested input. `cores/2` is the measured optimum. |
 
 ## Standard corpus and local artifact boundary
 

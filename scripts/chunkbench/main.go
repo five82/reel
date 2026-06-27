@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"math"
 	"os"
+	"strconv"
 	"time"
 
 	"codeberg.org/five82/reel/internal/chunkplan"
@@ -66,6 +67,18 @@ func main() {
 		},
 	}
 
+	// A/B hook: REEL_SHOT_DETECT_WORKERS=N overrides the shot-detection worker
+	// cap (auto = cores/2, e.g. 8 on a 16-core box) to test specific worker
+	// counts. Boundary output is worker-count invariant, so the boundary hash
+	// must match across values.
+	var workersLabel string
+	if v := os.Getenv("REEL_SHOT_DETECT_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			opts.ShotDetectWorkers = n
+			workersLabel = strconv.Itoa(n)
+		}
+	}
+
 	fmt.Printf("File:      %s\n", inputPath)
 	fmt.Printf("Duration:  %s\n", formatDuration(durationSec))
 	fmt.Printf("Resolution: %dx%d\n", inf.Width, inf.Height)
@@ -73,6 +86,9 @@ func main() {
 	fmt.Printf("Frames:    %d\n", inf.Frames)
 	fmt.Printf("Chunking:  max=%ds (%d frames), min=%ds (%d frames), target=%ds (%d frames)\n",
 		int(chunkDuration), maxFrames, int(2), minFrames, int(6), targetFrames)
+	if workersLabel != "" {
+		fmt.Printf("Workers:   %s (shot-detection override)\n", workersLabel)
+	}
 	fmt.Println()
 
 	start := time.Now()
@@ -83,7 +99,7 @@ func main() {
 	}
 	elapsed := time.Since(start)
 
-	fmt.Printf("\rShot detection complete in %s\n\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("\rShot detection complete in %s (workers=%d)\n\n", elapsed.Round(time.Millisecond), result.ShotDetectWorkersUsed)
 
 	if scoresOut != "" {
 		if err := writeScores(scoresOut, result.FrameScores); err != nil {
