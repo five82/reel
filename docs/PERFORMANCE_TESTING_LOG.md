@@ -400,3 +400,38 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   shape changes slightly: "Video probe" now records once in the orchestrator and
   "HDR analysis" is near-zero (refinement only); `scripts/perf/analyze.py` reads
   phases nil-safely so it is unaffected. Resolves the open item.
+
+## 2026-06-28 CVVDP distance-space window aggregation (rejected)
+
+- **Question:** Borrowed from xav: aggregate the per-window sampled-score mean
+  in CVVDP perceptual-distance space instead of JOD space, matching how
+  full-chunk CVVDP pools internally. Hypothesis was that the JOD-space mean is
+  optimistically biased vs ground truth.
+- **Method/artifacts:** Encode-free. (1) Isolated CRF-selection effect by
+  recomputing each probe's chunk score both ways from stored per-window scores
+  in existing kept workdirs (`/tmp/jod_ab_isolate.py` over sullyhv-15m and the
+  full Sully feature, 670 chunks). (2) Honesty A/B against ground truth by
+  re-scoring the already-encoded output with `fullvalidate` on the existing
+  sullyhv workdir (`rebaseline-20260617/sullyhv-15m-4k-hdr/`), using the new
+  `FULLVALIDATE_JSON` dump, then paired old-vs-new sampled-vs-truth
+  (`/tmp/jod_honesty.py`). Sanity: JOD recompute reproduced stored probe scores
+  to ~1e-6, validating the harness.
+- **Decisive result:** No CRF-selection benefit and slightly worse honesty:
+  - Score shift ~0.0001 JOD mean / 0.003 max (15-75x below the ~0.075 JOD probe
+    noise); 0/110 CRF flips on sullyhv (1/670 on the feature, a pathological
+    below-floor tie-break, not a quality driver).
+  - Per-chunk |sampled - truth| mean gap on sullyhv: 0.03330 (old JOD-space) ->
+    0.03341 (new distance-space). Paired winner over multi-window chunks: new
+    closer 1, old closer 36.
+  - The convexity/Jensen math is correct (distance mean IS lower), but the
+    premise was wrong: on this clip ground truth runs ABOVE the sampled mean
+    for 36/37 multi-window chunks (sparse sampling undershoots by ~+0.099 JOD),
+    so pushing the sampled score further down moves it away from truth.
+- **Decision:** Rejected (reverted in 7b25d77). The real sampled-vs-full driver
+  is sampling sparsity + the arithmetic-vs-CVVDP-Minkowski-norm mismatch, not
+  the JOD-vs-distance transform. A genuinely different lever would be pooling
+  windows with CVVDP's Minkowski norms (temporal ~2, spatial ~4) in distance
+  space -- a larger change needing its own fullvalidate; do not revisit the
+  pure space-swap, it is a net negative. The validation did leave one durable
+  dev-tool improvement: `fullvalidate` now supports `FULLVALIDATE_JSON` for
+  all-chunk ground-truth dumps (681248d).
