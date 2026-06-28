@@ -775,7 +775,14 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 	}
 	worstScore = windows[0].Score
 	bestScore := windows[0].Score
-	var weightedScore float64
+	// Pool the mean in CVVDP perceptual-distance space, not in JOD space. JOD is
+	// a convex nonlinear map of distance, so a JOD-space mean is optimistically
+	// biased; averaging distances and mapping back matches how full-chunk CVVDP
+	// (the ground truth scored by scripts/fullvalidate) pools internally. The
+	// delta is tiny near the target but grows with window spread, which is
+	// exactly where sampling is least reliable. Worst/best stay in raw JOD so
+	// the floor guard and the spread-blend below keep operating on JOD.
+	var weightedDistance float64
 	for _, window := range windows {
 		if window.Frames <= 0 {
 			continue
@@ -786,13 +793,13 @@ func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, 
 		if window.Score > bestScore {
 			bestScore = window.Score
 		}
-		weightedScore += float64(window.Score) * float64(window.Frames)
+		weightedDistance += quality.CVVDPJODToDistance(float64(window.Score)) * float64(window.Frames)
 		frames += window.Frames
 	}
 	if frames == 0 {
 		return 0, 0, 0, 0
 	}
-	meanScore = float32(weightedScore / float64(frames))
+	meanScore = float32(quality.CVVDPDistanceToJOD(weightedDistance / float64(frames)))
 
 	const (
 		spreadThreshold = 0.30
