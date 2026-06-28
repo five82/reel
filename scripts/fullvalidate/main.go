@@ -154,6 +154,29 @@ func main() {
 	fmt.Printf("\rScored %d chunks in %s\n\n", len(results), time.Since(start).Round(time.Second))
 	sort.Slice(results, func(i, j int) bool { return results[i].idx < results[j].idx })
 
+	if dump := os.Getenv("FULLVALIDATE_JSON"); dump != "" {
+		type chunkOut struct {
+			Idx     int     `json:"chunk_idx"`
+			Frames  int     `json:"frames"`
+			Full    float32 `json:"full_jod"`
+			Sampled float32 `json:"sampled_jod"`
+			Probes  int     `json:"probes"`
+			CRF     float32 `json:"crf"`
+		}
+		type out struct {
+			Target    float32   `json:"target"`
+			Tolerance float32   `json:"tolerance"`
+			Chunks    []chunkOut `json:"chunks"`
+		}
+		chunksOut := make([]chunkOut, len(results))
+		for i, r := range results {
+			chunksOut[i] = chunkOut{Idx: r.idx, Frames: r.frames, Full: r.full, Sampled: r.sampled, Probes: r.probes, CRF: r.crf}
+		}
+		b, err := json.MarshalIndent(out{Target: tq.Target, Tolerance: tq.Tolerance, Chunks: chunksOut}, "", "  ")
+		fail(err, "marshal fullvalidate json")
+		fail(os.WriteFile(dump, b, 0o644), "write fullvalidate json")
+	}
+
 	report(results, tq.Target, tq.Tolerance)
 }
 
