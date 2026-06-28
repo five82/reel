@@ -432,9 +432,12 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   the JOD-vs-distance transform. A genuinely different lever would be pooling
   windows with CVVDP's Minkowski norms (temporal ~2, spatial ~4) in distance
   space -- a larger change needing its own fullvalidate; do not revisit the
-  pure space-swap, it is a net negative. The validation did leave one durable
-  dev-tool improvement: `fullvalidate` now supports `FULLVALIDATE_JSON` for
-  all-chunk ground-truth dumps (681248d).
+  pure space-swap, it is a net negative. *(Correction 2026-06-28, see the
+  Minkowski-norm entry below: that proposed lever was also tested and
+  rejected -- the bias-compensation insight there supersedes this "next
+  lever" note.)* The validation did leave one durable dev-tool improvement:
+  `fullvalidate` now supports `FULLVALIDATE_JSON` for all-chunk ground-truth
+  dumps (681248d).
 
 ## 2026-06-28 Monotone-cubic (PCHIP) CRF interpolation for the probe tail (rejected)
 
@@ -470,3 +473,46 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   fit makes the inverse prediction materially worse and would ADD probes. This
   confirms the doc note that bracket-aware linear is the settled choice; do not
   revisit interpolation unless search direction changes to crf->score.
+
+## 2026-06-28 CVVDP Minkowski-norm window pooling in distance space (rejected)
+
+- **Question:** The distance-space entry above named "pool windows with CVVDP's
+  Minkowski norms (temporal ~2, spatial ~4) in distance space" as the next
+  lever to test for sampled-vs-full honesty. Pursue it.
+- **Method/artifacts:** Encode-free. Reused the sullyhv ground-truth dump from
+  the distance-space entry (`/tmp/sullyhv_fullvalidate.json` from fullvalidate on
+  `rebaseline-20260617/sullyhv-15m-4k-hdr/`) plus per-window scores. For each
+  multi-window final probe, recovered exact window distances via the JOD inverse
+  (Vship `toJOD`/`fromJOD`), computed frame-weighted Minkowski-p for p in {1,2,4},
+  mapped back to JOD, compared to full-chunk truth (`/tmp/minkowski_sweep.py`).
+- **Decisive result:** Higher Minkowski norms monotonically WORSEN honesty:
+  per-chunk mean |score - truth| over 37 multi-window chunks:
+    JOD-space arithmetic (reel mean): 0.03665 (paired winner 26/37)
+    dist p=1 (arithmetic, = distance-space entry): 0.03694 (3)
+    dist p=2 (Vship temporal RMS):                  0.04200 (3)
+    dist p=4 (Vship spatial):                        0.05870 (4)
+  The pure JOD-space arithmetic mean is the best truth predictor; matching
+  Vship's norms moves away from truth.
+- **Mechanism (the real finding):** If reel's windows partitioned the chunk and
+  were pooled with distance-space Minkowski-2, reel would EXACTLY reconstruct
+  full-chunk truth (Vship's temporal norm is Minkowski-2 over per-frame
+  distances). But reel's windows do not partition -- they deliberately OVER-
+  SAMPLE the hard parts (spread-based extra windows + worst-window targeting for
+  the floor guard). A faithful distance-space norm therefore OVER-scales that
+  sampling bias toward low JOD, moving further from truth. The JOD-space
+  arithmetic mean "accidentally" corrects the bias upward. Truth runs ABOVE the
+  per-window mean on 26/37 chunks, so any more-conservative aggregation is
+  worse. (Side note: the production spread-blend score is 0.099 mean err vs
+  truth -- 2.7x the pure mean's 0.037 -- but that cost is deliberate worst-frame
+  conservatism, not truth-tracking; truth is at/below the worst window on 0/37
+  chunks. It is a speed-vs-conservatism knob, do not touch without a real-encode
+  A/B + user coordination.)
+- **Decision:** Rejected, no code change. Closes the "next lever" proposed in
+  the distance-space entry -- that hypothesis is disproven. Transferable lesson:
+  reel's window aggregation and its sampling are co-designed (sampling is biased
+  toward worst segments for the floor guard), so any "more faithful to Vship"
+  aggregation that assumes uniform-frame pooling will fight the bias rather than
+  complement it. Do not revisit aggregation-space/norm swaps. The only honest
+  lever left is smarter sampling (cover the chunk instead of biasing to hard
+  parts), which is the larger streaming-planner item already flagged as deferred
+  and accuracy-affecting in PERFORMANCE_TESTING.md.
