@@ -15,6 +15,7 @@ import (
 	"codeberg.org/five82/reel/internal/reporter"
 	"codeberg.org/five82/reel/internal/util"
 	"codeberg.org/five82/reel/internal/validation"
+	"codeberg.org/five82/reel/internal/video"
 )
 
 // EncodeResult contains the result of a single file encode.
@@ -97,7 +98,7 @@ func ProcessVideos(
 			continue
 		}
 
-		// Analyze video properties
+		// Analyze video properties (container/codec parameters).
 		finishStep := startPhase(perfc, rep, "Video property analysis")
 		videoProps, err := media.GetVideoProperties(inputPath)
 		finishStep()
@@ -111,18 +112,28 @@ func ProcessVideos(
 			continue
 		}
 
-		finishStep = startPhase(perfc, rep, "HDR analysis")
-		hdrInfo, err := media.GetHDRInfo(inputPath)
+		// Probe the decoded first frame once and share the result with both HDR
+		// analysis and the chunked pipeline. The first-frame decode is the
+		// dominant media-probe cost (~0.7s on 4K); probing it twice (once here
+		// for HDR, again inside ProcessChunked) was pure waste. vidInf is passed
+		// into ProcessChunked instead of letting it re-probe.
+		finishStep = startPhase(perfc, rep, "Video probe")
+		vidInf, err := video.Probe(inputPath)
 		finishStep()
 		if err != nil {
 			rep.Error(reporter.ReporterError{
 				Title:      "Analysis Error",
-				Message:    fmt.Sprintf("Could not analyze HDR metadata for %s: %v", inputFilename, err),
+				Message:    fmt.Sprintf("Could not probe video for %s: %v", inputFilename, err),
 				Context:    fmt.Sprintf("File: %s", inputPath),
 				Suggestion: "Check if the file is a valid video format",
 			})
 			continue
 		}
+
+		finishStep = startPhase(perfc, rep, "HDR analysis")
+		refinedHDR := media.RefineHDR(videoProps.HDRInfo, vidInf)
+		finishStep()
+		hdrInfo := &refinedHDR
 
 		// Determine per-file settings that depend on video resolution.
 		fileCfg := *cfg
@@ -130,10 +141,11 @@ func ProcessVideos(
 		quality, _ := determineQualitySettings(videoProps, &fileCfg)
 		isHDR := hdrInfo.IsHDR
 
-		// Get audio info
+		// Get audio info. Channels are derived from the stream info rather than
+		// re-probed, so the file is opened once for audio analysis.
 		finishStep = startPhase(perfc, rep, "Audio analysis")
-		audioChannels := GetAudioChannels(inputPath)
 		audioStreams := GetAudioStreamInfo(inputPath)
+		audioChannels := audioChannelsFromStreams(audioStreams)
 		audioDescription := FormatAudioDescription(audioChannels)
 		finishStep()
 
@@ -198,7 +210,7 @@ func ProcessVideos(
 
 		// Run chunked encoding with FFmpeg/libav + SVT-AV1 library
 		finishStep = startVerboseStep(rep, "Chunked encode pipeline")
-		cropResult, encodeError := ProcessChunked(ctx, &fileCfg, inputPath, outputPath, videoProps, audioStreams, quality, rep, perfc)
+		cropResult, encodeError := ProcessChunked(ctx, &fileCfg, inputPath, outputPath, videoProps, vidInf, audioStreams, quality, rep, perfc)
 		finishStep()
 		encodeSuccess := encodeError == nil
 

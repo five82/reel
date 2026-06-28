@@ -31,6 +31,7 @@ func ProcessChunked(
 	cfg *config.Config,
 	inputPath, outputPath string,
 	videoProps *media.VideoProperties,
+	vidInf *video.Info,
 	audioStreams []media.AudioStreamInfo,
 	qualitySetting float32,
 	rep reporter.Reporter,
@@ -63,23 +64,21 @@ func ProcessChunked(
 	}()
 
 	// ========================================================================
-	// PHASE 1: Probe video and run luma-based crop detection
+	// PHASE 1: Run luma-based crop detection
+	//
+	// vidInf (the decoded first-frame probe) is supplied by the caller so the
+	// orchestrator can share one probe between HDR analysis and the chunked
+	// pipeline instead of decoding the first frame twice.
 	// ========================================================================
 	rep.StageProgress(reporter.StageProgress{Stage: "Preparing", Message: "Analyzing video and detecting crop"})
 
-	finishStep := startPhase(perfc, rep, "Video probe")
-	vidInf, err := video.Probe(inputPath)
-	finishStep()
-	if err != nil {
-		return CropResult{}, fmt.Errorf("failed to probe video: %w", err)
-	}
 	if cfg.MetricWorkers == 0 {
 		fileCfg := *cfg
 		fileCfg.MetricWorkers = cfg.MetricWorkersForWidth(vidInf.Width)
 		cfg = &fileCfg
 	}
 
-	finishStep = startPhase(perfc, rep, "Crop detection")
+	finishStep := startPhase(perfc, rep, "Crop detection")
 	cropResult := DetectCrop(inputPath, vidInf, cfg.CropMode == "none")
 	finishStep()
 
@@ -93,6 +92,7 @@ func ProcessChunked(
 
 	// Convert crop filter to an exact source rectangle for shot detection and encoding.
 	var cropRect *video.CropRect
+	var err error
 	if cropResult.Required && cropResult.CropFilter != "" {
 		cropRect, err = parseCropFilter(cropResult.CropFilter, videoProps.Width, videoProps.Height)
 		if err != nil {

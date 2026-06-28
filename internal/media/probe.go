@@ -190,19 +190,6 @@ func GetVideoProperties(inputPath string) (*VideoProperties, error) {
 	}, nil
 }
 
-// GetAudioChannels returns the channel count for each audio stream.
-func GetAudioChannels(inputPath string) ([]uint32, error) {
-	streams, err := GetAudioStreamInfo(inputPath)
-	if err != nil {
-		return nil, err
-	}
-	channels := make([]uint32, len(streams))
-	for i, stream := range streams {
-		channels[i] = stream.Channels
-	}
-	return channels, nil
-}
-
 // GetAudioStreamInfo returns detailed audio stream information.
 func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 	fmtCtx, err := openInput(inputPath)

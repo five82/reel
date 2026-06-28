@@ -8,11 +8,12 @@ import (
 	"codeberg.org/five82/reel/internal/media"
 )
 
-// GetAudioChannels returns audio channel counts for a file.
-func GetAudioChannels(inputPath string) []uint32 {
-	channels, err := media.GetAudioChannels(inputPath)
-	if err != nil {
-		return nil
+// audioChannelsFromStreams derives per-stream channel counts from already-probed
+// stream info, avoiding a second file open when the stream info is already known.
+func audioChannelsFromStreams(streams []media.AudioStreamInfo) []uint32 {
+	channels := make([]uint32, len(streams))
+	for i, s := range streams {
+		channels[i] = s.Channels
 	}
 	return channels
 }

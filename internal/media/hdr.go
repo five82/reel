@@ -17,40 +17,56 @@ func GetStreamHDRInfo(path string) (*HDRInfo, error) {
 	return &hdr, nil
 }
 
-// GetHDRInfo returns HDR-related metadata using native libav probes.
-func GetHDRInfo(path string) (*HDRInfo, error) {
-	hdr, err := GetStreamHDRInfo(path)
-	if err != nil {
-		return nil, err
-	}
-
-	inf, err := video.Probe(path)
-	if err != nil {
-		hdr.IsHDR = detectHDR(hdr.ColourPrimaries, hdr.TransferCharacteristics, hdr.MatrixCoefficients)
-		return hdr, nil
-	}
-
-	if inf.Is10Bit {
-		depth := uint8(10)
-		hdr.BitDepth = &depth
-	}
-	if inf.ColorPrimaries != nil {
-		if name := colorPrimariesName(*inf.ColorPrimaries); name != "" {
-			hdr.ColourPrimaries = name
+// RefineHDR returns HDR metadata refined from a decoded first frame, using
+// container/stream metadata (typically VideoProperties.HDRInfo) as the base.
+// Frame-level color tags read from a decoded frame can be more accurate than
+// the container/codec-par tags that GetStreamHDRInfo reads, so the probe result
+// is authoritative when available. inf may be nil to fall back to container-only
+// values.
+//
+// Callers that already hold both the container properties and a video.Probe
+// result should use this instead of GetHDRInfo to avoid a redundant container
+// re-probe and a second first-frame decode. The encode orchestrator probes once
+// and shares that result with both HDR analysis and the chunked pipeline.
+func RefineHDR(container HDRInfo, inf *video.Info) HDRInfo {
+	hdr := container
+	if inf != nil {
+		if inf.Is10Bit {
+			depth := uint8(10)
+			hdr.BitDepth = &depth
 		}
-	}
-	if inf.TransferCharacteristics != nil {
-		if name := colorTransferName(*inf.TransferCharacteristics); name != "" {
-			hdr.TransferCharacteristics = name
+		if inf.ColorPrimaries != nil {
+			if name := colorPrimariesName(*inf.ColorPrimaries); name != "" {
+				hdr.ColourPrimaries = name
+			}
 		}
-	}
-	if inf.MatrixCoefficients != nil {
-		if name := colorSpaceName(*inf.MatrixCoefficients); name != "" {
-			hdr.MatrixCoefficients = name
+		if inf.TransferCharacteristics != nil {
+			if name := colorTransferName(*inf.TransferCharacteristics); name != "" {
+				hdr.TransferCharacteristics = name
+			}
+		}
+		if inf.MatrixCoefficients != nil {
+			if name := colorSpaceName(*inf.MatrixCoefficients); name != "" {
+				hdr.MatrixCoefficients = name
+			}
 		}
 	}
 	hdr.IsHDR = detectHDR(hdr.ColourPrimaries, hdr.TransferCharacteristics, hdr.MatrixCoefficients)
-	return hdr, nil
+	return hdr
+}
+
+// GetHDRInfo returns HDR-related metadata using native libav probes. It is the
+// path-based convenience for callers (such as output validation) that do not
+// already have a shared video.Probe result; the encode orchestrator uses
+// RefineHDR instead to avoid probing twice.
+func GetHDRInfo(path string) (*HDRInfo, error) {
+	container, err := GetStreamHDRInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	inf, _ := video.Probe(path) // On failure RefineHDR falls back to container-only metadata.
+	refined := RefineHDR(*container, inf)
+	return &refined, nil
 }
 
 func colorPrimariesName(value int32) string {

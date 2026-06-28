@@ -340,3 +340,32 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   so 6 workers get only 12 total decoder threads vs cap4's 16.
 - **Decision:** Changed the default cap from cores/4 to cores/2 (8 on this box);
   boundary-equivalent (same hashes). cap6 rejected (do not use).
+
+## 2026-06-28 Duplicate media-probe consolidation
+
+- **Question:** The open item asked to size the repeated media probes
+  (`GetVideoProperties` / HDR / audio / validation probes and the exact
+  stream-byte scans) and consolidate only where timing showed material overhead.
+- **Method/artifacts:** Sized every probe phase from existing `perf.json` across
+  the standard corpus; clean single-variable A/B (current vs stashed-original
+  binary) on a 12s 4K HDR clip cut with `hevc_nvenc` (`/tmp/dedup-test/`);
+  byte-identical output check via `cmp`. Code in `internal/media`,
+  `internal/processing`.
+- **Decisive result:** Across the corpus total probe overhead is 0.05-0.42% of
+  wall. The one material duplicate was `video.Probe` (open + decode first frame,
+  ~0.7s on 4K): it ran twice per encode - once inside `GetHDRInfo` ("HDR
+  analysis") and again at the top of `ProcessChunked` ("Video probe"). Sharing
+  one probe between HDR refinement and the chunked pipeline took the clean 4K
+  HDR clip from 0.2296s to 0.1149s analysis-probe time (one first-frame decode
+  removed; ~0.7s saved per real 4K encode) with byte-identical AV1 output. A
+  second literal duplicate - the orchestrator calling `GetAudioChannels` (which
+  internally called `GetAudioStreamInfo`) and then `GetAudioStreamInfo` again -
+  was removed by deriving channel counts from the single audio probe. Validation
+  re-opens the output several times but the total is ~3ms (container probes are
+  bounded by `probesize`), and the `GetVideoStreamBytes` scans are O(file size)
+  but not duplicated (input vs output), so both were left alone per the gate.
+- **Decision:** Kept the `video.Probe` (x2 -> x1) and audio (x2 -> x1) probe
+  dedups; left validation opens and stream-byte scans unchanged. `perf.json`
+  shape changes slightly: "Video probe" now records once in the orchestrator and
+  "HDR analysis" is near-zero (refinement only); `scripts/perf/analyze.py` reads
+  phases nil-safely so it is unaffected. Resolves the open item.

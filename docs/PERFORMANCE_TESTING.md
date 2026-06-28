@@ -93,7 +93,6 @@ Useful artifacts:
 
 | Priority | Item | Next action / reason |
 |----------|------|----------------------|
-| Medium | Reduce duplicate media probes and post-encode scans | Use `perf.json` to size repeated `GetVideoProperties` / HDR / audio / validation probes and exact stream-byte scans, especially on large or network media. Consolidate only if timing shows material overhead. |
 | Low | Direct mux / avoid merged IVF | Defer until `perf.json` shows merge+mux I/O is material. Encode and CVVDP dominate today. |
 | Low | Floor-guard + seed amplifier hardening | Replay existing TQ logs before real encodes. Prefer quarantining CRF-min/CRF-max, `max_probes`, or `bounds_crossed` chunks from neighbor seeding over softening quality decisions. |
 | Low | Probe-sample noise vs sample-frame count | Structurally gated because current-band clips converge well. Revisit only if multiple current-band clips show recurring probe tails or sampled-vs-full gaps; use `sullyhv-15m-4k-hdr` plus an easy control and `fullvalidate`. |
@@ -114,6 +113,7 @@ Useful artifacts:
 | Lowering the 256-frame full-probe threshold | Do not change without a fixed-binary fullvalidate A/B. The old magnitude was confounded, but direction was bad and current config is clean. |
 | Overlapping pre-encode head with encoding | Deferred. Requires accuracy-affecting streaming planner changes and only saves the shot-detection head. |
 | Shot-detection worker cap of 6 | Rejected. `decoderThreads()/workers` floors at 2 threads/worker, so 6 workers get only 12 total decoder threads vs cap4's 16; 6 is slower than or barely better than 4 on every tested input. `cores/2` is the measured optimum. |
+| Consolidating validation / stream-byte-scan probes | Sized 2026-06-28 and left unchanged. Total probe overhead is 0.05-0.42% of wall; only the duplicate `video.Probe` (first-frame decode, ~0.7s on 4K) was material and is now shared once between HDR analysis and the chunked pipeline. Validation re-opens the output but totals ~3ms (container probes are `probesize`-bounded), and `GetVideoStreamBytes` is O(file size) but not duplicated (input vs output). Revisit only if `perf.json` from large/network media shows these phases growing. |
 
 ## Standard corpus and local artifact boundary
 
