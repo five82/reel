@@ -56,9 +56,13 @@ The only levers left that could move the needle again are:
   throughput are tuned *to this box*. A second GPU or more cores changes the
   ceiling, and none of the "optimal" numbers above transfer.
 - **A fundamentally better CRF predictor needing <1 probe/chunk.** Research, not
-  tuning; the tried predictor family "had no free lunch." One idea on file is
-  provisional priors seeded from in-progress neighbor chunks, worth revisiting
-  only if current-band suite runs show recurring probe-count tails.
+  tuning. Tested 2026-06-28: cheap luma features (brightness, texture, temporal
+  activity) do NOT predict optimal CRF -- in-sample per-clip R^2 only 0.25-0.44,
+  leave-one-clip-out MAE 11 CRF vs the neighbor prior's 4.8, and adding them to
+  the neighbor prior makes it worse. See the 2026-06-28 content-prior LOG entry.
+  The only untested path is an exotic (non-luma, expensive) predictor, but it
+  must beat the neighbor prior's ~4.8 CRF MAE, so do not pursue without a
+  concrete different feature family and a LOCO test that wins.
 
 **Do not propose new performance work in the sub-1% tail** (analysis, merge,
 mux, stream-byte scans, validation, fsync). If a phase in that zone grows on

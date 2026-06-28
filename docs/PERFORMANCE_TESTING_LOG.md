@@ -341,6 +341,37 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
 - **Decision:** Changed the default cap from cores/4 to cores/2 (8 on this box);
   boundary-equivalent (same hashes). cap6 rejected (do not use).
 
+## 2026-06-28 Content-feature CRF prior is not viable (no free lunch, confirmed)
+
+- **Question:** Can cheap content features predict optimal CRF well enough to
+  support a content-adaptive prior that beats or supplements the neighbor prior
+  (the only lever left below ~1.4 probes/chunk)?
+- **Method/artifacts:** Joined per-chunk final CRF from existing
+  `target-quality.json` logs (6 clips, 279 chunks: sullyhv/sully/kbv1/ko 4K HDR,
+  im/soms 1080p SDR) with cheap luma features computed by decoding 3 sampled
+  frames per chunk (64x36 grid: mean brightness, spatial std, within-chunk
+  temporal activity). Tool + data + analysis under `~/testing/crfcorr/`
+  (`main.go` drops into `scripts/crfcorr/` to re-run; analyze.py/analyze2.py).
+- **Decisive result:** Content features do not predict optimal CRF:
+  - In-sample per-clip R^2 (optimistic, overfit ceiling) is only 0.25-0.44.
+  - Leave-one-clip-out content-only prediction: MAE 11.1 CRF vs the neighbor
+    prior's 4.8 CRF. Per-clip winner is the neighbor prior on all 6 clips.
+  - Adding content features to the neighbor prior makes it WORSE
+    (MAE 4.78 -> 5.42; in-band rate 41% -> 34%), i.e. content is noise on top
+    of neighbor.
+  - Content features explain R^2 = -0.02 of the neighbor prior's residual error
+    (the direction/magnitude of its misses is uncorrelated with these features).
+  - The earlier per-clip Pearson r ~ -0.5 (brightness vs CRF) was a red herring:
+    weak within-film structure that the neighbor prior already captures far
+    better and that cannot pin down absolute CRF across content.
+- **Decision:** Reject the cheap-luma content-adaptive prior. The neighbor prior
+  is dramatically better and content features cannot supplement it. An exotic
+  (non-luma, expensive: e.g. motion-vector or DCT-domain) predictor is the only
+  untested path, but the bar is the neighbor prior's ~4.8 CRF MAE and these
+  features already explain <0% of its error variance, so it looks implausible.
+  Do not revisit without a concrete, different feature family and a LOCO test
+  that beats the neighbor prior.
+
 ## 2026-06-28 Duplicate media-probe consolidation
 
 - **Question:** The open item asked to size the repeated media probes
