@@ -19,6 +19,51 @@ They are not a raw lab notebook. Large logs, per-run JSON, GPU traces, and
 one-off scripts belong under `$REEL_TESTING_DIR` (default `~/testing`) or in git
 history, with only the decisive summary kept here.
 
+## Where the wall time goes
+
+Check this before proposing performance work. From `perf.json` across the
+5m/15m corpus on the 16-core dev box (averaged, target-quality mode):
+
+| Phase | Share of wall |
+|-------|--------------|
+| Video encoding: final encode + all target-quality probes and CVVDP scoring | ~87-90% |
+| Shot-cut detection | ~8-9% |
+| Crop detection | ~1-4% |
+| Audio extraction + analysis | ~0-6% |
+| Property/HDR/video-probe analysis + merge + mux + stream-byte scans + validation | **<1%** |
+
+The encode share is dominated by target-quality probe work (per-chunk probe
+encode + CVVDP scoring), which is why probe reduction has historically been the
+high-value lever: the band-width change alone took the Sully feature from
+4h02m to 1h57m (~50%). Audio extraction overlaps encoding, so the columns are
+indicative rather than a strict partition. The punchline: outside encode and
+shot-detect, everything combined is sub-1%.
+
+## Diminishing returns
+
+Reel is well-optimized for the current single-GPU dev box. Each major lever has
+been swept to its floor here: probe count ~1.4/chunk with accuracy guards;
+preset 6 the joint wall/size knee across 1080p and 4K; 4K target-quality cap at
+`maxWorkers/6`; a single GPU saturated near 4 CVVDP workers; decode/GPU/crop/
+shot work already overlapped.
+
+The only levers left that could move the needle again are:
+
+- **Overlap the shot-detection head with encoding (~8-9% of wall).** The one
+  remaining material lever, but deferred: it needs streaming-planner changes
+  that affect chunking and therefore accuracy.
+- **Hardware scaling.** Metric-worker count, concurrency caps, and probe
+  throughput are tuned *to this box*. A second GPU or more cores changes the
+  ceiling, and none of the "optimal" numbers above transfer.
+- **A fundamentally better CRF predictor needing <1 probe/chunk.** Research, not
+  tuning; the tried predictor family "had no free lunch." One idea on file is
+  provisional priors seeded from in-progress neighbor chunks, worth revisiting
+  only if current-band suite runs show recurring probe-count tails.
+
+**Do not propose new performance work in the sub-1% tail** (analysis, merge,
+mux, stream-byte scans, validation, fsync). If a phase in that zone grows on
+large or network media, `perf.json` will show it; until then it is noise.
+
 ## Where information belongs
 
 | Put it in | When |
@@ -89,15 +134,18 @@ Useful artifacts:
 | Accuracy changes | Sampled scores are not truth. | Window count/size, full-probe threshold, chunk cap, display model, and boundary changes require `scripts/fullvalidate`. |
 | Feature-length extrapolation | Homogeneous 5m cuts can hide probe tails and stage balance. | Use the standard suite for quick signal, but validate major TQ changes on diverse/high-variance content or a feature. |
 
-## Active open items
+## Open items (accuracy and robustness, not performance)
 
-| Priority | Item | Next action / reason |
-|----------|------|----------------------|
-| Low | Direct mux / avoid merged IVF | Defer until `perf.json` shows merge+mux I/O is material. Encode and CVVDP dominate today. |
-| Low | Floor-guard + seed amplifier hardening | Replay existing TQ logs before real encodes. Prefer quarantining CRF-min/CRF-max, `max_probes`, or `bounds_crossed` chunks from neighbor seeding over softening quality decisions. |
-| Low | Probe-sample noise vs sample-frame count | Structurally gated because current-band clips converge well. Revisit only if multiple current-band clips show recurring probe tails or sampled-vs-full gaps; use `sullyhv-15m-4k-hdr` plus an easy control and `fullvalidate`. |
-| Low | Provisional priors from in-progress chunks | Nontrivial scheduling/search change. Consider only if current-band suite runs show recurring probe-count tails across multiple clips. |
-| Low | Rare under-represented segments | Known real miss is Sully feature chunk 0664, a max-CRF sampled chunk whose windows missed a hard sub-segment. Do not tune from one sighting; if repeats appear, test one targeted hard/bright/texture window for sampled near-CRF-max chunks. |
+These are **not** performance work — performance tuning is exhausted on this
+hardware; see "Diminishing returns" above. They are kept here so a future agent
+knows the accuracy/robustness ideas already on file and the conditions under
+which each would be worth pursuing.
+
+| Item | When it would matter |
+|------|----------------------|
+| Floor-guard + seed amplifier hardening | Replay existing TQ logs before real encodes. Prefer quarantining CRF-min/CRF-max, `max_probes`, or `bounds_crossed` chunks from neighbor seeding over softening quality decisions. |
+| Probe-sample noise vs sample-frame count | Structurally gated because current-band clips converge well. Revisit only if multiple current-band clips show recurring probe tails or sampled-vs-full gaps; use `sullyhv-15m-4k-hdr` plus an easy control and `fullvalidate`. |
+| Rare under-represented segments | Known real miss is Sully feature chunk 0664, a max-CRF sampled chunk whose windows missed a hard sub-segment. Do not tune from one sighting; if repeats appear, test one targeted hard/bright/texture window for sampled near-CRF-max chunks. |
 
 ## Do not revisit without new evidence
 
@@ -114,6 +162,7 @@ Useful artifacts:
 | Overlapping pre-encode head with encoding | Deferred. Requires accuracy-affecting streaming planner changes and only saves the shot-detection head. |
 | Shot-detection worker cap of 6 | Rejected. `decoderThreads()/workers` floors at 2 threads/worker, so 6 workers get only 12 total decoder threads vs cap4's 16; 6 is slower than or barely better than 4 on every tested input. `cores/2` is the measured optimum. |
 | Consolidating validation / stream-byte-scan probes | Sized 2026-06-28 and left unchanged. Total probe overhead is 0.05-0.42% of wall; only the duplicate `video.Probe` (first-frame decode, ~0.7s on 4K) was material and is now shared once between HDR analysis and the chunked pipeline. Validation re-opens the output but totals ~3ms (container probes are `probesize`-bounded), and `GetVideoStreamBytes` is O(file size) but not duplicated (input vs output). Revisit only if `perf.json` from large/network media shows these phases growing. |
+| Direct mux / avoid merged IVF | Deferred. Encode and CVVDP dominate; merge+mux is sub-1% of wall on the corpus. Revisit only if `perf.json` from large/network media shows merge+mux I/O becoming material. |
 
 ## Standard corpus and local artifact boundary
 
