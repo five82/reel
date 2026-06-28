@@ -435,3 +435,38 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   pure space-swap, it is a net negative. The validation did leave one durable
   dev-tool improvement: `fullvalidate` now supports `FULLVALIDATE_JSON` for
   all-chunk ground-truth dumps (681248d).
+
+## 2026-06-28 Monotone-cubic (PCHIP) CRF interpolation for the probe tail (rejected)
+
+- **Question:** Borrowed from xav: escalate CRF interpolation with probe count
+  (2 probes -> lerp, 3 -> Fritsch-Carlson monotone cubic, 4+ -> PCHIP with
+  overshoot clamping) instead of reel's fixed linear-on-bracketing-pair, to
+  shave probes off the 3+-probe tail. The probe tail is the dominant
+  feature-length cost, so even a small tail win matters.
+- **Method/artifacts:** Encode-free. (1) Attack surface from existing
+  `target-quality.json` logs across 1617 chunks (`/tmp/pchip_surface.py`).
+  (2) Leave-one-out curve fidelity: hold out one probe, fit linear vs a faithful
+  PCHIP port (xav's `interp/scalar.rs` MAX_TAU2=9.0) on the rest, predict the
+  held-out point, average folds (`/tmp/pchip_loo2.py`). Two directions tested:
+  crf->score reconstruction (forward curve) and score->crf prediction at the
+  target (reel's actual `InterpolateCRF` use). Queries restricted to interior/
+  bracketed only, since reel only interpolates when probes bracket the target.
+- **Decisive result:** Small surface, and PCHIP is worse at reel's actual use:
+  - Surface: 64.9% of chunks converge in 1 probe, 27.4% in 2; only 7.7% reach
+    3+ probes (~164 bracketed interpolation decision points total).
+  - Test A (crf->score forward fidelity, 127 folds): linear 0.117 vs PCHIP
+    0.103 JOD err -- PCHIP 12% better as a *forward* curve model.
+  - Test B (score->crf at target, reel's use, 51 chunks): linear 0.357 vs
+    PCHIP 1.221 CRF err -- PCHIP 242% worse; paired winner linear 46, PCHIP 5.
+  - Mechanism (chunk 82, hold out ideal probe): linear predicts crf 27.22
+    (err 0.03) vs PCHIP 28.89 (err 1.64). It is general, not a fluke.
+- **Decision:** Rejected, no code change. Reel interpolates in the score->crf
+  (inverse) direction, which is steep: scores are squished into ~8.5-9.9 JOD
+  across a wide CRF range (13-46), so small forward-curve slope errors amplify
+  into large CRF errors. In that steep-inverse regime the bracketing pair is
+  the most locally informative data and the far anchors inject cubic wiggle the
+  inverse amplifies. Reel's bracket-pair-only linear is therefore a robustness
+  feature for the inverse direction, not a limitation; a smoother forward-curve
+  fit makes the inverse prediction materially worse and would ADD probes. This
+  confirms the doc note that bracket-aware linear is the settled choice; do not
+  revisit interpolation unless search direction changes to crf->score.
