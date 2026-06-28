@@ -59,7 +59,7 @@ Worker count adapts during encoding: Reel starts conservatively, tests higher co
 
 Target-quality mode is enabled in the default build and requires a working `libvship`/CUDA install. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
-Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
+Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created. See `docs/RESUME_DURABILITY.md` for the crash-recovery audit and open hardening items.
 
 ## Target-Quality Scoring
 
