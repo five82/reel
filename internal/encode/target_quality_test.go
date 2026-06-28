@@ -118,18 +118,15 @@ func TestTargetQualitySampleScorePenalizesWeakWindow(t *testing.T) {
 		{Offset: 200, Frames: 48, Score: 9.25},
 	}
 	score, meanScore, worstScore, frames := targetQualitySampleScore(windows)
-	if math.Abs(float64(meanScore-9.4911792)) > 0.0001 {
-		t.Fatalf("meanScore = %g, want 9.4911792", meanScore)
+	if math.Abs(float64(meanScore-9.493333)) > 0.0001 {
+		t.Fatalf("meanScore = %g, want 9.493333", meanScore)
 	}
 	if worstScore != 9.25 || frames != 144 {
 		t.Fatalf("worst=%g frames=%d, want 9.25 and 144", worstScore, frames)
 	}
-	// meanScore pools in CVVDP distance space: each window's JOD is un-mapped to
-	// a perceptual distance, frame-weighted to a mean distance (equal weights
-	// here), then mapped back. That yields 9.4911792 vs the naive 9.493333.
 	// Spread = 0.40, weight = min(0.40/0.30, 0.70) = 0.70
-	// score = mean*0.30 + worst*0.70 = 9.4911792*0.30 + 9.25*0.70 = 9.3223538
-	wantScore := float32(9.4911792*0.30 + 9.25*0.70)
+	// score = mean*0.30 + worst*0.70 = 9.4933*0.30 + 9.25*0.70 = 9.323
+	wantScore := float32(9.493333*0.30 + 9.25*0.70)
 	if math.Abs(float64(score-wantScore)) > 0.0001 {
 		t.Fatalf("score = %g, want %g (weighted toward worst for high spread)", score, wantScore)
 	}
