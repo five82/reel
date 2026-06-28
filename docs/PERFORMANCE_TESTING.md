@@ -126,9 +126,9 @@ Useful artifacts:
 
 | Area | Current finding | Guidance |
 |------|-----------------|----------|
-| 1080p light/low-bitrate | Often GPU CVVDP-bound; wall flat across extra metric workers. | More metric workers or slower presets rarely help. |
+| 1080p light/low-bitrate | Often GPU CVVDP-bound; wall flat across extra metric workers. On the dev box (RTX 5060 Ti) CVVDP is ~1.9x the per-probe encode time and GPU util sits at mean 77% / median 94% during encode. | More metric workers or slower presets rarely help. A faster GPU would raise both the saturation ceiling and the per-score latency, so probes and wall drop on 1080p. |
 | 1080p heavy/grainy/high-bitrate | Can become encoder-bound; preset-4 wall penalty grew with output size. | Do not assume 1080p encoder changes are free. Preset 6 stands. |
-| 4K | Encoder/memory-bandwidth-bound; GPU often idle. | Encoder-side changes matter, but raising the TQ cap above `maxWorkers/6` was not a win on the dev box. |
+| 4K | Encoder/memory-bandwidth-bound; GPU often idle. On the dev box CVVDP is ~0.8x the per-probe encode time and GPU util is only mean 28% / median 0% during encode -- the GPU spends most of the run waiting for the CPU to finish encoding chunks before there is anything to score. | Encoder-side changes matter, but raising the TQ cap above `maxWorkers/6` was not a win on the dev box. A faster GPU barely moves 4K wall: scoring is already off the critical path and the cap limits how many probes are in flight to fill the headroom. The 4K lever is more CPU/memory bandwidth or fewer probes, not a faster GPU. |
 | Probe count | Every probe costs encode + CVVDP. | Reducing probes helps both lanes, but rejected shortcuts increased file size or relied on bad predictors. |
 | Band width | Tighter than about 2x probe noise wastes probes. | Do not tighten the default band without user-approved quality/size/speed tradeoff plus real encode + `fullvalidate`. |
 | Accuracy changes | Sampled scores are not truth. | Window count/size, full-probe threshold, chunk cap, display model, and boundary changes require `scripts/fullvalidate`. |
