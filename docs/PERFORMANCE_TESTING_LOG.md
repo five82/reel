@@ -516,3 +516,222 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   lever left is smarter sampling (cover the chunk instead of biasing to hard
   parts), which is the larger streaming-planner item already flagged as deferred
   and accuracy-affecting in PERFORMANCE_TESTING.md.
+
+## 2026-06-28 Probe-loop video.Open/Probe overhead is overlap-hidden (rejected)
+
+- **Question:** Every sampled-probe window opens the source twice (once in
+  `encodeProbe`, once in `ComputeChunkCVVDP`) plus `video.Probe`+`video.Open`
+  on the probe IVF, and `video.Open` runs `anchorFrameOrigin` (decode 1 frame +
+  seek) plus `avformat_find_stream_info`. This is currently lumped into
+  `encode_seconds`/`metric_seconds` in target-quality.json and is unmeasured.
+  Is pooling/sharing a `video.Source` across probe windows a material lever?
+- **Method/artifacts:** Throwaway `scripts/openbench` (since removed) using the
+  real reel `video` package against source files and REAL 48-frame probe IVFs
+  from kept workdirs (rebaseline-20260617). Measured PURE Open/Probe cost (no
+  frame reads, no encode, no GPU), median of 40 reps, stable across 2 runs.
+  Cross-checked wall impact against existing perf.json duty-cycle data instead
+  of a real encode.
+- **Decisive result:** Per-window overhead is real in isolation but ~90%
+  overlap-hidden by the probe/score pipeline, so gross cost does not translate to
+  wall:
+  - 4K HDR (sully): Open(SOURCE) 11.8 ms, Open(PROBE_IVF) 20.3 ms,
+    Probe(PROBE_IVF) 31.2 ms, per-window total 75 ms; ~226 s gross/feature.
+  - 1080p SDR (im): 4.3 / 11.9 / 18.6 ms, per-window total 39 ms.
+  - But score-goroutine opens overlap the next window's encode and the encode
+    slot is released before waiting for scores (gatherWindowScores). perf.json
+    confirms the duty cycle: 1080p metric/encode = 2.06x with 8x overlap
+    (135 s wall for 1083 s of encode+metric work) -> GPU-bound, every
+    source-open buried behind the bottleneck, ~0 wall impact. 4K metric/encode
+    = 0.85x -> encoder-bound; only `encodeProbe`'s Open(SOURCE) before each
+    window is serial on the critical path, ~24 ms/probe, ~0.3% of feature wall.
+  - The probe-IVF open+probe (51 ms/window on 4K) is the larger cost, not the
+    source; it is also overlap-hidden today and would only gain relevance if
+    full-first generalization removed the hiding encode.
+- **Decision:** Rejected, no code change. Source-open overhead is in the
+  sub-1% tail and overlap-hidden; falls under the existing "do not propose new
+  performance work in the sub-1% tail" rule. Pooling a `video.Source` is not
+  worth the thread-safety complexity (Source is not concurrency-safe; the encode
+  goroutine and the per-window score goroutine cannot share one). Do not revisit
+  standalone source/IVF pooling. Only reconsider probe-IVF reuse if bundled
+  into a full-first change that removes the overlap-hiding encode.
+
+## 2026-06-28 Generalize full-first probe to neighbor-seeded chunks (rejected) -- REALISM CHECK CONTAMINATED, see correction below
+
+> **CORRECTION 2026-06-28 (scope check):** The "Realism" bullet below
+> (winrescore 100% flip, +0.66 gap, "never converges") was CONTAMINATED by the
+> same re-cut-source artifact as the over-encoding entry. winrescore scored
+> windows from the rebaseline-20260617 final IVFs (encoded from the ORIGINAL
+> 3840x2160/1920x1080 sources) against the RE-CUT sources -- the mismatch
+> inflated scores ~+0.5 toward the CVVDP ceiling, manufacturing the 10.000
+> window blends and the "100% flip." Re-run on FRESH workdirs (source==IVF,
+> valid) over n=6 1-probe neighbor sampled chunks (sully-5m clean, kbv1 grain,
+> im 1080p): mean gap +0.056 (WITHIN ~0.075 probe noise), flip rate 1/6 = 17%.
+> The gap is not even directionally consistent (sully clean +0.16, kbv1/im
+> slightly negative). So full-first convergence ~= sampled convergence; the
+> frame-budget replay (ungated coin-flip, gated F<=264 +EV) is roughly
+> trustworthy. full-first is NOT rejected -- it is a plausible-but-unverified
+> lever (gated F<=264 looks +EV in replay with a small valid flip rate). Not
+> pursued now (performance tuning closed); would need a fresh-encode A/B to
+> confirm. The "standalone-window pessimism / over-encodes clean content"
+> mechanism/corollary below is ALSO void (refuted by the over-encoding scope
+> check). Read the corrected conclusion; do not act on the contaminated bullets.
+
+- **Question:** `targetQualityFullFirstProbe` reuses a full-chunk probe as the
+  final output when it converges, eliminating the separate final re-encode. It
+  is gated to `initial_crf_source == "median"` and <=720 frames, which in
+  practice fires on ~0 chunks (after priming nearly all chunks are
+  neighbor-seeded). TQ logs show the final re-encode is 9-25% of encode work
+  (1080p ~25%, 4K ~18%, feature ~15%), almost all from 1-probe neighbor-seeded
+  chunks doing sampled-probe + full final-encode. Could extending full-first to
+  neighbor-seeded chunks recover that as a speed win?
+- **Method/artifacts:** Encode-free. (1) Frame-budget replay over 36 TQ logs
+  (`/tmp/fullfirst_replay.py`, `/tmp/fullfirst_sizegate.py`) modeling the
+  per-chunk economics: a 1-probe chunk SAVES W=144 frames (probe reused as
+  final); a k>=2 chunk WASTES F-144 (round-1 full encode not reused). (2) The
+  decisive realism check: full-first scores the 3 sampled windows FROM the full
+  encode (a window-BLEND score, NOT the full-chunk score), so its convergence
+  depends on whether mid-GOP window scores match standalone-window scores.
+  Measured directly with a throwaway `scripts/winrescore` (since removed) that
+  re-scored the same 3 windows from existing final-chunk IVFs in kept workdirs
+  (rebaseline-20260617 sully-5m clean and sullyhv hard) using reel's exact
+  spread-blend -- CVVDP-only, no encoding.
+- **Decisive result:** The replay's optimistic frame budget is illusory because
+  the convergence-preservation assumption is FALSE.
+  - Frame-budget replay (assuming convergence unchanged): ungated is a coin-flip
+    because save (144) ~= waste (F-144) per chunk at the 4K cap F~=264-288;
+    gating to F<=264 excludes the 15 max-duration chunks (33% 1-probe rate) and
+    looks +EV (+9,896 frames over 173 candidates, the F=264 bucket converges
+    68% vs a 45% break-even).
+  - Realism (winrescore, the correct method): **100% flip on BOTH clean and hard
+    content.** Every 1-probe neighbor sampled chunk scores 10.000 when its 3
+    windows are scored from the final IVF, vs ~9.2-9.5 standalone. Gap is +0.66
+    mean (sully-5m clean) and +0.66 (sullyhv hard). So full-first's probe-1
+    lands ~10.0, far above the 9.35 band, and never converges in 1 probe --
+    every projected "save" becomes a multi-probe waste.
+  - Mechanism: a standalone 48-frame window starts with a keyframe and has no
+    prior references, so at the same CRF it is QUALITY-PESSIMISTIC. The same
+    frames mid-GOP in a full encode benefit from inter-frame prediction and go
+    near-transparent on compressible content. The sampled search's
+    standalone-window convergence does NOT transfer to full-first's
+    mid-GOP-window convergence.
+  - Corollary (a reframe of the existing "sampled-vs-full" open item, not a new
+    lever): the standalone pessimism means the sampled search OVER-ENCODES. At
+    the CRF where standalone windows hit target 9.35, the real full encode is
+    ~9.9-10.0 (clean) -- fullvalidate on sully-5m showed full-chunk JOD
+    median 10.0, 31/33 above band, +0.54 sampled-vs-full gap. Reel is encoding
+    clean content at ~9.9 JOD when 9.35 is targeted = larger files than needed.
+- **Decision:** Rejected, no code change. full-first generalization is NOT a
+  speed lever; it would ADD probes on essentially all content because mid-GOP
+  window quality >> standalone window quality. Do not revisit full-first
+  generalization. The shipped median-gated full-first is dormant (0 chunks on
+  typical runs) so this latent overshoot is unobserved, but it would also
+  overshoot if it fired on clean content. The over-encoding corollary is the
+  already-open "sampled-vs-full / smarter sampling" accuracy item: it is a
+  SIZE lever (and indirectly slight speed via higher CRF), but the Minkowski
+  entry showed naive bias corrections fight the floor guard, so it needs a real
+  real-encode A/B + user coordination, not tuning. The decisive validation
+  method (re-score windows from existing final IVFs) is reusable for that item.
+
+## 2026-06-28 Over-encoding prize measured; fixed offset over-corrects (A/B) -- CONTAMINATED, see correction below
+
+> **CORRECTION 2026-06-28 (scope check):** This entry's "current" measurement
+> (/tmp/sully5m_fullvalidate.json, real mean 9.935) was an ARTIFACT. The
+> rebaseline-20260617 workdirs were encoded from the ORIGINAL 3840x2160/
+> 1920x1080 sources (with crop), but those sources were later RE-CUT to the
+> cropped output dims (3840x1600 / 1920x816), and the fullvalidate below scored
+> the re-cut sources against IVFs encoded from the original sources. If the
+> re-cut is not pixel-faithful to the original crop, the scores are invalid;\> the rebaseline sully-5m scored mean 9.935 (+0.585) this way. A FRESH sully-5m
+> encode at 9.35 from the re-cut source (source==IVF throughout, identity crop)\> scored mean 9.435 (+0.085, 29/33 in band) -- WELL-CALIBRATED, not over-encoded.
+> The +0.585 "over-encoding" and the 57% size win do not exist; the corrected
+> (8.80) encode landed below band only because there was no real over-encoding
+> to correct. The fixed-offset "over-correction" finding is also void (it was
+> correcting an artifact). See the next entry for the valid corpus-wide scope.
+> The mechanism story (standalone-window pessimism) was ALSO refuted: full-chunk-
+> probe chunks (no standalone pessimism) showed the same +0.6 artifact, and fresh
+> full-chunk-probe chunks show gap 0.000 (production==fullvalidate). Do not act
+> on this entry; read the next one.
+
+
+- **Question:** The full-first entry's corollary -- the sampled search
+  over-encodes clean content because standalone-window probes are
+  quality-pessimistic (full ~9.9 vs 9.35 target on sully-5m) -- is a SIZE
+  lever. Size it with one real encode, and test whether a fixed proxy-target
+  offset captures it.
+- **Method/artifacts:** Real-encode A/B on `sully-5m-4k-hdr` (clean 4K HDR).
+  Current: target `9.15-9.55`. Corrected: target `8.60-9.00` (proxy center
+  lowered by the measured +0.585 sampled-vs-full gap). Both fullvalidated
+  against the REAL band `9.15-9.55`. Workdir + fullvalidate JSON under
+  `~/testing/ab-overencode/` and `/tmp/sully5m_*_fullvalidate.json`.
+- **Decisive result:** The prize is real and large, but a fixed offset is
+  unsafe.
+  - Current: real mean JOD 9.935, 31/33 above band, 0 below; video stream
+    33.3 MB. Over-encoding ~+0.585 JOD on clean content.
+  - Corrected (proxy target 8.80): real mean JOD 8.909, **29/33 BELOW the
+    real 9.15 floor**, 0 above; video stream 14.4 MB (-57%); muxed 58.1 ->
+    38.9 MB (-33%).
+  - A 0.55 proxy-target cut produced a 1.03 JOD real swing (9.935 -> 8.909):
+    the proxy->real mapping is NONLINEAR. Near saturation (baseline at JOD
+    10.0) the sampled proxy is nearly CRF-insensitive, so a given proxy cut
+    yields a larger real cut. A global offset therefore over-corrects and
+    under-encodes -- hard confirmation of the Minkowski entry's "naive bias
+    corrections fight the floor guard" warning, with numbers.
+  - Capturing the prize the crude way costs speed: probes/chunk 1.36 -> 2.39
+    (+76%), wall ~7m -> 9m41s (+40%), because the search marches CRF up through
+    the near-saturation flat region where sampled quality barely moves per
+    CRF step (3/33 chunks hit the SVT CRF max 63.75). A real per-chunk bias
+    model would also correct the prior/initial-CRF, so this march is partly an
+    artifact -- but it proves the saturation region is expensive to climb.
+- **Decision:** Evidence recorded; no code change. Elevates the existing
+  "sampled-vs-full / smarter sampling" open item from low to "the one real
+  lever left, and it is a SIZE lever (with a possible speed co-benefit or cost
+  depending on prior correction), not a speed knob." The viable path is a
+  PER-CHUNK bias model that infers each chunk's proxy->real correction from its
+  own probe signal (e.g. how high the standalone score sits / compressibility),
+  raises CRF on over-encoded chunks, leaves hard chunks (small bias) alone, and
+  keeps the floor guard safe in REAL terms. It is accuracy-trading research,
+  not tuning -- gated by fullvalidate across clean + sullyhv + a feature and
+  coordinated with the user. Do NOT ship a fixed proxy-target offset: it
+  under-encodes. Current "over-encode clean content to near-transparency" is a
+  safe, high-quality place to sit until a per-chunk model is validated.
+
+## 2026-06-28 Over-encoding was a measurement artifact; reel is well-calibrated (scope check)
+
+- **Question:** Was the +0.6 over-encoding (prior entry) real across content
+  types, or an artifact of limited/invalid testing? Scope it across the corpus.
+- **Method/artifacts:** fullvalidate across the standard corpus. Discovered the
+  rebaseline-20260617 workdirs are INVALID for fullvalidate: their sources were
+  re-cut to cropped dims AFTER encoding, so scoring the re-cut source against
+  the (original-source) IVFs is a source mismatch. Re-encoded FRESH from the
+  current sources (source==IVF throughout, identity crop) for the clips whose
+  rebaseline workdir was stale: sully-5m, air-5m, bts-5m, im-5m, kbv1-5m.
+  fullvalidate JSONs under /tmp/scope_*.json and /tmp/sullyhv_fullvalidate.json.
+- **Decisive result:** The over-encoding was an artifact. reel is well-calibrated.
+  - VALID measurements (fresh encode, source==IVF, or prior-session pre-re-cut):
+    sully-5m clean 4K +0.085, air-5m clean-light 1080p +0.019, bts-5m heavy
+    1080p +0.050, im-5m mod 1080p +0.099, kbv1-5m mod-grain 4K +0.040, sullyhv
+    hard 4K (15m) +0.083. ALL land IN band (9.15-9.55), mean +0.02 to +0.10 over
+    the 9.35 target, 0 below, 0 at CVVDP ceiling -- across 1080p clean-light /
+    mod / heavy and 4K clean / mod-grain / hard.
+  - INVALID (rebaseline, re-cut source vs original-source IVFs): sully-5m
+    rebaseline showed +0.585 (vs +0.085 fresh -- a +0.5 artifact inflation),
+    ko/kbv1/im rebaseline showed +0.650 capped (artifacts). The artifact
+    direction is INFLATION (re-cut source scored the original-source encode as
+    nearer-transparent than reality).
+  - Refutes the mechanism story too: full-chunk-probe chunks (<=256 frames, no
+    standalone-window pessimism) showed the SAME +0.6 artifact as sampled
+    chunks, and fresh full-chunk-probe chunks show gap 0.000 (production probe
+    score == fullvalidate). So standalone-window pessimism is NOT the driver;
+    the prior winrescore +0.66 "flip" was the same source-mismatch artifact
+    (winrescore scored final IVFs from the rebaseline workdir against the
+    re-cut source).
+- **Decision:** No code change. reel is well-calibrated across the tested
+  content types (real lands ~+0.05-0.085 over target, in band). There is NO
+  +0.6 over-encoding and NO 57% size prize. The fast-TQ sampling foundation is
+  sound on accuracy. Corrects the prior over-encoding entry (marked
+  CONTAMINATED). Methodology lesson (already in the docs but reinforced): a
+  kept workdir is only valid for fullvalidate if the SOURCE file is unchanged
+  since the encode; re-cutting a source (e.g. removing letterbox) after encode
+  silently invalidates the workdir. The open "sampled-vs-full proxy bias" item
+  is real but SMALL (~+0.08, in band), not the +0.6 the artifact suggested; it
+  stays low priority. Do NOT pursue a proxy-target offset or per-chunk bias
+  model on the basis of the prior entry -- the premise was an artifact.
