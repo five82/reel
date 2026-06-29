@@ -735,3 +735,40 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   is real but SMALL (~+0.08, in band), not the +0.6 the artifact suggested; it
   stays low priority. Do NOT pursue a proxy-target offset or per-chunk bias
   model on the basis of the prior entry -- the premise was an artifact.
+
+## 2026-06-28 Probe-preset decoupling (probes faster than final) -- not promising
+
+- **Question:** Probe outputs are thrown away (they only find the CRF); the
+  final chunk is re-encoded at preset 6 regardless. Could probes run at a
+  faster preset (8-10) to shrink the dominant cost (probes are 82-91% of 4K
+  encode work)? Distinct from the 2026-06-20 final-output preset sweep, which
+  ran probes+final at one preset. This is untested and tests whether decoupling
+  helps where the GPU sits idle (4K, metric/encode ~0.85x).
+- **Method/artifacts:** Encode-free, from archived `perf-ab/preset-ab/` all-pX
+  runs. (1) CRF offset at fixed JOD: mean final CRF per preset per clip from the
+  `-tq.json` logs. (2) Wall: probe vs final encode-seconds breakdown and whole-
+  encode p6-vs-p8 elapsed from `results.tsv`. No new encodes.
+- **Decisive result:** Modest, content-dependent wall win that costs size on
+  clean content, plus a directionally-inconsistent CRF offset.
+  - CRF offset p6->p8 at the same 9.35 target: sully clean 4K -1.3 CRF (p8
+    converges LOWER), kbv1 grain 4K +1.3, im mod 1080p +1.3. The offset is
+    small (~0.03-0.05 JOD, within probe noise) but its SIGN FLIPS by content,
+    so a fixed correction model would push ~half the library the wrong way.
+  - Wall: whole-encode p8 is 12-13% faster than p6 on 4K (sully 444->389s, kbv1
+    419->366s), but probe-decoupling only speeds the probes (final stays p6), so
+    its win is less than whole-p8 -- roughly ~7-9% on 4K, ~0 on 1080p (GPU-bound).
+  - Size on clean content works AGAINST it: sully's p8 probes converge to a CRF
+    ~1.3 LOWER than p6 needs, so the p6 final at that CRF is ~8-10% BIGGER. So
+    on clean 4K (the content the 4K win would matter most for), decoupling
+    trades ~7-9% wall for a size INCREASE -- the wrong direction for a
+    streaming library. Grainy 4K (kbv1) gets wall+size; 1080p gets neither.
+  - Recall whole-p8 (the full 12% wall win, quality mostly in band) was already
+    rejected for the +11-16% size. Probe-decoupling is a SMALLER wall win than
+    that, traded for size that is only preserved on non-clean content.
+- **Decision:** Not promising; not pursued. A real decoupled A/B could surprise
+  (e.g., if the clean-4K size penalty is smaller than the CRF offset implies),
+  but the archived offset+wall data make it a narrow, content-dependent payoff
+  that increases size on exactly the content (clean 4K) where the win would
+  matter, with no clean correction path (sign-flipping offset). The 2026-06-20
+  preset sweep is the final-output preset decision and is unrelated. Recorded
+  here so this idea is closed with evidence rather than re-surfacing.
