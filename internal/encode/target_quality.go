@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"codeberg.org/five82/reel/internal/chunk"
+	"codeberg.org/five82/reel/internal/config"
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
@@ -27,6 +28,11 @@ const (
 	// DefaultTargetQualityFullProbeFrames keeps small chunks on whole-chunk
 	// scoring. Sampling below this size looked cheaper on paper but loses
 	// full-probe reuse and can make the search spend more probes.
+	//
+	// This is the below-UHD value. For UHD the resolution-aware
+	// targetQualityFullProbeFrames raises the threshold to the largest chunk so
+	// every probe is a whole-chunk encode (no sampled band); see that function
+	// and the 2026-06-29 full-scan A/B LOG entry.
 	DefaultTargetQualityFullProbeFrames = 256
 
 	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully
@@ -239,6 +245,8 @@ func EncodeTargetQuality(
 	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
 	seedTargetQualityPrior(workDir, doneSet, prior)
 
+	fullProbeFrames := TargetQualityFullProbeFrames(width, remainingChunks)
+
 	var workerWg sync.WaitGroup
 	for i := 0; i < maxWorkers; i++ {
 		workerWg.Add(1)
@@ -260,7 +268,7 @@ func EncodeTargetQuality(
 				chunkSearchCtx := searchCtx
 				chunkSearchCtx.InitialCRF = initialCRF
 				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, DefaultTargetQualitySampleFrames, DefaultTargetQualityFullProbeFrames, initialCRFSource, tq.Verbose)
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, DefaultTargetQualitySampleFrames, fullProbeFrames, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -873,6 +881,34 @@ func targetQualityInitialJODPerCRF(width, height uint32, inf *video.Info) float3
 		return targetQualityLargeJODPerCRF
 	}
 	return targetQualityDefaultJODPerCRF
+}
+
+// TargetQualityFullProbeFrames returns the largest chunk size scored as a
+// whole-chunk (single-window) probe rather than sampled windows. For UHD
+// (>=3840px) the threshold is the largest chunk being encoded, so EVERY probe is
+// a whole-chunk encode and the sampled band disappears entirely.
+//
+// Rationale (2026-06-29 full-scan A/B + fullvalidate): on UHD, whole-chunk
+// probes are exact -- the final probe is reused as the final chunk, so the
+// fullvalidate gap is 0.0000 by construction -- and they remove the
+// window-spread-driven monotonicity thrash plus ~0.05-0.065 JOD of
+// over-encoding that sampled windows caused, at no measured wall cost (UHD is
+// encoder-bound; the extra metric frames are absorbed by better CVVDP
+// amortization -- one Reset per chunk vs 3 -- plus final reuse). Below UHD the
+// GPU is the metric bottleneck, so the cheaper 3x48 sampled windows are kept.
+func TargetQualityFullProbeFrames(width uint32, chunks []chunk.Chunk) int {
+	if width >= config.UHDWidthThreshold {
+		maxFrames := 0
+		for _, ch := range chunks {
+			if f := ch.Frames(); f > maxFrames {
+				maxFrames = f
+			}
+		}
+		if maxFrames > 0 {
+			return maxFrames
+		}
+	}
+	return DefaultTargetQualityFullProbeFrames
 }
 
 func targetQualityIsHDR(inf *video.Info) bool {

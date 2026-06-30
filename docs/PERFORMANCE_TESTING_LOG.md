@@ -772,3 +772,102 @@ Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
   matter, with no clean correction path (sign-flipping offset). The 2026-06-20
   preset sweep is the final-output preset decision and is unrelated. Recorded
   here so this idea is closed with evidence rather than re-surfacing.
+
+## 2026-06-29 Full-scan probes vs sampled probes (decisive A/B + fullvalidate)
+
+- **Question:** Should sampled probe windows (3x48 frames, only the 257-288
+  chunk band) be replaced with whole-chunk probes for ALL probes? Driven by the
+  feature tail: the Sully feature's 257-288-frame sampled band takes 3.85
+  probes/chunk vs 2.89 for the already-full-probed <=256 band, with 49%
+  tripping monotonicity_guard (vs 13% for <=256). The 257-288 band exists only
+  because the full-probe threshold (256) sits 32 frames below the 12s chunk cap
+  (~288 at 23.976fps).
+- **Method/artifacts:** Fresh A/B across THREE clips, same build/machine, single
+  GPU sequentially. Full-scan binary = threshold 256->288 (== cap, so every
+  probe is a whole-chunk encode); sampled binary = current source (threshold
+  256). Clips: sullyhv-15m-4k-hdr (4K hard), sully-5m-4k-hdr (4K clean),
+  im-5m-1080p-sdr (1080p mod). Each run --keep-workdir; then scripts/fullvalidate
+  on every workdir for ground truth. Workdirs:
+  ~/testing/{fullscan-ab,sampled-ab,fullscan-ab-clean4k,sampled-ab-clean4k,fullscan-ab-1080p,sampled-ab-1080p}/.
+  fullvalidate JSONs: /tmp/fv_{sullyhv,sully5m,im}_{fullscan,sampled}.json.
+- **Decisive result (wall, fresh):**
+  - 4K sullyhv (hard): full-scan 1183s vs sampled 1255s = TIED (-5.7%, noise).
+  - 4K sully-5m (clean): full-scan 435s vs sampled 423s = TIED (+2.8%, noise).
+    Clean 4K has enc/met ratio ~1.0 (GPU NOT idle, unlike hard content), yet
+    full-scan is still wall-neutral: the extra metric frames are absorbed by
+    better CVVDP amortization (one Reset per chunk vs 3; metric_fps ~17.5 vs
+    ~7.9) plus fewer probe-encodes (final reuse). So 4K full-scan is wall-tied
+    across BOTH hard and clean content (2 content types), not just one.
+  - 1080p im: full-scan 178s vs sampled 150s = full-scan +18.7% SLOWER. 1080p
+    is GPU-bound (metric is the bottleneck), so the extra metric frames cost;
+    probe_met was +12% and that IS the wall-critical lane here.
+- **Decisive result (accuracy, fullvalidate ground truth, all 3 clips):**
+  - 4K sullyhv: full-scan mean 9.3809 (+0.031, 0 below, 1 above); sampled
+    9.4375 (+0.088, 0 below, 17 above).
+  - 4K sully-5m: full-scan mean 9.3796 (+0.030, 0 below, 0 above); sampled
+    9.4253 (+0.075, 0 below, 1 above).
+  - 1080p im: full-scan mean 9.3885 (+0.039, 0 below, 0 above); sampled
+    9.4537 (+0.104, 0 below, 2 above).
+  - In ALL three, full-scan over-encodes ~0.05-0.065 JOD LESS (smaller files)
+    AND its sampled-vs-full gap is 0.0000 BY CONSTRUCTION (the final chunk's
+    best probe IS a whole-chunk encode, and fullvalidate scores that same
+    encode). The sampled-vs-full MEASUREMENT gap is small everywhere
+    (0.024-0.034, within probe noise), so sampling's over-encoding is an
+    AGGREGATION-bias effect (worst-window-weighted composite dragged down by
+    minor window disagreement), NOT a coverage/undersampling problem.
+- **Feature tail (motivation) -- bounded, not re-run:** sullyhv-15m turned out
+  to have NO tail (its 257-288 band converges fine even sampled: 1.62 probes,
+  0% monotonicity), so it confirmed wall-neutrality on 4K but did not exercise
+  the tail. Bounded from the existing feature log instead: the feature's <=256
+  band is ALREADY full-probed yet still hits 9% max_probe and 13%
+  monotonicity_guard, so full-scan can only move the 257-288 band from 3.85
+  toward ~2.89 (cut the sampling-noise component, ~25% fewer probes on 24% of
+  chunks ~= 6% overall on a ~2hr feature) -- it CANNOT eliminate the tail,
+  which is genuine within-shot variance (the >=4-probe chunks distribute evenly
+  across all chunk-position deciles, i.e. content-driven not cold-prior). The
+  tail is the documented fundamental within-chunk-variance tradeoff, not a
+  sampling artifact.
+- **Decision:** RESOLUTION-SHAPED, recommended (pending user approval to change
+  the default): switch UHD (>=3840px width, i.e. UHDWidthThreshold, matching
+  ChunkDurationForWidth / DefaultMetricWorkersForWidth) to full-scan
+  (fullProbeFrames == chunk cap); KEEP sampling below UHD (1080p). The accuracy
+  case carries the recommendation and does NOT depend on wall or on the tail:
+  full-scan is strictly more accurate (fullvalidate gap 0.0000 by construction,
+  less over-encoding, 0 below floor in every cell across 3 clips), and it
+  structurally removes the window-spread->monotonicity mechanism on UHD (the
+  single window has spread 0 by definition). Wall: NO MEASURED UHD REGRESSION
+  (n=1 per clip, deltas bidirectional and small: sullyhv -5.7%, sully-5m +2.8%,
+  both within single-run noise -- NOT a proven tie). 1080p full-scan costs
+  +18.7% wall on the GPU-bound lane for a real but mild accuracy gain; keep
+  sampling there. The UHD switch is a threshold branch; it does NOT delete the
+  multi-window code (1080p still uses it), it just makes that path dormant on
+  UHD where the tail lives.
+- **Caveats (from a fresh-context review of this entry):** (1) wall evidence is
+  n=1 per clip on a shared GPU -- treat as "no observed regression," not a
+  proven tie; the accuracy benefit is structural and holds regardless. (2) The
+  motivating feature tail was NEVER directly reproduced -- sullyhv has no tail
+  and the 5m clips are too short to carry one; the accuracy/structural wins hold
+  without it, but the tail-specific wall win is EXTRAPOLATED from the feature
+  <=256 band (used as a full-probe proxy), not measured. (3) The "better CVVDP
+  amortization + final reuse" mechanism explanation is plausible and the wall
+  delta is attributable (exactly one variable changed), but which sub-mechanism
+  dominates is not isolated. (4) Sampled over-encoding is a SYSTEMATIC
+  one-directional bias (worst-window composite is always <= truth), not noise;
+  the MEAN gap is ~0.024-0.034 but per-chunk it reaches ~0.09-0.105 on
+  high-variance chunks.
+- **Variable window count (the Q4 idea) -- rejected for 1080p, wrong direction:**
+  more windows can only reveal an equal-or-lower worst (never a higher one), so
+  denser sampling can only DEEPEN the systematic worst-window underestimation
+  -> more over-encoding. The per-chunk gaps confirm this directly (e.g. sampled
+  sullyhv chunk 12 reads 0.105 below truth, converging 5 CRF lower than
+  full-scan). Coverage is NOT the problem (the composite is already below
+  truth); aggregation weighting (the worst-window bias in
+  targetQualitySampleScore) is. That is the documented lever #2 and needs its
+  own fullvalidate gate. Do NOT add window count as a knob.
+- **Implementation note:** the UHD switch is one branch (resolution-aware
+  threshold like ChunkDurationForWidth, keyed on UHDWidthThreshold >=3840) via
+  `encode.TargetQualityFullProbeFrames(width, chunks)`. SHIPPED 2026-06-29
+  (user-approved): verified UHD sully-5m produces single-window whole-chunk
+  probes (435s), 1080p im preserves 3-window sampled probes (150s), both rc=0.
+  The multi-window code stays (1080p uses it); the UHD path is dormant on
+  sampling. fullvalidate is already run (above) and confirms the accuracy win.

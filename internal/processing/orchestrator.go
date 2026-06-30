@@ -435,7 +435,11 @@ func formatDynamicRange(isHDR bool) string {
 
 func formatQualityDescription(width uint32, crf float32, cfg *config.Config) string {
 	if cfg.QualityMode == config.QualityModeTarget {
-		return fmt.Sprintf("CVVDP target %.2f-%.2f JOD (initial CRF %s with adaptive priors, sampled 3x%d probes, CRF search %s, metric workers %d)", cfg.TargetQualityMin, cfg.TargetQualityMax, quality.FormatCRF(crf), encodepipe.DefaultTargetQualitySampleFrames, cfg.CRFSearchRange, cfg.MetricWorkers)
+		probeMode := fmt.Sprintf("sampled 3x%d probes", encodepipe.DefaultTargetQualitySampleFrames)
+		if width >= config.UHDWidthThreshold {
+			probeMode = "whole-chunk probes"
+		}
+		return fmt.Sprintf("CVVDP target %.2f-%.2f JOD (initial CRF %s with adaptive priors, %s, CRF search %s, metric workers %d)", cfg.TargetQualityMin, cfg.TargetQualityMax, quality.FormatCRF(crf), probeMode, cfg.CRFSearchRange, cfg.MetricWorkers)
 	}
 	var tier string
 	if width >= config.UHDWidthThreshold {
