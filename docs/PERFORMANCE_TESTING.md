@@ -46,9 +46,40 @@ independent of chunk size -- with only small content-dependent size/accuracy
 wobble and no consistent optimum. 12s is a balanced default, not a tuned peak;
 larger ("much larger") gives no throughput win and occasionally worse accuracy.
 
+## Current tuning baseline
+
+Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
+baseline; artifacts live under `$REEL_TESTING_DIR/perf-runs/`. The final
+2026-07-01 baseline on this box (RTX 5060 Ti) is
+`perf-runs/20260701-001943-tq-baseline-final`: default matrix wall 2717s,
+output 1064 MB, with `sullyhv-15m` at 1.52 probes/chunk and no chunks maxing the
+6-probe budget. That means the old feature-length probe tail is not currently an
+active bottleneck on the stress clip.
+
+Metric workers default to **4 at every resolution**. A 2026-06-30 HD A/B found
+4 workers slightly faster than the old 6-worker below-UHD default (683s vs 691s,
+-1.2% pooled) while cutting VRAM by roughly 1-2 GiB; 8 workers regressed (709s,
++2.6%) and used much more VRAM. UHD remains at 4 because 4K runs are mostly
+encoder/memory-bandwidth bound, so extra metric concurrency is not the wall-time
+lever.
+
+SVT-AV1 preset stays **6**. Preset 7 was rejected on the same matrix: only -1.1%
+pooled wall, +10.3% pooled size, and the `sullyhv` stress clip was both slower
+(+2.6%) and much larger (+57%). Do not test preset 8 unless a future encoder
+version changes that trade-off; preset 7 already crossed the size budget for too
+little wall gain.
+
+SVT `level_of_parallelism` stays on the current auto policy. Explicit lp=4 looked
+slightly faster on two homogeneous 5m 4K clips (-1.9% pooled) but lost on
+`sullyhv` (+1.6% wall); lp=2 was also slightly slower. Treat lp as tested and
+not worth changing until hardware/SVT behavior changes.
+
 ## Open items
 
 - Clean digital 1080p (e.g. ARRI-sourced, grain-free) gains little from
   full-scan (~+2% size) while paying the full wall cost. A variance-triggered
   hybrid was considered and rejected as not worth the complexity; revisit only if
   a 1080p-heavy clean-content batch makes the wall cost bite.
+- If a future full-feature encode shows the old probe-tail behavior again, build
+  a new stress clip or revalidate `sullyhv`; under current full-scan/wide-band
+  search it is **not** in the old feature regime (1.52 probes/chunk, 0% maxed).

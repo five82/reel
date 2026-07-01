@@ -40,9 +40,9 @@ const (
 	AutoMetricWorkers = 0
 
 	// DefaultMetricWorkersBelowUHD is the default for content below 4K/UHD.
-	// A single GPU saturates CVVDP scoring near 4 workers; 6 keeps headroom
-	// without the extra VRAM cost of the old 8-worker default.
-	DefaultMetricWorkersBelowUHD = 6
+	// A 2026-06-30 full-scan A/B found 4 workers matched or slightly beat 6 on
+	// the HD matrix while using much less VRAM; 8 regressed.
+	DefaultMetricWorkersBelowUHD = 4
 
 	// DefaultMetricWorkersUHD is the default for 4K/UHD content. 4K target-quality
 	// encodes are encoder-bound under the maxWorkers/6 cap, so extra metric
