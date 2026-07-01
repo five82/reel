@@ -1,5 +1,5 @@
 // fullvalidate scores a finished Reel encode against its source with
-// full-chunk CVVDP, giving ground-truth per-chunk JOD instead of the sampled
+// full-chunk CVVDP, giving ground-truth per-chunk JOD instead of the recorded
 // scores the target-quality search reports about itself.
 //
 // Usage: fullvalidate <source.mkv> <workdir>
@@ -29,7 +29,7 @@ import (
 
 type tqChunkLog struct {
 	ChunkIdx   int               `json:"chunk_idx"`
-	FinalScore float32           `json:"final_sample_score"`
+	FinalScore float32           `json:"final_score"`
 	FinalCRF   float32           `json:"final_crf"`
 	Probes     []json.RawMessage `json:"probes"`
 }
@@ -41,13 +41,13 @@ type tqLog struct {
 }
 
 type chunkResult struct {
-	idx     int
-	frames  int
-	full    float32
-	sampled float32
-	probes  int
-	crf     float32
-	err     error
+	idx      int
+	frames   int
+	full     float32
+	recorded float32
+	probes   int
+	crf      float32
+	err      error
 }
 
 func main() {
@@ -64,9 +64,9 @@ func main() {
 
 	tq, err := readTQLog(filepath.Join(workDir, "target-quality.json"))
 	fail(err, "read target-quality.json")
-	sampled := make(map[int]tqChunkLog, len(tq.Chunks))
+	recorded := make(map[int]tqChunkLog, len(tq.Chunks))
 	for _, c := range tq.Chunks {
-		sampled[c.ChunkIdx] = c
+		recorded[c.ChunkIdx] = c
 	}
 
 	frames := manifest.Frames
@@ -120,18 +120,17 @@ func main() {
 				// muxed output, but reading it without a seek avoids the
 				// frame mis-alignment a seek into the muxed AV1 produces.
 				res, err := quality.ComputeChunkCVVDP(context.Background(), quality.CVVDPOptions{
-					SourcePath:      sourcePath,
-					ProbePath:       chunk.IVFPath(workDir, ch.Idx),
-					ProbeStartFrame: 0,
-					Info:            srcInfo,
-					Chunk:           ch,
-					CropRect:        cropRect,
-					Width:           width,
-					Height:          height,
-					Processor:       proc,
+					SourcePath: sourcePath,
+					ProbePath:  chunk.IVFPath(workDir, ch.Idx),
+					Info:       srcInfo,
+					Chunk:      ch,
+					CropRect:   cropRect,
+					Width:      width,
+					Height:     height,
+					Processor:  proc,
 				})
-				s := sampled[ch.Idx]
-				resultCh <- chunkResult{idx: ch.Idx, frames: ch.Frames(), full: res.Score, sampled: s.FinalScore, probes: len(s.Probes), crf: s.FinalCRF, err: err}
+				s := recorded[ch.Idx]
+				resultCh <- chunkResult{idx: ch.Idx, frames: ch.Frames(), full: res.Score, recorded: s.FinalScore, probes: len(s.Probes), crf: s.FinalCRF, err: err}
 			}
 		}()
 	}
@@ -156,21 +155,21 @@ func main() {
 
 	if dump := os.Getenv("FULLVALIDATE_JSON"); dump != "" {
 		type chunkOut struct {
-			Idx     int     `json:"chunk_idx"`
-			Frames  int     `json:"frames"`
-			Full    float32 `json:"full_jod"`
-			Sampled float32 `json:"sampled_jod"`
-			Probes  int     `json:"probes"`
-			CRF     float32 `json:"crf"`
+			Idx      int     `json:"chunk_idx"`
+			Frames   int     `json:"frames"`
+			Full     float32 `json:"full_jod"`
+			Recorded float32 `json:"recorded_jod"`
+			Probes   int     `json:"probes"`
+			CRF      float32 `json:"crf"`
 		}
 		type out struct {
-			Target    float32   `json:"target"`
-			Tolerance float32   `json:"tolerance"`
+			Target    float32    `json:"target"`
+			Tolerance float32    `json:"tolerance"`
 			Chunks    []chunkOut `json:"chunks"`
 		}
 		chunksOut := make([]chunkOut, len(results))
 		for i, r := range results {
-			chunksOut[i] = chunkOut{Idx: r.idx, Frames: r.frames, Full: r.full, Sampled: r.sampled, Probes: r.probes, CRF: r.crf}
+			chunksOut[i] = chunkOut{Idx: r.idx, Frames: r.frames, Full: r.full, Recorded: r.recorded, Probes: r.probes, CRF: r.crf}
 		}
 		b, err := json.MarshalIndent(out{Target: tq.Target, Tolerance: tq.Tolerance, Chunks: chunksOut}, "", "  ")
 		fail(err, "marshal fullvalidate json")
@@ -181,12 +180,12 @@ func main() {
 }
 
 func report(results []chunkResult, target, tolerance float32) {
-	var fullErr, sampledGap float64
+	var fullErr, recordedGap float64
 	var below, above int
 	fulls := make([]float64, 0, len(results))
 	for _, r := range results {
 		fullErr += abs64(r.full - target)
-		sampledGap += abs64(r.full - r.sampled)
+		recordedGap += abs64(r.full - r.recorded)
 		fulls = append(fulls, float64(r.full))
 		if r.full < target-tolerance {
 			below++
@@ -202,7 +201,7 @@ func report(results []chunkResult, target, tolerance float32) {
 	fmt.Printf("Full JOD:     min=%.4f p10=%.4f median=%.4f mean=%.4f max=%.4f\n",
 		fulls[0], pct(fulls, 0.10), pct(fulls, 0.50), mean(fulls), fulls[len(fulls)-1])
 	fmt.Printf("vs target:    mean_abs_error=%.4f below_range=%d above_range=%d of %d\n", fullErr/n, below, above, len(results))
-	fmt.Printf("vs sampled:   mean_abs_gap=%.4f (how much the sampled score lied)\n\n", sampledGap/n)
+	fmt.Printf("vs recorded:  mean_abs_gap=%.4f (search score vs independent re-score; ~0 with whole-chunk reuse)\n\n", recordedGap/n)
 
 	type row struct {
 		r   chunkResult
@@ -210,15 +209,15 @@ func report(results []chunkResult, target, tolerance float32) {
 	}
 	rows := make([]row, 0, len(results))
 	for _, r := range results {
-		rows = append(rows, row{r, abs64(r.full - r.sampled)})
+		rows = append(rows, row{r, abs64(r.full - r.recorded)})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].r.full < rows[j].r.full })
 	fmt.Printf("Worst chunks by full JOD:\n")
-	fmt.Printf("  chunk  frames  crf     full    sampled  gap      probes\n")
+	fmt.Printf("  chunk  frames  crf     full    recorded  gap      probes\n")
 	for i := 0; i < len(rows) && i < 10; i++ {
 		r := rows[i]
 		fmt.Printf("  %04d   %5d   %5.2f  %.4f  %.4f   %+.4f  %d\n",
-			r.r.idx, r.r.frames, r.r.crf, r.r.full, r.r.sampled, float64(r.r.full-r.r.sampled), r.r.probes)
+			r.r.idx, r.r.frames, r.r.crf, r.r.full, r.r.recorded, float64(r.r.full-r.r.recorded), r.r.probes)
 	}
 }
 

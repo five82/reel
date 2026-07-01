@@ -365,7 +365,7 @@ func ProcessChunked(
 			finishAudioStep()
 			return CropResult{}, err
 		}
-		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, %s, metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), targetQualityProbeSummary(vidInf, cropRect, chunks, cfg.MetricWorkers), cfg.MetricWorkers, displayPath))
+		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers, displayPath))
 		rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
 		_, encodeErr = encode.EncodeTargetQuality(
 			encodeCtx,
@@ -447,28 +447,6 @@ func ProcessChunked(
 	finishStep()
 
 	return cropResult, nil
-}
-
-// targetQualityProbeSummary renders the probe-strategy line for the verbose
-// target-quality banner. On UHD every probe is a whole-chunk encode (no sampled
-// band); below UHD the 3x48 sampled windows apply to chunks above the full-probe
-// threshold. See encode.TargetQualityFullProbeFrames.
-func targetQualityProbeSummary(inf *video.Info, cropRect *video.CropRect, chunks []chunk.Chunk, metricWorkers int) string {
-	if inf == nil {
-		return "probes: (no video info)"
-	}
-	width, _ := video.OutputDimensions(inf, cropRect)
-	fullThreshold := encode.TargetQualityFullProbeFrames(width, chunks)
-	maxChunk := 0
-	for _, ch := range chunks {
-		if ch.Frames() > maxChunk {
-			maxChunk = ch.Frames()
-		}
-	}
-	if maxChunk > 0 && fullThreshold >= maxChunk {
-		return "whole-chunk probes (every probe scores the full chunk)"
-	}
-	return fmt.Sprintf("sampled probes 3x%d frames (full <=%d)", encode.DefaultTargetQualitySampleFrames, fullThreshold)
 }
 
 func cvvdpDisplaySummary(cfg *config.Config, inf *video.Info) string {

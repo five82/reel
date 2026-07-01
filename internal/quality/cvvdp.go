@@ -15,15 +15,14 @@ type FramePlanes struct {
 }
 
 type CVVDPOptions struct {
-	SourcePath      string
-	ProbePath       string
-	ProbeStartFrame int
-	Info            *video.Info
-	Chunk           chunk.Chunk
-	CropRect        *video.CropRect
-	Width           uint32
-	Height          uint32
-	Processor       *VshipProcessor
+	SourcePath string
+	ProbePath  string
+	Info       *video.Info
+	Chunk      chunk.Chunk
+	CropRect   *video.CropRect
+	Width      uint32
+	Height     uint32
+	Processor  *VshipProcessor
 }
 
 type CVVDPResult struct {
@@ -111,9 +110,8 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read source frame %d for CVVDP: %w", opts.Chunk.Start+i, err)}
 				return
 			}
-			probeFrame := opts.ProbeStartFrame + i
-			if err := dist.ReadFrame(probeFrame, pair.distBuf, probeInfo, nil); err != nil {
-				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read probe frame %d for CVVDP: %w", probeFrame, err)}
+			if err := dist.ReadFrame(i, pair.distBuf, probeInfo, nil); err != nil {
+				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read probe frame %d for CVVDP: %w", i, err)}
 				return
 			}
 			decodedCh <- decodedFrame{pair: pair}

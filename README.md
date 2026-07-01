@@ -14,7 +14,7 @@ This repository is shared as is. reel is a personal encoding tool I built for my
 ## Features
 
 - Parallel chunked encoding with shot-aware chunk planning
-- Default CVVDP target-quality mode with sampled probes and adaptive CRF search
+- Default CVVDP target-quality mode with whole-chunk probes and adaptive CRF search
 - Automatic black bar crop detection
 - HDR10/HLG metadata preservation
 - Multi-track audio transcoding to Opus
@@ -71,7 +71,7 @@ reel encode -i /videos/ -o /encoded/
 
 reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing with a shorter 12s maximum chunk cap, so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
 
-Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores sampled CVVDP windows, starts from adaptive CRF priors, requires every sampled window to meet the lower quality bound, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
+Target-quality mode uses CVVDP through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. The default search scores each probe over the whole chunk, starts from adaptive CRF priors, requires the score to meet the lower quality bound, and accepts tiny over-target scores to avoid wasting time chasing metric perfection. The converged probe is reused as the final chunk. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
 Run `reel encode --help` for the full flag list, or see [docs/USAGE.md](docs/USAGE.md).
 

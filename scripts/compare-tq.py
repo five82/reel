@@ -32,14 +32,6 @@ def load_log(path: str) -> dict:
         return json.load(f)
 
 
-def window_spread(probe: dict) -> float:
-    windows = probe.get("windows", [])
-    if not windows:
-        return 0.0
-    scores = [w["score"] for w in windows]
-    return max(scores) - min(scores)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Compare two TQ runs")
     parser.add_argument("old_dir", help="Older work directory")
@@ -50,7 +42,7 @@ def main():
                         help="Show unchanged chunks too")
     parser.add_argument("--csv", action="store_true",
                         help="Output CSV")
-    parser.add_argument("--sort", choices=["idx", "delta", "spread_delta"],
+    parser.add_argument("--sort", choices=["idx", "delta"],
                         default="idx", help="Sort output")
     args = parser.parse_args()
 
@@ -72,33 +64,27 @@ def main():
                 "idx": idx,
                 "old_crf": old_c["final_crf"] if old_c else None,
                 "new_crf": new_c["final_crf"] if new_c else None,
-                "old_score": old_c["final_sample_score"] if old_c else None,
-                "new_score": new_c["final_sample_score"] if new_c else None,
+                "old_score": old_c["final_score"] if old_c else None,
+                "new_score": new_c["final_score"] if new_c else None,
                 "old_probes": len(old_c["probes"]) if old_c else None,
                 "new_probes": len(new_c["probes"]) if new_c else None,
-                "old_spread": window_spread(old_c["probes"][-1]) if old_c else None,
-                "new_spread": window_spread(new_c["probes"][-1]) if new_c else None,
                 "crf_delta": None,
                 "score_delta": None,
                 "probe_delta": None,
-                "spread_delta": None,
                 "status": "missing",
             })
             continue
 
         old_crf = old_c["final_crf"]
         new_crf = new_c["final_crf"]
-        old_score = old_c["final_sample_score"]
-        new_score = new_c["final_sample_score"]
+        old_score = old_c["final_score"]
+        new_score = new_c["final_score"]
         old_probes = len(old_c["probes"])
         new_probes = len(new_c["probes"])
-        old_spread = window_spread(old_c["probes"][-1])
-        new_spread = window_spread(new_c["probes"][-1])
 
         crf_delta = abs(new_crf - old_crf)
         score_delta = abs(new_score - old_score)
         probe_delta = new_probes - old_probes
-        spread_delta = new_spread - old_spread
 
         changed = (crf_delta > 0.001 or probe_delta != 0 or score_delta > 0.001)
         status = "changed" if changed else "same"
@@ -111,12 +97,9 @@ def main():
             "new_score": new_score,
             "old_probes": old_probes,
             "new_probes": new_probes,
-            "old_spread": old_spread,
-            "new_spread": new_spread,
             "crf_delta": crf_delta,
             "score_delta": score_delta,
             "probe_delta": probe_delta,
-            "spread_delta": spread_delta,
             "status": status,
         })
 
@@ -130,8 +113,6 @@ def main():
     # Sort
     if args.sort == "delta":
         rows.sort(key=lambda r: abs(r["score_delta"] or 0), reverse=True)
-    elif args.sort == "spread_delta":
-        rows.sort(key=lambda r: abs(r["spread_delta"] or 0), reverse=True)
 
     # Output
     if args.csv:
@@ -146,19 +127,19 @@ def main():
         return
 
     print(f"{'idx':>4} {'old_crf':>7} {'new_crf':>7} {'old_probes':>10} {'new_probes':>10} "
-          f"{'old_score':>9} {'new_score':>9} {'score_delta':>11} {'old_spread':>10} {'new_spread':>10} {'status':>8}")
-    print("-" * 110)
+          f"{'old_score':>9} {'new_score':>9} {'score_delta':>11} {'status':>8}")
+    print("-" * 90)
 
     for r in rows:
         if r["status"] == "missing":
             print(f"{r['idx']:04d} {str(r['old_crf']):>7} {str(r['new_crf']):>7} "
                   f"{str(r['old_probes']):>10} {str(r['new_probes']):>10} "
-                  f"{'-':>9} {'-':>9} {'-':>11} {'-':>10} {'-':>10} {'missing':>8}")
+                  f"{'-':>9} {'-':>9} {'-':>11} {'missing':>8}")
             continue
         print(f"{r['idx']:04d} {r['old_crf']:7.2f} {r['new_crf']:7.2f} "
               f"{r['old_probes']:10d} {r['new_probes']:10d} "
               f"{r['old_score']:9.4f} {r['new_score']:9.4f} {r['score_delta']:11.4f} "
-              f"{r['old_spread']:10.4f} {r['new_spread']:10.4f} {r['status']:>8}")
+              f"{r['status']:>8}")
 
     # Summary
     changed = [r for r in rows if r["status"] == "changed"]

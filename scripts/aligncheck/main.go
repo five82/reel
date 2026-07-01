@@ -2,8 +2,9 @@
 //
 // It decodes a source file sequentially as ground truth (frame N -> luma
 // checksum), then for a set of target frames calls ReadFrame(N) on a FRESH
-// video.Source -- the exact pattern reel's per-window CVVDP scoring uses -- and
-// reports any frame whose ReadFrame checksum does not match the ground truth,
+// video.Source -- the seek-based access pattern reel's CVVDP scoring and
+// fullvalidate use -- and reports any frame whose ReadFrame checksum does not
+// match the ground truth,
 // including how many frames off it landed. Repeats each probe to expose
 // run-to-run nondeterminism.
 //
@@ -134,7 +135,10 @@ func main() {
 	workers := 8
 	itersPer := reps * 20
 	fmt.Printf("concurrent stress: %d workers x %d reads each...\n", workers, itersPer)
-	type res struct{ target, landed int; bad bool }
+	type res struct {
+		target, landed int
+		bad            bool
+	}
 	out := make(chan res, workers*itersPer)
 	done := make(chan struct{}, workers)
 	for w := 0; w < workers; w++ {

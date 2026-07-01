@@ -41,6 +41,11 @@ dmypy.json
 
 # Go
 /reel
+# Script tool binaries (go build ./scripts/<tool> writes <tool> to cwd)
+/aligncheck
+/chunkbench
+/fullvalidate
+/handlertest
 *.exe
 *.exe~
 *.dll

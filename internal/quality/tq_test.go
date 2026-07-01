@@ -43,37 +43,42 @@ func TestSearchRejectsScoresBelowRange(t *testing.T) {
 	}
 }
 
-func TestSearchRequiresSampledWindowFloor(t *testing.T) {
+func TestSearchBelowFloorLowersCRF(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
-	state.AddProbe(ctx, Probe{CRF: 24, Score: 9.51, WorstWindowScore: 9.28})
+	// Whole-chunk score below the floor (Target-Tolerance=9.4) must not converge
+	// and must lower the CRF ceiling.
+	state.AddProbe(ctx, Probe{CRF: 24, Score: 9.28})
 	if state.StopReason == StopConverged {
-		t.Fatal("probe with weak sampled window should not converge")
+		t.Fatal("probe below the quality floor should not converge")
 	}
 	if state.SearchMax != 23.75 {
 		t.Fatalf("SearchMax = %g, want 23.75", state.SearchMax)
 	}
 }
 
-func TestBestProbePrefersSampledWindowFloor(t *testing.T) {
+func TestBestProbePrefersAboveFloor(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
+	// CRF 24 is closer to target by raw error but below the floor (9.39 < 9.4);
+	// the above-floor probe is preferred even though it is slightly farther.
 	state.Probes = []Probe{
-		{CRF: 31.5, Score: 9.5123, WorstWindowScore: 9.2786},
-		{CRF: 27, Score: 9.6577, WorstWindowScore: 9.4947},
+		{CRF: 24, Score: 9.39},
+		{CRF: 27, Score: 9.65},
 	}
 	best, ok := state.BestProbe(ctx)
 	if !ok || best.CRF != 27 {
-		t.Fatalf("best probe = %+v ok=%v, want CRF 27", best, ok)
+		t.Fatalf("best probe = %+v ok=%v, want CRF 27 (above floor)", best, ok)
 	}
 }
 
-func TestBestProbeFallsBackWhenAllSampledWindowsAreWeak(t *testing.T) {
+func TestBestProbeFallsBackWhenAllBelowFloor(t *testing.T) {
 	ctx := SearchContext{Target: 9.5, Tolerance: 0.1, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
 	state := NewSearchState(ctx)
+	// Every probe is below the floor; fall back to the one closest to target.
 	state.Probes = []Probe{
-		{CRF: 20, Score: 9.7, WorstWindowScore: 9.3},
-		{CRF: 24, Score: 9.52, WorstWindowScore: 9.2},
+		{CRF: 20, Score: 9.2},
+		{CRF: 24, Score: 9.35},
 	}
 	best, ok := state.BestProbe(ctx)
 	if !ok || best.CRF != 24 {
@@ -209,19 +214,6 @@ func TestSearchMonotonicityGuard(t *testing.T) {
 	state.AddProbe(ctx, Probe{CRF: 30, Score: 9.9})
 	if state.StopReason != StopMonotonicity {
 		t.Fatalf("stop reason = %q, want monotonicity", state.StopReason)
-	}
-}
-
-func TestSearchMonotonicitySkippedForDifferentWindowCounts(t *testing.T) {
-	ctx := SearchContext{Target: 9.5, Tolerance: 0.01, CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6}
-	state := NewSearchState(ctx)
-	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.8, Windows: []ProbeWindow{{Offset: 0, Frames: 48, Score: 9.8}}})
-	state.AddProbe(ctx, Probe{CRF: 30, Score: 9.9, Windows: []ProbeWindow{
-		{Offset: 0, Frames: 48, Score: 9.9},
-		{Offset: 100, Frames: 48, Score: 9.9},
-	}})
-	if state.StopReason != StopNone {
-		t.Fatalf("stop reason = %q, want none when window counts differ", state.StopReason)
 	}
 }
 

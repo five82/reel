@@ -40,7 +40,7 @@ const EPS = 0.01
 
 type tqChunkLog struct {
 	ChunkIdx   int     `json:"chunk_idx"`
-	FinalScore float32 `json:"final_sample_score"`
+	FinalScore float32 `json:"final_score"`
 	FinalCRF   float32 `json:"final_crf"`
 }
 

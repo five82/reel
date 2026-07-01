@@ -16,24 +16,17 @@ const (
 	StopNoCandidates  StopReason = "no_candidates"
 )
 
-// ProbeWindow records one sampled metric window within a target-quality probe.
-type ProbeWindow struct {
-	Offset int     `json:"offset"`
-	Frames int     `json:"frames"`
-	Score  float32 `json:"score"`
-}
-
-// Probe records one target-quality probe encode and metric result.
+// Probe records one target-quality probe encode and its whole-chunk CVVDP
+// result. Every probe encodes and scores the entire chunk, so Score is exact
+// (no sampled-window approximation) and the probe IVF can be reused verbatim as
+// the final chunk.
 type Probe struct {
-	CRF              float32       `json:"crf"`
-	Score            float32       `json:"score"`
-	MeanScore        float32       `json:"mean_score,omitempty"`
-	WorstWindowScore float32       `json:"worst_window_score,omitempty"`
-	Size             uint64        `json:"size"`
-	EncodeSeconds    float64       `json:"encode_seconds,omitempty"`
-	MetricSeconds    float64       `json:"metric_seconds,omitempty"`
-	SampleFrames     int           `json:"sample_frames,omitempty"`
-	Windows          []ProbeWindow `json:"windows,omitempty"`
+	CRF           float32 `json:"crf"`
+	Score         float32 `json:"score"`
+	Size          uint64  `json:"size"`
+	EncodeSeconds float64 `json:"encode_seconds,omitempty"`
+	MetricSeconds float64 `json:"metric_seconds,omitempty"`
+	Frames        int     `json:"frames,omitempty"`
 }
 
 // SearchContext configures per-chunk target-quality search.
@@ -104,11 +97,6 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 			return
 		}
 		if (old.CRF-probe.CRF)*(old.Score-probe.Score) >= 0 {
-			// Probes scored with different window counts are incomparable;
-			// don't flag monotonicity on a measurement-mode change.
-			if len(old.Windows) != len(probe.Windows) {
-				continue
-			}
 			s.Probes = append(s.Probes, probe)
 			s.tried[crfKey(probe.CRF)] = true
 			s.StopReason = StopMonotonicity
@@ -119,11 +107,11 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 	s.Probes = append(s.Probes, probe)
 	s.tried[crfKey(probe.CRF)] = true
 
-	if targetQualityProbeConverged(ctx, probe) {
+	if targetQualityConverged(ctx, probe.Score) {
 		s.StopReason = StopConverged
 		return
 	}
-	if targetQualityWindowBelowFloor(ctx, probe) || probe.Score < ctx.Target-ctx.Tolerance {
+	if probe.Score < ctx.Target-ctx.Tolerance {
 		// Quality too low: lower CRF.
 		s.SearchMax = RoundCRFToQuarter(probe.CRF - 0.25)
 	} else if probe.Score > ctx.Target+ctx.Tolerance {
@@ -144,7 +132,7 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 		return Probe{}, false
 	}
 	best, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
-		return !targetQualityWindowBelowFloor(ctx, probe)
+		return probe.Score >= ctx.Target-ctx.Tolerance
 	})
 	if found {
 		return best, true
@@ -163,7 +151,7 @@ func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool)
 			continue
 		}
 		err := math.Abs(float64(probe.Score - ctx.Target))
-		if !found || err < bestErr-errEpsilon || (math.Abs(err-bestErr) <= errEpsilon && probe.WorstWindowScore > best.WorstWindowScore) {
+		if !found || err < bestErr-errEpsilon || (math.Abs(err-bestErr) <= errEpsilon && probe.Score > best.Score) {
 			best = probe
 			bestErr = err
 			found = true
@@ -172,16 +160,8 @@ func bestProbeMatching(ctx SearchContext, probes []Probe, keep func(Probe) bool)
 	return best, found
 }
 
-func targetQualityProbeConverged(ctx SearchContext, probe Probe) bool {
-	return targetQualityConverged(ctx, probe.Score) && !targetQualityWindowBelowFloor(ctx, probe)
-}
-
 func targetQualityConverged(ctx SearchContext, score float32) bool {
 	return score >= ctx.Target-ctx.Tolerance && score <= ctx.Target+ctx.Tolerance
-}
-
-func targetQualityWindowBelowFloor(ctx SearchContext, probe Probe) bool {
-	return probe.WorstWindowScore > 0 && probe.WorstWindowScore < ctx.Target-ctx.Tolerance
 }
 
 func initialSearchCRF(ctx SearchContext) float32 {
@@ -228,7 +208,7 @@ func probesAreAllAboveTarget(ctx SearchContext, probes []Probe) bool {
 }
 
 func probeTargetSide(ctx SearchContext, probe Probe) int {
-	if targetQualityWindowBelowFloor(ctx, probe) || probe.Score < ctx.Target {
+	if probe.Score < ctx.Target {
 		return -1
 	}
 	if probe.Score > ctx.Target {

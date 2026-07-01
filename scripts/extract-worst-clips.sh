@@ -35,50 +35,40 @@ fi
 
 mkdir -p "$OUTDIR"
 
-# Find the worst chunks by window_spread
+# Rank the hardest chunks on whole-chunk signals: distance of the final score
+# from target, and probe count (how much search the chunk needed).
 python3 -c "
-import json, sys
+import json
 with open('$WORKDIR/target-quality.json') as f:
     log = json.load(f)
 
+target = log.get('target')
 chunks = []
 for c in log.get('chunks', []):
-    windows = c.get('probes', [{}])[-1].get('windows', [])
-    if not windows:
-        continue
-    scores = [w['score'] for w in windows]
-    spread = max(scores) - min(scores) if scores else 0
+    score = c.get('final_score', 0)
+    err = abs(score - target) if target is not None else 0.0
     chunks.append({
         'idx': c['chunk_idx'],
         'frames': c['frames'],
-        'spread': spread,
+        'err': err,
         'probes': len(c.get('probes', [])),
         'final_crf': c.get('final_crf', 0),
-        'final_score': c.get('final_sample_score', 0),
+        'final_score': score,
     })
 
-chunks.sort(key=lambda x: x['spread'], reverse=True)
-# Also include chunks that hit max_probes
-max_probe = [c for c in chunks if c['probes'] >= 4]
-max_probe.sort(key=lambda x: x['probes'], reverse=True)
+# Worst by distance from target.
+for c in sorted(chunks, key=lambda x: x['err'], reverse=True)[:10]:
+    print(f\"ERROR {c['idx']:04d} {c['frames']} {c['err']:.4f} {c['probes']} {c['final_crf']}\")
 
-# Print worst by spread
-for c in chunks[:10]:
-    print(f\"SPREAD {c['idx']:04d} {c['frames']} {c['spread']:.4f} {c['probes']} {c['final_crf']}\")
-
-# Print worst by probe count
-for c in max_probe[:5]:
-    print(f\"PROBES {c['idx']:04d} {c['frames']} {c['spread']:.4f} {c['probes']} {c['final_crf']}\")
+# Worst by probe count (hardest to converge).
+hard = sorted([c for c in chunks if c['probes'] >= 3], key=lambda x: x['probes'], reverse=True)
+for c in hard[:5]:
+    print(f\"PROBES {c['idx']:04d} {c['frames']} {c['err']:.4f} {c['probes']} {c['final_crf']}\")
 " > "$OUTDIR/worst-chunks.txt"
 
 # Extract clips using ffmpeg. We expand by 5 seconds before/after the chunk.
 # Chunk offsets are frame-based; we convert to seconds using the FPS from the log.
 FPS=$(python3 -c "
-import json
-with open('$WORKDIR/target-quality.json') as f:
-    log = json.load(f)
-# Get FPS from first chunk's probe_sample_frames and frames estimate
-# Actually just probe the input
 import subprocess
 result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
     '-show_entries', 'stream=r_frame_rate', '-of', 'default=noprint_wrappers=1',
@@ -115,7 +105,7 @@ awk '/^chunk idx=/ {
 
 # Extract worst clips
 echo "Extracting clips to $OUTDIR ..."
-while read -r kind idx frames spread probes crf; do
+while read -r kind idx frames score_err probes crf; do
     # Find the chunk boundaries
     boundary=$(awk -v idx="$idx" '$1 == idx {print $2, $3}' "$OUTDIR/chunk-boundaries.txt")
     if [[ -z "$boundary" ]]; then
@@ -132,12 +122,12 @@ while read -r kind idx frames spread probes crf; do
     start_sec=$(python3 -c "print(f\"{${start_pad} / ${FPS}:.3f}\")")
     duration_sec=$(python3 -c "print(f\"{(${end_pad} - ${start_pad}) / ${FPS}:.3f}\")")
 
-    outclip="$OUTDIR/${kind}_${idx}_crf${crf}_spread${spread}.mkv"
+    outclip="$OUTDIR/${kind}_${idx}_crf${crf}_err${score_err}.mkv"
     echo "  $outclip (${start_sec}s +${duration_sec}s)"
     ffmpeg -y -hide_banner -loglevel error \
         -ss "$start_sec" -t "$duration_sec" -i "$INPUT" \
         -c copy -map 0:v:0 -map 0:a? \
         "$outclip" 2>/dev/null || true
-done < <(grep -E '^(SPREAD|PROBES)' "$OUTDIR/worst-chunks.txt" | head -8)
+done < <(grep -E '^(ERROR|PROBES)' "$OUTDIR/worst-chunks.txt" | head -8)
 
 echo "Done. Clips in $OUTDIR"

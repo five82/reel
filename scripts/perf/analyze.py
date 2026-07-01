@@ -4,7 +4,7 @@ Summarize a perf run directory produced by run-suite.sh.
 
 For each clip it reads perf.json (phase wall time + adaptive-worker history),
 target-quality.json (probe histogram, stop reasons, JOD, encode-vs-metric
-seconds, window spread), the GPU sample log, and the results.tsv row (wall time,
+seconds), the GPU sample log, and the results.tsv row (wall time,
 output size, GPU summary). It prints a per-clip table and writes summary.json
 into the run directory for compare-runs.py.
 
@@ -45,25 +45,6 @@ def _find_json(clip_dir, name):
     return None
 
 
-def _percentile(values, p):
-    if not values:
-        return None
-    s = sorted(values)
-    i = int(p * (len(s) - 1))
-    return s[max(0, min(i, len(s) - 1))]
-
-
-def _final_probe(probes, final_crf):
-    """The chunk's chosen probe -- the one whose CRF matches final_crf, mirroring
-    reel's finalProbe (target_quality.go). Falls back to the last probe."""
-    if not probes:
-        return None
-    if final_crf is not None:
-        for p in probes:
-            if round((p.get("crf") or 0) * 4) == round(final_crf * 4):
-                return p
-    return probes[-1]
-
 
 def perf_stats(perf):
     if not perf:
@@ -101,7 +82,7 @@ def tq_stats(tq):
     chunks = tq.get("chunks", [])
     if not chunks:
         return {"chunks": 0}
-    scores = [c["final_sample_score"] for c in chunks]
+    scores = [c["final_score"] for c in chunks]
     probe_counts = [len(c.get("probes", [])) for c in chunks]
     total_probes = sum(probe_counts)
     hist = {}
@@ -114,20 +95,10 @@ def tq_stats(tq):
 
     probe_encode_s = 0.0
     metric_s = 0.0
-    final_encode_s = 0.0
-    spreads = []
     for c in chunks:
-        final_encode_s += c.get("final_encode_seconds", 0.0) or 0.0
-        probes = c.get("probes", [])
-        for p in probes:
+        for p in c.get("probes", []):
             probe_encode_s += p.get("encode_seconds", 0.0) or 0.0
             metric_s += p.get("metric_seconds", 0.0) or 0.0
-        # Window spread is taken from the chunk's chosen probe so it matches
-        # reel's own "TQ window_spread" summary line.
-        fp = _final_probe(probes, c.get("final_crf"))
-        wins = [w["score"] for w in fp.get("windows", [])] if fp else []
-        if wins:
-            spreads.append(max(wins) - min(wins))
 
     mae = None
     if target is not None:
@@ -143,10 +114,8 @@ def tq_stats(tq):
         "jod_mean": statistics.mean(scores),
         "jod_max": max(scores),
         "jod_mae": mae,
-        "encode_lane_s": probe_encode_s + final_encode_s,
+        "encode_lane_s": probe_encode_s,
         "metric_s": metric_s,
-        "spread_p90": _percentile(spreads, 0.90),
-        "spread_max": max(spreads) if spreads else None,
         "ge3_probe_chunks": sum(1 for n in probe_counts if n >= 3),
         "probe_hist": {str(k): hist[k] for k in sorted(hist)},
         "stop_reasons": stops,
@@ -220,11 +189,11 @@ def _fmt(v, spec):
 
 def print_table(summaries):
     cols = ["clip", "wall_s", "MB", "gpu%", "vram", "chunks", "p/ch",
-            "jod_mean", "mae", "enc_s", "met_s", "spr_p90", "encode_s", "shot_s"]
+            "jod_mean", "mae", "enc_s", "met_s", "encode_s", "shot_s"]
     print(f"{cols[0]:<26} {cols[1]:>7} {cols[2]:>7} {cols[3]:>5} {cols[4]:>6} "
           f"{cols[5]:>6} {cols[6]:>5} {cols[7]:>8} {cols[8]:>6} {cols[9]:>7} "
-          f"{cols[10]:>7} {cols[11]:>7} {cols[12]:>8} {cols[13]:>7}")
-    print("-" * 126)
+          f"{cols[10]:>7} {cols[11]:>8} {cols[12]:>7}")
+    print("-" * 118)
     for s in summaries:
         mb = (s.get("out_bytes") or 0) / 1e6
         print(f"{s['clip']:<26} "
@@ -238,7 +207,6 @@ def print_table(summaries):
               f"{_fmt(s.get('jod_mae'), '6.4f')} "
               f"{_fmt(s.get('encode_lane_s'), '7.0f')} "
               f"{_fmt(s.get('metric_s'), '7.0f')} "
-              f"{_fmt(s.get('spread_p90'), '7.4f')} "
               f"{_fmt(s.get('phase_encode_s'), '8.0f')} "
               f"{_fmt(s.get('phase_shotdet_s'), '7.1f')}")
 

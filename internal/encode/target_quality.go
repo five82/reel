@@ -14,42 +14,16 @@ import (
 	"time"
 
 	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/config"
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
 )
 
 const (
-	// DefaultTargetQualitySampleFrames is long enough to reduce window noise while
-	// keeping sampled probes much cheaper than full-chunk CVVDP.
-	DefaultTargetQualitySampleFrames = 48
-
-	// DefaultTargetQualityFullProbeFrames keeps small chunks on whole-chunk
-	// scoring. Sampling below this size looked cheaper on paper but loses
-	// full-probe reuse and can make the search spend more probes.
-	//
-	// This is the below-UHD value. For UHD the resolution-aware
-	// targetQualityFullProbeFrames raises the threshold to the largest chunk so
-	// every probe is a whole-chunk encode (no sampled band); see that function
-	// and the 2026-06-29 full-scan A/B LOG entry.
-	DefaultTargetQualityFullProbeFrames = 256
-
-	// DefaultTargetQualityFullFirstFrames is the largest sampled chunk to fully
-	// encode when the first CRF comes from the title median. Median starts are
-	// less locally trustworthy, and a converged full-first probe can be reused as
-	// the final chunk instead of encoded twice.
-	DefaultTargetQualityFullFirstFrames = 720
-
 	// targetQualityScheduleBlockChunks keeps work close enough to timeline order
 	// for neighbor priors while still starting large chunks early enough to avoid
 	// a final long-tail. Smaller blocks measured slower because early priors were worse.
 	targetQualityScheduleBlockChunks = 32
-
-	// targetQualityExtraWindowSpread enables denser sampling only after a probe
-	// shows high within-chunk variance, targeting uncertainty without charging
-	// every easy chunk for more windows.
-	targetQualityExtraWindowSpread = 0.30
 
 	// targetQualityPriorPrimeChunks is how many completed chunks must seed the
 	// CRF prior before dispatch opens beyond the prime-phase concurrency.
@@ -80,24 +54,21 @@ type targetQualityResult struct {
 }
 
 type chunkTargetLog struct {
-	ChunkIdx           int                `json:"chunk_idx"`
-	Frames             int                `json:"frames"`
-	Target             float32            `json:"target"`
-	Tolerance          float32            `json:"tolerance"`
-	CRFMin             float32            `json:"crf_min"`
-	CRFMax             float32            `json:"crf_max"`
-	ProbeSampleFrames  int                `json:"probe_sample_frames"`
-	ProbeFullThreshold int                `json:"probe_full_threshold"`
-	InitialCRF         float32            `json:"initial_crf"`
-	InitialCRFSource   string             `json:"initial_crf_source"`
-	Probes             []quality.Probe    `json:"probes"`
-	FinalCRF           float32            `json:"final_crf"`
-	FinalScore         float32            `json:"final_sample_score"`
-	FinalSize          uint64             `json:"final_size"`
-	FinalEncodeSeconds float64            `json:"final_encode_seconds,omitempty"`
-	StopReason         quality.StopReason `json:"stop_reason"`
-	StartedAt          time.Time          `json:"started_at"`
-	CompletedAt        time.Time          `json:"completed_at"`
+	ChunkIdx         int                `json:"chunk_idx"`
+	Frames           int                `json:"frames"`
+	Target           float32            `json:"target"`
+	Tolerance        float32            `json:"tolerance"`
+	CRFMin           float32            `json:"crf_min"`
+	CRFMax           float32            `json:"crf_max"`
+	InitialCRF       float32            `json:"initial_crf"`
+	InitialCRFSource string             `json:"initial_crf_source"`
+	Probes           []quality.Probe    `json:"probes"`
+	FinalCRF         float32            `json:"final_crf"`
+	FinalScore       float32            `json:"final_score"`
+	FinalSize        uint64             `json:"final_size"`
+	StopReason       quality.StopReason `json:"stop_reason"`
+	StartedAt        time.Time          `json:"started_at"`
+	CompletedAt      time.Time          `json:"completed_at"`
 }
 
 func EncodeTargetQuality(
@@ -245,8 +216,6 @@ func EncodeTargetQuality(
 	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
 	seedTargetQualityPrior(workDir, doneSet, prior)
 
-	fullProbeFrames := TargetQualityFullProbeFrames(width, remainingChunks)
-
 	var workerWg sync.WaitGroup
 	for i := 0; i < maxWorkers; i++ {
 		workerWg.Add(1)
@@ -268,7 +237,7 @@ func EncodeTargetQuality(
 				chunkSearchCtx := searchCtx
 				chunkSearchCtx.InitialCRF = initialCRF
 				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, DefaultTargetQualitySampleFrames, fullProbeFrames, initialCRFSource, tq.Verbose)
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -406,59 +375,43 @@ func encodeTargetQualityChunk(
 	metricPool chan *quality.VshipProcessor,
 	limiter *adaptiveLimiter,
 	prior *targetQualityPrior,
-	sampleFrames int,
-	fullProbeFrames int,
 	initialCRFSource string,
 	verbose func(string),
 ) targetQualityResult {
 	log := chunkTargetLog{
-		ChunkIdx:           ch.Idx,
-		Frames:             ch.Frames(),
-		Target:             searchCtx.Target,
-		Tolerance:          searchCtx.Tolerance,
-		CRFMin:             searchCtx.CRFMin,
-		CRFMax:             searchCtx.CRFMax,
-		ProbeSampleFrames:  sampleFrames,
-		ProbeFullThreshold: fullProbeFrames,
-		InitialCRF:         searchCtx.InitialCRF,
-		InitialCRFSource:   initialCRFSource,
-		StartedAt:          time.Now(),
+		ChunkIdx:         ch.Idx,
+		Frames:           ch.Frames(),
+		Target:           searchCtx.Target,
+		Tolerance:        searchCtx.Tolerance,
+		CRFMin:           searchCtx.CRFMin,
+		CRFMax:           searchCtx.CRFMax,
+		InitialCRF:       searchCtx.InitialCRF,
+		InitialCRFSource: initialCRFSource,
+		StartedAt:        time.Now(),
 	}
 	state := quality.NewSearchState(searchCtx)
-	fullProbePaths := make(map[string]string)
-	extraWindows := false
 
 	for {
 		crf, ok := state.NextCRF(searchCtx)
 		if !ok {
 			break
 		}
-		fullFirst := targetQualityFullFirstProbe(initialCRFSource, state.Round, ch.Frames(), sampleFrames, fullProbeFrames)
-		probe, fullProbePath, err := encodeSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, sampleFrames, fullProbeFrames, fullFirst, extraWindows, metricPool, limiter)
+		probe, err := encodeChunkProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, metricPool, limiter)
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
-		}
-		if fullProbePath != "" {
-			fullProbePaths[quality.FormatCRF(probe.CRF)] = fullProbePath
 		}
 		state.AddProbe(searchCtx, probe)
 		log.Probes = append(log.Probes, probe)
 		if verbose != nil {
-			fps := float64(probe.SampleFrames) / probe.MetricSeconds
+			var fps float64
+			if probe.MetricSeconds > 0 {
+				fps = float64(probe.Frames) / probe.MetricSeconds
+			}
 			initial := ""
 			if state.Round == 1 {
 				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
 			}
-			probeKind := ""
-			if fullFirst {
-				probeKind = " probe=full_first"
-			} else if extraWindows {
-				probeKind = " probe=extra_windows"
-			}
-			verbose(fmt.Sprintf("TQ sample chunk=%04d round=%d crf=%s%s%s sampled_cvvdp=%.4f mean_cvvdp=%.4f worst_window=%.4f window_spread=%.4f windows=%s delta=%+.4f size=%d sample_frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probeKind, probe.Score, probe.MeanScore, probe.WorstWindowScore, targetQualityWindowSpread(probe.Windows), formatProbeWindowScores(probe.Windows), probe.Score-searchCtx.Target, probe.Size, probe.SampleFrames, probe.EncodeSeconds, probe.MetricSeconds, fps))
-		}
-		if targetQualityWindowSpread(probe.Windows) > targetQualityExtraWindowSpread {
-			extraWindows = true
+			verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s%s cvvdp=%.4f delta=%+.4f size=%d frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.Frames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -470,19 +423,12 @@ func encodeTargetQualityChunk(
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("no target-quality probes completed for chunk %04d", ch.Idx)}, Log: log}
 	}
 	prior.AddResult(ch.Idx, best.CRF, log.Probes)
+	// Every probe is a whole-chunk encode kept at its CRF path, so the converged
+	// probe is reused verbatim as the final chunk -- no re-encode. copyFile errors
+	// if that IVF is somehow absent.
 	finalPath := chunk.IVFPath(workDir, ch.Idx)
-	if bestPath := fullProbePaths[quality.FormatCRF(best.CRF)]; bestPath != "" {
-		if err := copyFile(bestPath, finalPath); err != nil {
-			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
-		}
-	} else {
-		encodeStart := time.Now()
-		// Final chunk output that resume depends on; must be fsynced.
-		finalResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, finalPath, best.CRF, false)
-		if finalResult.Error != nil {
-			return targetQualityResult{EncodeResult: finalResult, Log: log}
-		}
-		log.FinalEncodeSeconds = time.Since(encodeStart).Seconds()
+	if err := copyFile(probeIVFPath(workDir, ch.Idx, best.CRF), finalPath); err != nil {
+		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 	}
 	stat, err := os.Stat(finalPath)
 	if err != nil {
@@ -495,90 +441,18 @@ func encodeTargetQualityChunk(
 	log.CompletedAt = time.Now()
 	_ = writeChunkTargetLog(workDir, log)
 	if verbose != nil {
-		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s sampled_cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
+		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
 	}
 	return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Frames: ch.Frames(), Size: uint64(stat.Size())}, Log: log}
 }
 
-type probeSampleWindow struct {
-	Offset int
-	Frames int
-}
-
-func sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames int, extraWindows bool) []probeSampleWindow {
-	if chunkFrames <= 0 {
-		return nil
-	}
-	if sampleFrames <= 0 {
-		return []probeSampleWindow{{Frames: chunkFrames}}
-	}
-	windowCount := 3
-	if extraWindows {
-		windowCount = 5
-	}
-	fullThreshold := max(fullProbeFrames, windowCount*sampleFrames)
-	if chunkFrames <= fullThreshold {
-		return []probeSampleWindow{{Frames: chunkFrames}}
-	}
-
-	lastOffset := chunkFrames - sampleFrames
-	windows := make([]probeSampleWindow, 0, windowCount)
-	for i := 0; i < windowCount; i++ {
-		offset := 0
-		if windowCount > 1 {
-			offset = (lastOffset*i + (windowCount-1)/2) / (windowCount - 1)
-		}
-		windows = append(windows, probeSampleWindow{Offset: offset, Frames: sampleFrames})
-	}
-	return windows
-}
-
-func targetQualityFullFirstProbe(initialCRFSource string, round int, chunkFrames int, sampleFrames int, fullProbeFrames int) bool {
-	if round != 1 || chunkFrames > DefaultTargetQualityFullFirstFrames {
-		return false
-	}
-	if len(sampledProbeWindows(chunkFrames, sampleFrames, fullProbeFrames, false)) <= 1 {
-		return false
-	}
-	return initialCRFSource == "median"
-}
-
-// windowScore carries one asynchronously scored sample window.
-type windowScore struct {
-	idx    int
-	offset int
-	result quality.CVVDPResult
-	err    error
-}
-
-// gatherWindowScores releases the chunk's encode slot while waiting for
-// outstanding metric work, then re-acquires it so callers keep the invariant
-// that an encode slot is held on entry and exit. The released slot lets other
-// chunks encode while this chunk waits on the GPU.
-func gatherWindowScores(ctx context.Context, limiter *adaptiveLimiter, scoreCh chan windowScore, launched int) ([]windowScore, error) {
-	limiter.release()
-	scores := make([]windowScore, 0, launched)
-	var firstErr error
-	for i := 0; i < launched; i++ {
-		ws := <-scoreCh
-		if ws.err != nil && firstErr == nil {
-			firstErr = ws.err
-		}
-		scores = append(scores, ws)
-	}
-	if _, err := limiter.acquire(ctx); err != nil {
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	sort.Slice(scores, func(i, j int) bool { return scores[i].idx < scores[j].idx })
-	return scores, nil
-}
-
-func encodeSampledProbe(
+// encodeChunkProbe encodes the whole chunk at crf to a reusable IVF and scores
+// it against the source with a single whole-chunk CVVDP pass. The probe IVF is
+// kept (fsynced) so the converged probe can be reused verbatim as the final
+// chunk. The encode slot is released while the GPU scores and re-acquired before
+// returning, so the caller keeps the invariant that a slot is held on entry and
+// exit while other chunks encode during the metric wait.
+func encodeChunkProbe(
 	ctx context.Context,
 	inputPath string,
 	inf *video.Info,
@@ -588,250 +462,55 @@ func encodeSampledProbe(
 	width, height uint32,
 	ch chunk.Chunk,
 	crf float32,
-	sampleFrames int,
-	fullProbeFrames int,
-	fullFirst bool,
-	extraWindows bool,
 	metricPool chan *quality.VshipProcessor,
 	limiter *adaptiveLimiter,
-) (quality.Probe, string, error) {
-	windows := sampledProbeWindows(ch.Frames(), sampleFrames, fullProbeFrames, extraWindows)
-	if len(windows) == 0 {
-		return quality.Probe{}, "", fmt.Errorf("chunk %04d has no frames", ch.Idx)
+) (quality.Probe, error) {
+	if ch.Frames() <= 0 {
+		return quality.Probe{}, fmt.Errorf("chunk %04d has no frames", ch.Idx)
 	}
-	if fullFirst && len(windows) > 1 {
-		return encodeFullFirstSampledProbe(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, crf, windows, metricPool, limiter)
-	}
-
-	var totalSize uint64
-	var encodeSeconds float64
-	var fullProbePath string
-	var encodeErr error
-
-	// Encode windows sequentially under the held encode slot; score each
-	// window asynchronously so window N+1 encodes while window N scores.
-	scoreCh := make(chan windowScore, len(windows))
-	launched := 0
-	for sampleIdx, sample := range windows {
-		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
-		isFullChunk := len(windows) == 1 && sample.Offset == 0 && sample.Frames == ch.Frames()
-		probePath := sampledProbePath(workDir, ch.Idx, crf, sampleIdx, sample, isFullChunk)
-
-		encodeStart := time.Now()
-		// Ephemeral windows (deleted after scoring) skip fsync; a reusable
-		// full-chunk probe keeps it so the durable copy is flushed.
-		probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, sampleChunk, probePath, crf, !isFullChunk)
-		if probeResult.Error != nil {
-			encodeErr = probeResult.Error
-			break
-		}
-		encodeSeconds += time.Since(encodeStart).Seconds()
-		totalSize += probeResult.Size
-		if isFullChunk {
-			fullProbePath = probePath
-		}
-
-		launched++
-		go func(idx int, sampleChunk chunk.Chunk, probePath string, cleanup bool) {
-			result, err := scoreProbeWindow(ctx, metricPool, inputPath, probePath, inf, sampleChunk, cropRect, width, height, 0)
-			if cleanup {
-				_ = os.Remove(probePath)
-			}
-			scoreCh <- windowScore{idx: idx, offset: sampleChunk.Start - ch.Start, result: result, err: err}
-		}(sampleIdx, sampleChunk, probePath, !isFullChunk)
-	}
-
-	scores, err := gatherWindowScores(ctx, limiter, scoreCh, launched)
-	if encodeErr != nil {
-		return quality.Probe{}, "", encodeErr
-	}
-	if err != nil {
-		return quality.Probe{}, "", err
-	}
-
-	var metricSeconds float64
-	windowsScored := make([]quality.ProbeWindow, 0, len(scores))
-	for _, ws := range scores {
-		metricSeconds += ws.result.MetricSeconds
-		windowsScored = append(windowsScored, quality.ProbeWindow{
-			Offset: ws.offset,
-			Frames: ws.result.Frames,
-			Score:  ws.result.Score,
-		})
-	}
-	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
-	if scoredFrames == 0 {
-		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
-	}
-
-	return quality.Probe{
-		CRF:              crf,
-		Score:            score,
-		MeanScore:        meanScore,
-		WorstWindowScore: worstScore,
-		Size:             totalSize,
-		EncodeSeconds:    encodeSeconds,
-		MetricSeconds:    metricSeconds,
-		SampleFrames:     scoredFrames,
-		Windows:          windowsScored,
-	}, fullProbePath, nil
-}
-
-func encodeFullFirstSampledProbe(
-	ctx context.Context,
-	inputPath string,
-	inf *video.Info,
-	cfg *EncodeConfig,
-	workDir string,
-	cropRect *video.CropRect,
-	width, height uint32,
-	ch chunk.Chunk,
-	crf float32,
-	windows []probeSampleWindow,
-	metricPool chan *quality.VshipProcessor,
-	limiter *adaptiveLimiter,
-) (quality.Probe, string, error) {
-	fullProbePath := sampledProbePath(workDir, ch.Idx, crf, 0, probeSampleWindow{Frames: ch.Frames()}, true)
+	probePath := probeIVFPath(workDir, ch.Idx, crf)
 
 	encodeStart := time.Now()
-	// Full-chunk probe; may be reused as the final chunk, so keep the fsync.
-	probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, fullProbePath, crf, false)
+	// Whole-chunk probe; reusable as the final chunk, so keep the fsync.
+	probeResult := encodeProbe(ctx, inputPath, inf, cfg, cropRect, width, height, ch, probePath, crf)
 	if probeResult.Error != nil {
-		return quality.Probe{}, "", probeResult.Error
+		return quality.Probe{}, probeResult.Error
 	}
 	encodeSeconds := time.Since(encodeStart).Seconds()
 
-	// Score all windows of the already-encoded full probe concurrently.
-	scoreCh := make(chan windowScore, len(windows))
-	for sampleIdx, sample := range windows {
-		sampleChunk := chunk.Chunk{Idx: ch.Idx, Start: ch.Start + sample.Offset, End: ch.Start + sample.Offset + sample.Frames}
-		go func(idx int, sampleChunk chunk.Chunk, offset int) {
-			result, err := scoreProbeWindow(ctx, metricPool, inputPath, fullProbePath, inf, sampleChunk, cropRect, width, height, offset)
-			scoreCh <- windowScore{idx: idx, offset: offset, result: result, err: err}
-		}(sampleIdx, sampleChunk, sample.Offset)
+	// Release the encode slot while the GPU scores, then re-acquire it so other
+	// chunks can encode during the metric wait.
+	limiter.release()
+	result, scoreErr := scoreChunkProbe(ctx, metricPool, inputPath, probePath, inf, ch, cropRect, width, height)
+	if _, err := limiter.acquire(ctx); err != nil && scoreErr == nil {
+		scoreErr = err
 	}
-
-	scores, err := gatherWindowScores(ctx, limiter, scoreCh, len(windows))
-	if err != nil {
-		return quality.Probe{}, "", err
+	if scoreErr != nil {
+		return quality.Probe{}, scoreErr
 	}
-
-	var metricSeconds float64
-	windowsScored := make([]quality.ProbeWindow, 0, len(scores))
-	for _, ws := range scores {
-		metricSeconds += ws.result.MetricSeconds
-		windowsScored = append(windowsScored, quality.ProbeWindow{
-			Offset: ws.offset,
-			Frames: ws.result.Frames,
-			Score:  ws.result.Score,
-		})
-	}
-	score, meanScore, worstScore, scoredFrames := targetQualitySampleScore(windowsScored)
-	if scoredFrames == 0 {
-		return quality.Probe{}, "", fmt.Errorf("no target-quality sample frames scored for chunk %04d", ch.Idx)
+	if result.Frames == 0 {
+		return quality.Probe{}, fmt.Errorf("no frames scored for chunk %04d", ch.Idx)
 	}
 
 	return quality.Probe{
-		CRF:              crf,
-		Score:            score,
-		MeanScore:        meanScore,
-		WorstWindowScore: worstScore,
-		Size:             probeResult.Size,
-		EncodeSeconds:    encodeSeconds,
-		MetricSeconds:    metricSeconds,
-		SampleFrames:     scoredFrames,
-		Windows:          windowsScored,
-	}, fullProbePath, nil
+		CRF:           crf,
+		Score:         result.Score,
+		Size:          probeResult.Size,
+		EncodeSeconds: encodeSeconds,
+		MetricSeconds: result.MetricSeconds,
+		Frames:        result.Frames,
+	}, nil
 }
 
-func formatProbeWindowScores(windows []quality.ProbeWindow) string {
-	if len(windows) == 0 {
-		return "[]"
-	}
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, window := range windows {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		fmt.Fprintf(&b, "%d:%.4f", window.Offset, window.Score)
-	}
-	b.WriteByte(']')
-	return b.String()
-}
-
-func targetQualityWindowSpread(windows []quality.ProbeWindow) float32 {
-	if len(windows) == 0 {
-		return 0
-	}
-	minScore := windows[0].Score
-	maxScore := windows[0].Score
-	for _, window := range windows[1:] {
-		if window.Score < minScore {
-			minScore = window.Score
-		}
-		if window.Score > maxScore {
-			maxScore = window.Score
-		}
-	}
-	return maxScore - minScore
-}
-
-func targetQualitySampleScore(windows []quality.ProbeWindow) (score, meanScore, worstScore float32, frames int) {
-	if len(windows) == 0 {
-		return 0, 0, 0, 0
-	}
-	worstScore = windows[0].Score
-	bestScore := windows[0].Score
-	var weightedScore float64
-	for _, window := range windows {
-		if window.Frames <= 0 {
-			continue
-		}
-		if window.Score < worstScore {
-			worstScore = window.Score
-		}
-		if window.Score > bestScore {
-			bestScore = window.Score
-		}
-		weightedScore += float64(window.Score) * float64(window.Frames)
-		frames += window.Frames
-	}
-	if frames == 0 {
-		return 0, 0, 0, 0
-	}
-	meanScore = float32(weightedScore / float64(frames))
-
-	const (
-		spreadThreshold = 0.30
-		maxWeight       = 0.70
-	)
-	// Weight more toward worst when within-chunk variance is high.
-	// At spread == 0: weight == 0 (pure mean).
-	// At spread == 0.15: weight == 0.5.
-	// At spread >= 0.21: weight == maxWeight (strongly worst-driven).
-	spread := bestScore - worstScore
-	weight := float32(0)
-	if spread > 0 {
-		weight = spread / spreadThreshold
-		if weight > maxWeight {
-			weight = maxWeight
-		}
-	}
-	score = meanScore*(1-weight) + worstScore*weight
-	return score, meanScore, worstScore, frames
-}
-
-func scoreProbeWindow(
+func scoreChunkProbe(
 	ctx context.Context,
 	metricPool chan *quality.VshipProcessor,
 	inputPath string,
 	probePath string,
 	inf *video.Info,
-	sampleChunk chunk.Chunk,
+	ch chunk.Chunk,
 	cropRect *video.CropRect,
 	width, height uint32,
-	probeStartFrame int,
 ) (quality.CVVDPResult, error) {
 	var processor *quality.VshipProcessor
 	select {
@@ -843,15 +522,14 @@ func scoreProbeWindow(
 
 	metricStart := time.Now()
 	metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
-		SourcePath:      inputPath,
-		ProbePath:       probePath,
-		ProbeStartFrame: probeStartFrame,
-		Info:            inf,
-		Chunk:           sampleChunk,
-		CropRect:        cropRect,
-		Width:           width,
-		Height:          height,
-		Processor:       processor,
+		SourcePath: inputPath,
+		ProbePath:  probePath,
+		Info:       inf,
+		Chunk:      ch,
+		CropRect:   cropRect,
+		Width:      width,
+		Height:     height,
+		Processor:  processor,
 	})
 	if err != nil {
 		return quality.CVVDPResult{}, err
@@ -862,11 +540,8 @@ func scoreProbeWindow(
 	return metricResult, nil
 }
 
-func sampledProbePath(workDir string, chunkIdx int, crf float32, sampleIdx int, sample probeSampleWindow, fullChunk bool) string {
-	if fullChunk {
-		return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s.ivf", chunkIdx, quality.FormatCRF(crf)))
-	}
-	return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s_s%d_%d_%d.ivf", chunkIdx, quality.FormatCRF(crf), sampleIdx, sample.Offset, sample.Frames))
+func probeIVFPath(workDir string, chunkIdx int, crf float32) string {
+	return filepath.Join(workDir, "probes", fmt.Sprintf("%04d_%s.ivf", chunkIdx, quality.FormatCRF(crf)))
 }
 
 const (
@@ -881,34 +556,6 @@ func targetQualityInitialJODPerCRF(width, height uint32, inf *video.Info) float3
 		return targetQualityLargeJODPerCRF
 	}
 	return targetQualityDefaultJODPerCRF
-}
-
-// TargetQualityFullProbeFrames returns the largest chunk size scored as a
-// whole-chunk (single-window) probe rather than sampled windows. For UHD
-// (>=3840px) the threshold is the largest chunk being encoded, so EVERY probe is
-// a whole-chunk encode and the sampled band disappears entirely.
-//
-// Rationale (2026-06-29 full-scan A/B + fullvalidate): on UHD, whole-chunk
-// probes are exact -- the final probe is reused as the final chunk, so the
-// fullvalidate gap is 0.0000 by construction -- and they remove the
-// window-spread-driven monotonicity thrash plus ~0.05-0.065 JOD of
-// over-encoding that sampled windows caused, at no measured wall cost (UHD is
-// encoder-bound; the extra metric frames are absorbed by better CVVDP
-// amortization -- one Reset per chunk vs 3 -- plus final reuse). Below UHD the
-// GPU is the metric bottleneck, so the cheaper 3x48 sampled windows are kept.
-func TargetQualityFullProbeFrames(width uint32, chunks []chunk.Chunk) int {
-	if width >= config.UHDWidthThreshold {
-		maxFrames := 0
-		for _, ch := range chunks {
-			if f := ch.Frames(); f > maxFrames {
-				maxFrames = f
-			}
-		}
-		if maxFrames > 0 {
-			return maxFrames
-		}
-	}
-	return DefaultTargetQualityFullProbeFrames
 }
 
 func targetQualityIsHDR(inf *video.Info) bool {
@@ -1108,17 +755,16 @@ func clampCRF(crf, minCRF, maxCRF float32) float32 {
 	return crf
 }
 
-// encodeProbe encodes a single probe window or final chunk. skipSync omits the
-// fsync; pass true only for ephemeral sample windows that are deleted after
-// scoring, false for full-chunk probes (reusable as the final output) and final
-// chunk encodes that resume depends on.
-func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32, skipSync bool) worker.EncodeResult {
+// encodeProbe encodes a whole-chunk probe or final chunk to outputPath. The IVF
+// is always fsynced: every probe is reusable as the final chunk and relied on
+// for resume.
+func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *EncodeConfig, cropRect *video.CropRect, width, height uint32, ch chunk.Chunk, outputPath string, crf float32) worker.EncodeResult {
 	src, err := video.Open(inputPath, 1)
 	if err != nil {
 		return worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("failed to open source for probe: %w", err)}
 	}
 	defer src.Close()
-	return encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, outputPath, crf, width, height, nil, skipSync)
+	return encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, outputPath, crf, width, height, nil)
 }
 
 func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
@@ -1133,8 +779,6 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	probeCounts := make(map[int]int)
 	stopCounts := make(map[quality.StopReason]int)
 	sourceCounts := make(map[string]int)
-	var windowSpreads []float32
-	var fullFirstAttempted, fullFirstReused int
 	var maxProbeChunks []int
 	var multiProbeLogs []chunkTargetLog
 	for i, log := range logs {
@@ -1158,15 +802,6 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			sourceCounts[log.InitialCRFSource]++
 		}
 		crfCounts[log.FinalCRF]++
-		if probe, ok := finalProbe(log); ok {
-			windowSpreads = append(windowSpreads, targetQualityWindowSpread(probe.Windows))
-		}
-		if targetQualityFullFirstProbe(log.InitialCRFSource, 1, log.Frames, log.ProbeSampleFrames, log.ProbeFullThreshold) {
-			fullFirstAttempted++
-			if probeCount == 1 {
-				fullFirstReused++
-			}
-		}
 		if log.StopReason == quality.StopMaxProbes {
 			maxProbeChunks = append(maxProbeChunks, log.ChunkIdx)
 		}
@@ -1184,42 +819,14 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			commonCount = count
 		}
 	}
-	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d probes_per_chunk=%.2f sampled_jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, float64(probes)/float64(len(logs)), minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
-	verbose(fmt.Sprintf("TQ decisions stops=%s probe_counts=%s initial_sources=%s full_first=%d reused=%d missed=%d", formatStopCounts(stopCounts), formatIntCounts(probeCounts), formatStringCounts(sourceCounts), fullFirstAttempted, fullFirstReused, fullFirstAttempted-fullFirstReused))
-	if len(windowSpreads) > 0 {
-		verbose(fmt.Sprintf("TQ window_spread p90=%.4f max=%.4f", percentileFloat32(windowSpreads, 0.90), percentileFloat32(windowSpreads, 1)))
-	}
+	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d probes_per_chunk=%.2f jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, float64(probes)/float64(len(logs)), minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
+	verbose(fmt.Sprintf("TQ decisions stops=%s probe_counts=%s initial_sources=%s", formatStopCounts(stopCounts), formatIntCounts(probeCounts), formatStringCounts(sourceCounts)))
 	if len(multiProbeLogs) > 0 {
 		verbose(fmt.Sprintf("TQ multi-probe chunks: %s", formatMultiProbeChunks(multiProbeLogs, 8)))
 	}
 	if len(maxProbeChunks) > 0 {
 		verbose(fmt.Sprintf("TQ max-probe chunks: %s", formatChunkList(maxProbeChunks, 12)))
 	}
-}
-
-func finalProbe(log chunkTargetLog) (quality.Probe, bool) {
-	for _, probe := range log.Probes {
-		if quality.RoundCRFToQuarter(probe.CRF) == quality.RoundCRFToQuarter(log.FinalCRF) {
-			return probe, true
-		}
-	}
-	return quality.Probe{}, false
-}
-
-func percentileFloat32(values []float32, p float64) float32 {
-	if len(values) == 0 {
-		return 0
-	}
-	sorted := append([]float32(nil), values...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	idx := int(p * float64(len(sorted)-1))
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return sorted[idx]
 }
 
 func formatIntCounts(counts map[int]int) string {
@@ -1323,25 +930,21 @@ func writeChunkTargetLog(workDir string, log chunkTargetLog) error {
 func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQualityConfig) {
 	sort.Slice(logs, func(i, j int) bool { return logs[i].ChunkIdx < logs[j].ChunkIdx })
 	data, err := json.MarshalIndent(struct {
-		Target             float32          `json:"target"`
-		Tolerance          float32          `json:"tolerance"`
-		CRFMin             float32          `json:"crf_min"`
-		CRFMax             float32          `json:"crf_max"`
-		MetricWorkers      int              `json:"metric_workers"`
-		DefaultInitialCRF  float32          `json:"default_initial_crf"`
-		ProbeSampleFrames  int              `json:"probe_sample_frames"`
-		ProbeFullThreshold int              `json:"probe_full_threshold"`
-		Chunks             []chunkTargetLog `json:"chunks"`
+		Target            float32          `json:"target"`
+		Tolerance         float32          `json:"tolerance"`
+		CRFMin            float32          `json:"crf_min"`
+		CRFMax            float32          `json:"crf_max"`
+		MetricWorkers     int              `json:"metric_workers"`
+		DefaultInitialCRF float32          `json:"default_initial_crf"`
+		Chunks            []chunkTargetLog `json:"chunks"`
 	}{
-		Target:             tq.Target,
-		Tolerance:          tq.Tolerance,
-		CRFMin:             tq.CRFMin,
-		CRFMax:             tq.CRFMax,
-		MetricWorkers:      tq.MetricWorkers,
-		DefaultInitialCRF:  tq.InitialCRF,
-		ProbeSampleFrames:  DefaultTargetQualitySampleFrames,
-		ProbeFullThreshold: DefaultTargetQualityFullProbeFrames,
-		Chunks:             logs,
+		Target:            tq.Target,
+		Tolerance:         tq.Tolerance,
+		CRFMin:            tq.CRFMin,
+		CRFMax:            tq.CRFMax,
+		MetricWorkers:     tq.MetricWorkers,
+		DefaultInitialCRF: tq.InitialCRF,
+		Chunks:            logs,
 	}, "", "  ")
 	if err != nil {
 		return

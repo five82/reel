@@ -13,7 +13,7 @@ artifact boundary, and current tuning guidance.
 |------|------|
 | `clips.tsv` | The clip matrix manifest (recipe): abbr, length, resolution, dynamic range, cut timecodes, source. |
 | `run-suite.sh` | Run reel over a set of clips (strict sequential), capturing env metadata, wall, size, GPU util/VRAM, and the per-encode `perf.json` / `target-quality.json`. |
-| `analyze.py` | Summarize a run directory: phase timing, worker history, probe histogram, stop reasons, JOD, encode-vs-metric seconds, window spread. Writes `summary.json`. |
+| `analyze.py` | Summarize a run directory: phase timing, worker history, probe histogram, stop reasons, JOD, encode-vs-metric seconds. Writes `summary.json`. |
 | `compare-runs.py` | Run-level A/B between two run directories (wall, size, probes, JOD). |
 
 ## Usage
@@ -44,7 +44,6 @@ are harvested; pass `--keep-workdirs` to retain it (for example to run
 
 - `scripts/compare-tq.py` -- per-chunk diff of two target-quality runs.
 - `scripts/fullvalidate` -- full-chunk CVVDP ground truth on a kept workdir.
-- `scripts/tqreplay.py` -- replay a `target-quality.json` search.
 - `scripts/chunkbench` -- shot-detection / chunk-planning benchmark.
 
 ## Caveats
@@ -55,5 +54,7 @@ are harvested; pass `--keep-workdirs` to retain it (for example to run
 - `run-meta.json` records the libvship `.so` path but cannot auto-detect whether
   it was built with `MITIGATE_MALLOC_ASYNC`; ensure the correct build (see
   `docs/VSHIP_CONCURRENCY_BUG.md`) before trusting concurrent CVVDP scores.
-- `target-quality.json` scores are the search's sampled belief, not ground
-  truth. For accuracy-trading changes, confirm with `scripts/fullvalidate`.
+- `target-quality.json` scores are the search's whole-chunk probe scores, which
+  the converged probe reuses as final output; they match ground truth by
+  construction but a separate `scripts/fullvalidate` pass re-scores the muxed
+  result for an independent check.

@@ -90,11 +90,10 @@ func TestLevelOfParallelismBitstreamIdentical(t *testing.T) {
 	}
 }
 
-// TestSkipSyncBitstreamIdentical verifies that omitting the final fsync
-// (SkipSync, used for ephemeral probe windows) produces byte-identical output.
-// fsync only flushes already-written bytes, so the encoded IVF must not change;
-// this is the guarantee that lets the probe-sync A/B skip full re-validation.
-func TestSkipSyncBitstreamIdentical(t *testing.T) {
+// TestEncodeDeterministic verifies that encoding the same frames twice produces
+// byte-identical output. This is the invariant that lets target-quality reuse a
+// converged whole-chunk probe verbatim as the final chunk.
+func TestEncodeDeterministic(t *testing.T) {
 	const (
 		width  = 320
 		height = 240
@@ -127,33 +126,32 @@ func TestSkipSyncBitstreamIdentical(t *testing.T) {
 
 	dir := t.TempDir()
 	var ref string
-	for _, skip := range []bool{false, true} {
-		out := filepath.Join(dir, fmt.Sprintf("skip%v.ivf", skip))
+	for _, run := range []int{0, 1} {
+		out := filepath.Join(dir, fmt.Sprintf("run%d.ivf", run))
 		cfg := &EncConfig{
-			Inf:      inf,
-			CRF:      30,
-			Preset:   8,
-			Tune:     0,
-			Output:   out,
-			Width:    width,
-			Height:   height,
-			Frames:   frames,
-			SkipSync: skip,
+			Inf:    inf,
+			CRF:    30,
+			Preset: 8,
+			Tune:   0,
+			Output: out,
+			Width:  width,
+			Height: height,
+			Frames: frames,
 		}
 		if err := EncodeChunkToIVF(context.Background(), cfg, makeReadFrame(), nil); err != nil {
-			t.Fatalf("encode at SkipSync=%v failed: %v", skip, err)
+			t.Fatalf("encode run %d failed: %v", run, err)
 		}
 		data, err := os.ReadFile(out)
 		if err != nil {
-			t.Fatalf("read output for SkipSync=%v: %v", skip, err)
+			t.Fatalf("read output for run %d: %v", run, err)
 		}
 		sum := sha256.Sum256(data)
 		got := hex.EncodeToString(sum[:])
-		t.Logf("SkipSync=%v: %d bytes sha256=%s", skip, len(data), got)
+		t.Logf("run %d: %d bytes sha256=%s", run, len(data), got)
 		if ref == "" {
 			ref = got
 		} else if got != ref {
-			t.Errorf("bitstream differs with SkipSync=%v: %s != %s", skip, got, ref)
+			t.Errorf("bitstream differs between identical encodes: %s != %s", got, ref)
 		}
 	}
 }

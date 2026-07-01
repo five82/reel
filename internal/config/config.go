@@ -91,9 +91,12 @@ const (
 	DefaultChunkDurationUHD float64 = 45.0 // 4K: slower encode, needs longer warmup
 
 	// DefaultTargetQualityMaxChunkDuration caps chunks in target-quality mode.
-	// The search samples windows inside each chunk; shorter chunks reduce the
-	// chance that gradual/high-variance content hides a weak segment between
-	// sampled windows.
+	// Each probe scores the whole chunk, so the cap is not about hiding weak
+	// segments; it bounds per-probe metric cost and keeps chunk granularity
+	// reasonable for parallelism and resume. A 2026-06-30 8-24s sweep found wall
+	// flat across the range (metric work ~= total frames x probes/chunk,
+	// independent of chunk size) with only small content-dependent size/accuracy
+	// effects, so 12s is a balanced default rather than a tuned optimum.
 	DefaultTargetQualityMaxChunkDuration float64 = 12.0
 )
 
