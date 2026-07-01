@@ -44,18 +44,17 @@ For a new entry, keep the format short:
 
 ## Artifact map
 
-Most large artifacts are local under `$REEL_TESTING_DIR` (default `~/testing`):
+Local durable artifacts under `$REEL_TESTING_DIR` (default `~/testing`):
 
 | Path | Contents |
 |------|----------|
-| `perf-ab/post-restore/` | Post-restore metric-worker sweep and bottleneck attribution. |
-| `perf-ab/preset-ab/` | Preset 4-8 sweep for 1080p/4K. |
-| `perf-ab/preset-1080p-ab/` | 1080p preset 4-vs-6 grain-tier sweep. |
-| `perf-ab/cap-lp-retest/` | 4K encode-concurrency ceiling and lp retest. |
-| `perf-ab/skipsync/` | Probe-IVF fsync A/B. |
-| `rebaseline-20260617/` | Fixed-ruler accuracy re-baseline and suspect re-scores. |
-| `vship-concurrency/` | libvship allocator/concurrency diagnosis. |
-| `fulllen-attr/` | Feature-length Sully attribution workdir/logs. |
-| `perf-ab/lp-retest/` | Fixed-CRF level_of_parallelism retest. |
-| `perf-ab/knobB/` | Old full-probe-threshold A/B; magnitude is cascade-confounded. |
-| `band-investigation-20260630/` | Full-scan-vs-sampled matrix + chunk-max sweep (results.tsv, per-run logs, fullvalidate). |
+| `band-investigation-20260630/` | Full-scan-vs-sampled matrix + chunk-max sweep (results.tsv, per-run logs). |
+
+On 2026-06-30, after the full-scan change, the older raw artifacts (`perf-ab/*`,
+`rebaseline-20260617/`, `vship-concurrency/`, `fulllen-attr/`, and the
+full-scan/sampled A/B dirs) were pruned from `$REEL_TESTING_DIR` so future perf
+testing cannot resume-contaminate on a stale `.reel-*` workdir or compare against
+old-code, sampled-mode, or old-schema (`final_sample_score`/`windows`) data. Their
+decisive numbers remain in the entries above; the libvship concurrency diagnosis is
+in `docs/VSHIP_CONCURRENCY_BUG.md`, and preset/concurrency/metric-worker defaults
+are recorded in code comments and `docs/PERFORMANCE_TESTING.md`.
