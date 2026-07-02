@@ -14,6 +14,37 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- Boundary quality vs delivered quality: mid-shot joins measured (no change)
+
+- **Question:** Is shot-detection accuracy / chunk uniformity worth improving
+  from a quality perspective? The one mechanism unique to chunked TQ: chunks
+  are CRF-searched independently, so two adjacent chunks of the *same* shot
+  (a synthetic split) can converge to different CRFs, producing a quality step
+  at a mid-shot keyframe with no scene cut to mask it.
+- **Method/artifacts:** Re-ran chunk planning on the Sully feature with the
+  encode's crop (3840:1600:0:280) and dumped per-boundary kinds, then joined
+  against the encode's per-chunk final CRF/JOD
+  (`perf-runs/20260702-013705-feature-validation/Sully_t00/target-quality.json`).
+  Join validated exactly: 670 chunks, zero frame-count mismatches. Artifact:
+  `Sully_t00/boundary-kinds.tsv` in the same run dir.
+- **Decisive result:** 190 of 669 joins are mid-shot (synthetic split).
+  Perceptual step across them: median 0.073 JOD, p95 0.248, max 0.303 --
+  bounded by the tolerance band (2 x 0.20 = 0.40) by construction, and
+  *smaller* than the steps at natural-cut joins (median 0.088, max 0.371),
+  where the scene change masks the transition anyway. CRF can step hugely at
+  a mid-shot join (max 22.5; 57/190 stepped >= 4 CRF) while JOD stays flat --
+  the per-chunk feedback loop absorbs content drift within long shots.
+  Missed cuts *inside* chunks cost bits, not quality: SVT runs scd=0 with
+  keyint=10s, so an internal cut becomes an expensive inter frame, but
+  whole-chunk full-scan CVVDP still measures the damage and pushes CRF down
+  if it matters.
+- **Decision:** No change; boundary placement is not a quality lever under
+  per-chunk TQ. The only knob that shrinks the mid-shot step is the tolerance
+  band itself, which costs probes everywhere; chunk-duration uniformity was
+  already shown to be a weak lever (8-24s sweep, 2026-06-30). Revisit only if
+  a real viewing complaint points at mid-shot quality pumping; the fix would
+  be band narrowing or tying split siblings to one CRF, not better detection.
+
 ### 2026-07-02 -- Shot-detection workers: physical/2 -> logical/2 (kept)
 
 - **Question:** The feature run showed shot detection costs 577s (9.3% of
@@ -310,7 +341,7 @@ Local durable artifacts under `$REEL_TESTING_DIR` (default `~/testing`):
 | `perf-runs/20260702-110142-shotdet-logical-workers/` | Shot-detection logical/2 worker default end-to-end check (kept) on sullyhv. |
 | `perf-runs/20260702-032557-cvvdp-setup-hoist/` | CVVDP setup hoist + ring-3 A/B (rejected, sub-noise) on air/bts/im/sully. |
 | `perf-runs/20260702-005326-tq-baseline-decode-slope/` | Current reference baseline: full default matrix after decoder-threads + slope-0.025 + timer-sampling changes, with host telemetry. |
-| `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (1h56m 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection. |
+| `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (1h56m 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection, `boundary-kinds.tsv` for the mid-shot-join quality analysis. |
 | `perf-runs/20260702-001943-nearest-seed/` | Nearest-chunk seed fallback A/B (rejected) on ko/sullyhv. |
 | `perf-runs/20260701-235631-content-coverage/` | First current-code characterization of io/ko/soms. |
 | `perf-runs/20260701-234200-sdr-slope-025/` | Unified initial JOD/CRF slope 0.025 A/B (kept) on air/bts/im. |

@@ -46,6 +46,16 @@ independent of chunk size -- with only small content-dependent size/accuracy
 wobble and no consistent optimum. 12s is a balanced default, not a tuned peak;
 larger ("much larger") gives no throughput win and occasionally worse accuracy.
 
+Boundary placement is also **not a quality lever** (2026-07-02, measured on the
+Sully feature): per-chunk TQ pushes every chunk into the band regardless of
+where boundaries fall. The worst case is a mid-shot join (synthetic split, 190
+of 669 joins), where same-shot neighbors can converge to CRFs 22 apart -- yet
+the perceptual step stayed <= 0.303 JOD, under the 0.40 band width that bounds
+it by construction and below the steps at natural cuts. Missed cuts inside a
+chunk cost bits, not quality (SVT scd=0; full-scan CVVDP still measures them).
+Improving detection accuracy or chunk uniformity buys nothing here; the only
+knob on the join step is the tolerance band. See the LOG entry.
+
 ## Current tuning baseline
 
 Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
