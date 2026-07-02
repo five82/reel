@@ -14,6 +14,31 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- Chunk dispatch ordering: assessed, not worth re-examining (no change)
+
+- **Question:** Is the TQ dispatch order (timeline blocks of 32, largest-first
+  within each block; prime 4 chunks at the resolution floor, then +3 in-flight
+  per completion) leaving probes or wall on the table?
+- **Method/artifacts:** No new encodes. Read the ordering/prior code
+  (`orderTargetQualityChunks`, `targetQualityPrior.InitialCRF`) and re-cut the
+  Sully feature's per-chunk log by initial-CRF source
+  (`perf-runs/20260702-013705-feature-validation/Sully_t00/target-quality.json`).
+- **Decisive result:** The ordering already feeds the prior well: 510/670
+  chunks got a neighbor seed (mean 1.35 probes), 157 the median fallback
+  (1.48), 3 the cold default (2.33); 467/670 converged in one probe. Upper
+  bound on any ordering improvement: making every median/default seed as good
+  as a neighbor seed saves ~24 of 930 probes (2.5%), roughly ~1% of wall --
+  inside run noise. Ordering cannot affect delivered quality: every chunk
+  converges into the band independently (same argument as the boundary entry
+  below). Tail idle is already handled by largest-first-within-block, and the
+  adjacent levers were all tested and rejected on 2026-07-01/02: nearest-seed
+  fallback, staggered prime seeds, default-CRF sweep, prime at slot target;
+  smaller schedule blocks measured slower (worse early priors, per the
+  constant's comment).
+- **Decision:** No change; ordering is settled. Revisit only if some content
+  class shows a collapsed neighbor hit-rate (check `initial_crf_source`
+  counts in `target-quality.json`).
+
 ### 2026-07-02 -- Boundary quality vs delivered quality: mid-shot joins measured (no change)
 
 - **Question:** Is shot-detection accuracy / chunk uniformity worth improving

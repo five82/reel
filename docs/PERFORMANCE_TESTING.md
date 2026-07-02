@@ -56,6 +56,14 @@ chunk cost bits, not quality (SVT scd=0; full-scan CVVDP still measures them).
 Improving detection accuracy or chunk uniformity buys nothing here; the only
 knob on the join step is the tolerance band. See the LOG entry.
 
+Dispatch ordering is likewise settled (2026-07-02, assessed from the Sully
+feature artifacts): timeline blocks of 32 with largest-first inside each block
+feed the neighbor prior well -- 510/670 chunks got a neighbor seed and 467
+converged in one probe. A perfect ordering could save at most ~2.5% of probes
+(~1% of wall), inside run noise, and ordering cannot affect quality. The
+adjacent levers (nearest-seed fallback, staggered prime seeds, default-CRF
+sweep, prime at slot target, smaller blocks) were all tested and rejected.
+
 ## Current tuning baseline
 
 Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
