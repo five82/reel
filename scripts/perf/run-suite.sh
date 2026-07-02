@@ -19,6 +19,8 @@
 #   --mode crf|tq      Encode mode (default: tq).
 #   --crf N            CRF for crf mode (default: 28).
 #   --label NAME       Label folded into the run directory name (default: run).
+#   --matrix NAME      Clip matrix when no explicit clips are provided:
+#                      default, coverage, encoder, or long (default: default).
 #   --reel PATH        reel binary to use (default: ./reel in repo if present,
 #                      otherwise `reel` on PATH).
 #   --out DIR          Run-output root (default: $REEL_TESTING_DIR/perf-runs).
@@ -30,8 +32,9 @@
 #
 # Clips are resolved under $REEL_TESTING_DIR by prefix (e.g. `sully-5m` ->
 # sully-5m-4k-hdr.mkv) or given as a direct path to an .mkv. With no clips the
-# standard matrix is used: air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m.
-# sullyhv is a derived local stress asset, not a single-row clips.tsv cut.
+# selected matrix is used. The default matrix is the historical A/B anchor:
+# air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m. sullyhv is a derived local
+# stress asset, not a single-row clips.tsv cut.
 
 set -euo pipefail
 
@@ -41,6 +44,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="tq"
 CRF="28"
 LABEL="run"
+MATRIX="default"
 REEL_BIN=""
 OUT_ROOT=""
 KEEP_WORKDIRS=0
@@ -49,6 +53,9 @@ PASSTHROUGH=()
 CLIPS=()
 
 DEFAULT_MATRIX=(air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m)
+COVERAGE_MATRIX=(air-5m bts-5m im-5m soms-5m io-5m sully-5m kbv1-5m ko-5m sullyhv-15m)
+ENCODER_MATRIX=(sully-5m kbv1-5m ko-5m sullyhv-15m)
+LONG_MATRIX=(air-20m bts-20m sully-20m ko-20m)
 
 die() { echo "run-suite: $*" >&2; exit 1; }
 need() { [[ $# -ge 2 ]] || die "$1 requires a value"; }
@@ -69,6 +76,7 @@ while [[ $# -gt 0 ]]; do
 		--mode) need "$@"; MODE="$2"; shift 2 ;;
 		--crf) need "$@"; CRF="$2"; shift 2 ;;
 		--label) need "$@"; LABEL="$2"; shift 2 ;;
+		--matrix) need "$@"; MATRIX="$2"; shift 2 ;;
 		--reel) need "$@"; REEL_BIN="$2"; shift 2 ;;
 		--out) need "$@"; OUT_ROOT="$2"; shift 2 ;;
 		--keep-workdirs) KEEP_WORKDIRS=1; shift ;;
@@ -82,7 +90,17 @@ done
 
 [[ "$MODE" == "crf" || "$MODE" == "tq" ]] || die "--mode must be crf or tq, got '$MODE'"
 [[ "$GPU_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--gpu-interval must be numeric, got '$GPU_INTERVAL'"
-[[ ${#CLIPS[@]} -gt 0 ]] || CLIPS=("${DEFAULT_MATRIX[@]}")
+if [[ ${#CLIPS[@]} -eq 0 ]]; then
+	case "$MATRIX" in
+		default) CLIPS=("${DEFAULT_MATRIX[@]}") ;;
+		coverage) CLIPS=("${COVERAGE_MATRIX[@]}") ;;
+		encoder) CLIPS=("${ENCODER_MATRIX[@]}") ;;
+		long) CLIPS=("${LONG_MATRIX[@]}") ;;
+		*) die "--matrix must be default, coverage, encoder, or long, got '$MATRIX'" ;;
+	esac
+else
+	MATRIX="custom"
+fi
 
 if [[ -z "$REEL_BIN" ]]; then
 	if [[ -x "$REPO_ROOT/reel" ]]; then
@@ -158,6 +176,7 @@ write_run_meta() {
 	local svt="$1"
 	REEL_TESTING_DIR="$REEL_TESTING_DIR" \
 	RUN_DIR="$RUN_DIR" TIMESTAMP="$TIMESTAMP" LABEL="$LABEL" MODE="$MODE" CRF="$CRF" \
+	MATRIX="$MATRIX" CLIP_TOKENS="$(printf '%s\n' "${CLIPS[@]}")" \
 	REEL_BIN_RESOLVED="$(command -v "$REEL_BIN" 2>/dev/null || echo "$REEL_BIN")" \
 	REEL_VERSION="$("$REEL_BIN" version 2>/dev/null | head -1 || echo unknown)" \
 	REEL_SHA="$(reel_sha)" \
@@ -174,6 +193,8 @@ meta = {
     "label": os.environ["LABEL"],
     "hostname": os.environ["HOSTNAME_VAL"],
     "mode": os.environ["MODE"],
+    "matrix": os.environ["MATRIX"],
+    "clips": os.environ["CLIP_TOKENS"].splitlines(),
     "crf": float(os.environ["CRF"]) if os.environ["MODE"] == "crf" else None,
     "reel_binary": os.environ["REEL_BIN_RESOLVED"],
     "reel_version": os.environ["REEL_VERSION"],

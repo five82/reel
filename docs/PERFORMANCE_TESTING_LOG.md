@@ -14,6 +14,45 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- Current-code baseline refreshed; perf matrices made explicit
+
+- **Question:** After the shot-detection worker default landed, what is the
+  current default-matrix baseline, and how should future A/Bs choose clip
+  coverage without overloading the historical default matrix?
+- **Method/artifacts:** Clean worktree, rebuilt `./reel`, ran
+  `scripts/perf/run-suite.sh --label tq-baseline-current` on the historical
+  default matrix. Added `run-suite.sh --matrix {default,coverage,encoder,long}`
+  and recorded matrix/clip tokens in new `run-meta.json` files; explicit clip
+  args still work and are recorded as `custom`. Artifacts:
+  `perf-runs/20260702-124007-tq-baseline-current`.
+- **Decisive result:** New default matrix: 2556s / 1086.8 MB, 1.36
+  probes/chunk (vs previous 2618s / 1090.2 MB at
+  `20260702-005326-tq-baseline-decode-slope`). Quality stayed in band;
+  sullyhv shot detection now reports 71.1s under the new default. The matrix
+  presets keep the default as the continuity anchor while making broad
+  coverage (`air/bts/im/soms/io/sully/kbv1/ko/sullyhv`), 4K encoder stress,
+  and longer serial-phase checks one-command choices.
+- **Decision:** New reference baseline is
+  `perf-runs/20260702-124007-tq-baseline-current`. Use named matrices instead
+  of ad-hoc clip lists for future non-default coverage.
+
+### 2026-07-02 -- Shot-detection worker oversubscription sweep: no default change
+
+- **Question:** Does pushing shot-detection workers beyond the logical/2
+  default recover more of the remaining serial decode cost on a full feature?
+- **Method/artifacts:** Built `scripts/chunkbench`, ran the Sully feature with
+  `REEL_SHOT_DETECT_WORKERS=16/20/24/32` using chunkbench's no-crop planning
+  path (timing is decode-dominated; the boundary hash is only the
+  worker-invariance gate). Artifacts: `shotdet-workers-20260702/`.
+- **Decisive result:** 16/20/24/32 workers: 414/393/388/394s, all with boundary
+  hash `6e860d05af911e7f` and identical 582-chunk chunkbench plan. 24 workers
+  is best, but only -26s (-6.3%) vs the current default on a 96m 4K title, and 32
+  regresses. The extra workers oversubscribe decoder threads, so the small win
+  is hardware-sensitive and not worth changing the default for ~0.4% total wall.
+- **Decision:** No code change; keep logical/2 workers. Remaining shot-detection
+  wins require a different attack: overlap with encoding, NVDEC decode, or
+  folding crop detection into the same pass.
+
 ### 2026-07-02 -- Chunk dispatch ordering: assessed, not worth re-examining (no change)
 
 - **Question:** Is the TQ dispatch order (timeline blocks of 32, largest-first
@@ -82,7 +121,7 @@ For a new entry, keep the format short:
   max(LogicalCores(),1)/2 (16 here; 32 decode threads = logical core count)
   and an end-to-end run-suite check on sullyhv.
 - **Decisive result:** sullyhv detection 93.5s -> 75.4s (12) -> 71.9s (14,
-  -23%); Sully feature 575s -> 415s (16 workers, -28%, -160s per 2h title).
+  -23%); Sully feature 575s -> 415s (16 workers, -28%, -160s per 96m title).
   Boundary hashes identical everywhere (sullyhv a0d0920628547dad, feature
   6e860d05af911e7f). Scaling is sub-linear (SMT sharing), but the phase runs
   alone so the capacity is free. Note the 1500-frames-per-worker floor already
@@ -137,7 +176,7 @@ For a new entry, keep the format short:
   planning look like? (c) Do mid-pass running scores predict final scores well
   enough to abort doomed probes (early-abort step 1)?
 - **Method/artifacts:** Full default matrix (`--label tq-baseline-decode-slope`)
-  then the complete Sully feature (1h56m 4K HDR, 46 GB rip) through the same
+  then the complete Sully feature (95m50s 4K HDR, 46 GB rip) through the same
   harness, both with the new host CPU/RAM/IO sampler in run-suite.sh and
   temporary 25/50/75% running-score milestones logged per probe; a 10s
   nvidia-smi dmon log ran across the ~4h for thermal drift. Artifacts:
@@ -145,7 +184,7 @@ For a new entry, keep the format short:
   `perf-runs/20260702-013705-feature-validation`.
 - **Decisive result:** Matrix 2618s / 1090 MB vs the 2026-07-01 baseline's
   2717s / 1064 MB: -3.6% wall, +2.4% size, quality in-band everywhere.
-  Feature: wall 6232s (1.12x realtime for a ~2h 4K title -- the batch planning
+  Feature: wall 6232s (1.08x video runtime for a 96m 4K title -- the batch planning
   number), 670 chunks, 1.39 probes/chunk, 100% converged, ZERO chunks at the
   6-probe budget, jod_min/max 9.151/9.548 (entirely in band) -- the old
   3.11-probes/chunk feature regime is gone; the deferred probe-tail item is
@@ -363,10 +402,12 @@ Local durable artifacts under `$REEL_TESTING_DIR` (default `~/testing`):
 
 | Path | Contents |
 |------|----------|
+| `perf-runs/20260702-124007-tq-baseline-current/` | Current reference baseline: default matrix after decoder-threads + slope-0.025 + shot-detection logical/2 worker default, with host telemetry. |
+| `shotdet-workers-20260702/` | Full-feature shot-detection worker oversubscription sweep at 16/20/24/32 workers (no default change). |
 | `perf-runs/20260702-110142-shotdet-logical-workers/` | Shot-detection logical/2 worker default end-to-end check (kept) on sullyhv. |
 | `perf-runs/20260702-032557-cvvdp-setup-hoist/` | CVVDP setup hoist + ring-3 A/B (rejected, sub-noise) on air/bts/im/sully. |
-| `perf-runs/20260702-005326-tq-baseline-decode-slope/` | Current reference baseline: full default matrix after decoder-threads + slope-0.025 + timer-sampling changes, with host telemetry. |
-| `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (1h56m 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection, `boundary-kinds.tsv` for the mid-shot-join quality analysis. |
+| `perf-runs/20260702-005326-tq-baseline-decode-slope/` | Previous reference baseline: full default matrix after decoder-threads + slope-0.025 + timer-sampling changes, with host telemetry. |
+| `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (95m50s 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection, `boundary-kinds.tsv` for the mid-shot-join quality analysis. |
 | `perf-runs/20260702-001943-nearest-seed/` | Nearest-chunk seed fallback A/B (rejected) on ko/sullyhv. |
 | `perf-runs/20260701-235631-content-coverage/` | First current-code characterization of io/ko/soms. |
 | `perf-runs/20260701-234200-sdr-slope-025/` | Unified initial JOD/CRF slope 0.025 A/B (kept) on air/bts/im. |

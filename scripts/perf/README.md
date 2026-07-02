@@ -25,6 +25,15 @@ go build -trimpath -o reel ./cmd/reel
 # Target-quality run over the standard matrix (default clips):
 scripts/perf/run-suite.sh --label baseline
 
+# Wider corpus coverage when changing target-quality behavior:
+scripts/perf/run-suite.sh --matrix coverage --label tq-coverage
+
+# Encoder-side A/B on the clips that stress 4K encode throughput:
+scripts/perf/run-suite.sh --matrix encoder --label encoder-ab
+
+# Longer clips for serial-phase or baseline-refresh checks:
+scripts/perf/run-suite.sh --matrix long --label long-baseline
+
 # Fixed-CRF run over specific clips:
 scripts/perf/run-suite.sh --mode crf --crf 30 --label crf30 sully-5m kbv1-5m
 
@@ -39,6 +48,15 @@ scripts/perf/compare-runs.py <run_A> <run_B>
 By default the bulky `.reel-*` workdir is deleted after the small JSON artifacts
 are harvested; pass `--keep-workdirs` to retain it (for example to run
 `scripts/fullvalidate` afterward for full-chunk CVVDP ground truth).
+
+## Matrices
+
+| Matrix | Clips | Use |
+|--------|-------|-----|
+| `default` | `air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m` | Historical A/B anchor; keep using this for continuity unless a change needs more coverage. |
+| `coverage` | `air-5m bts-5m im-5m soms-5m io-5m sully-5m kbv1-5m ko-5m sullyhv-15m` | Broad TQ behavior coverage across clean/grainy SDR, clean/grainy 4K, CG, and the stress clip. |
+| `encoder` | `sully-5m kbv1-5m ko-5m sullyhv-15m` | Encoder-side A/Bs where 4K encode/memory-bandwidth behavior matters most. |
+| `long` | `air-20m bts-20m sully-20m ko-20m` | Baseline refreshes and serial-phase work where 5m clips understate startup/planning cost. |
 
 ## Related tools
 

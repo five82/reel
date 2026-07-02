@@ -69,14 +69,23 @@ sweep, prime at slot target, smaller blocks) were all tested and rejected.
 Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
 baseline; artifacts live under `$REEL_TESTING_DIR/perf-runs/`. The current
 reference baseline on this box (RTX 5060 Ti) is
-`perf-runs/20260702-005326-tq-baseline-decode-slope`: default matrix wall
-2618s, output 1090 MB (vs 2717s / 1064 MB before the 2026-07-01 decoder-thread
-and slope changes). run-suite.sh also samples host CPU/RAM/disk into a `.host`
-log per clip; analyze.py reports cpu_mean/cpu_p90/mem_avail_min.
+`perf-runs/20260702-124007-tq-baseline-current`: default matrix wall 2556s,
+output 1087 MB (refresh after the shot-detection worker default; previous
+reference was 2618s / 1090 MB at
+`perf-runs/20260702-005326-tq-baseline-decode-slope`). run-suite.sh also samples
+host CPU/RAM/disk into a `.host` log per clip; analyze.py reports
+cpu_mean/cpu_p90/mem_avail_min.
 
-A complete feature (Sully, 1h56m 4K HDR) was validated 2026-07-02
-(`perf-runs/20260702-013705-feature-validation`): wall 6232s (1.12x realtime
--- the per-title planning number for 4K features), 670 chunks at 1.39
+Matrix hygiene: keep the default matrix as the historical A/B anchor. Use
+`--matrix coverage` for broad target-quality behavior changes, `--matrix
+encoder` for 4K encoder-side changes, and `--matrix long` for serial-phase or
+baseline-refresh checks where 5m clips understate startup/planning cost. The
+matrix definitions are in `scripts/perf/README.md` and recorded in
+`run-meta.json` for new runs.
+
+A complete feature (Sully, 95m50s 4K HDR) was validated 2026-07-02
+(`perf-runs/20260702-013705-feature-validation`): wall 6232s (1.08x video
+runtime -- the per-title planning number for 4K features), 670 chunks at 1.39
 probes/chunk, 100% converged, zero maxed chunks, all finals in band. The old
 feature-length probe tail is CLOSED, not just deferred. Host CPU peaked at
 77% p90 and the GPU held 53-56C over 4 hours of continuous load -- no thermal
@@ -136,15 +145,18 @@ not worth changing until hardware/SVT behavior changes.
 ## Open items
 
 - **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
-  a 1h56m 4K feature (9.3% of wall); the logical/2 worker default cut it to
+  a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
   ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode
-  throughput -- the per-frame analysis is a trivial 64x36 luma signature.
-  Remaining attacks, none tested: overlapping detection with the start of
-  encoding (streams boundaries into the dispatcher; hides most of the
-  remaining ~7 min/feature but is invasive -- dispatcher, resume, and prior
-  seeding all assume a complete plan), NVDEC-assisted decode (estimated only
-  1.5-2x: one NVDEC engine vs 16-way software), or folding crop detection
-  into the same pass (~17s). Gate anything here on identical
+  throughput -- the per-frame analysis is a trivial 64x36 luma signature. A
+  chunkbench 16/20/24/32-worker feature sweep found only a marginal additional
+  win (414/393/388/394s, identical boundary hash), so the logical/2 default stays:
+  24 workers saves just ~26s per feature and oversubscribes decoder threads in
+  a hardware-sensitive way. Remaining attacks, none tested: overlapping
+  detection with the start of encoding (streams boundaries into the dispatcher;
+  hides most of the remaining ~7 min/feature but is invasive -- dispatcher,
+  resume, and prior seeding all assume a complete plan), NVDEC-assisted decode
+  (estimated only 1.5-2x: one NVDEC engine vs 16-way software), or folding crop
+  detection into the same pass (~17s). Gate anything here on identical
   scripts/chunkbench "Boundary hash". Note: 5m test clips cap at 4 workers via
   the 1500-frames-per-worker floor, so worker-count changes only show on
   sullyhv or feature-length content.
