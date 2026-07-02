@@ -31,6 +31,19 @@ type CVVDPResult struct {
 	MetricSeconds float64
 }
 
+// metricSourceDecoderThreads sizes the CVVDP reference decoder. One thread
+// starves the GPU at 4K: HEVC10 decodes ~23 fps single-threaded against a
+// ~50 fps GPU CVVDP ceiling, leaving the GPU mostly idle during 4K scoring.
+// Two frame threads roughly double producer throughput. Kept low because four
+// metric workers each own a decoder and compete with the SVT encode lanes for
+// CPU. The probe decoder stays at one thread: AV1 probe decode is ~5x faster
+// than the HEVC source and is not the producer bottleneck.
+const metricSourceDecoderThreads = 2
+
+// A split Open-before-pool-checkout / Compute-after variant (setup hoist,
+// ring depth 3) was tested and rejected 2026-07-02: wall gain was within
+// run-to-run noise, so the simpler single-function pass stays. See
+// PERFORMANCE_TESTING_LOG.md.
 func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, error) {
 	if opts.Processor == nil {
 		return CVVDPResult{}, fmt.Errorf("nil VSHIP processor")
@@ -42,7 +55,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		return CVVDPResult{}, fmt.Errorf("invalid CVVDP dimensions %dx%d", opts.Width, opts.Height)
 	}
 
-	src, err := video.Open(opts.SourcePath, 1)
+	src, err := video.Open(opts.SourcePath, metricSourceDecoderThreads)
 	if err != nil {
 		return CVVDPResult{}, fmt.Errorf("failed to open source for CVVDP: %w", err)
 	}

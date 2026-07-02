@@ -6,7 +6,6 @@ import (
 
 	"codeberg.org/five82/reel/internal/chunk"
 	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/video"
 )
 
 func TestFormatMultiProbeChunksShowsFirstAndLastProbe(t *testing.T) {
@@ -25,19 +24,6 @@ func TestFormatMultiProbeChunksShowsFirstAndLastProbe(t *testing.T) {
 	want := "[0002:3 probes crf 27->58.5 jod 9.9255->9.7000 stop=max_probes]"
 	if got != want {
 		t.Fatalf("formatMultiProbeChunks() = %q, want %q", got, want)
-	}
-}
-
-func TestTargetQualityInitialJODPerCRFUsesLowerSlopeForLargeOrHDR(t *testing.T) {
-	hdrTransfer := int32(16)
-	if got := targetQualityInitialJODPerCRF(1920, 1080, &video.Info{}); got != targetQualityDefaultJODPerCRF {
-		t.Fatalf("SDR HD JOD/CRF = %g, want %g", got, targetQualityDefaultJODPerCRF)
-	}
-	if got := targetQualityInitialJODPerCRF(3840, 1600, &video.Info{}); got != targetQualityLargeJODPerCRF {
-		t.Fatalf("large-frame JOD/CRF = %g, want %g", got, targetQualityLargeJODPerCRF)
-	}
-	if got := targetQualityInitialJODPerCRF(1920, 1080, &video.Info{TransferCharacteristics: &hdrTransfer}); got != targetQualityLargeJODPerCRF {
-		t.Fatalf("HDR JOD/CRF = %g, want %g", got, targetQualityLargeJODPerCRF)
 	}
 }
 

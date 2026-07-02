@@ -49,12 +49,26 @@ larger ("much larger") gives no throughput win and occasionally worse accuracy.
 ## Current tuning baseline
 
 Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
-baseline; artifacts live under `$REEL_TESTING_DIR/perf-runs/`. The final
-2026-07-01 baseline on this box (RTX 5060 Ti) is
-`perf-runs/20260701-001943-tq-baseline-final`: default matrix wall 2717s,
-output 1064 MB, with `sullyhv-15m` at 1.52 probes/chunk and no chunks maxing the
-6-probe budget. That means the old feature-length probe tail is not currently an
-active bottleneck on the stress clip.
+baseline; artifacts live under `$REEL_TESTING_DIR/perf-runs/`. The current
+reference baseline on this box (RTX 5060 Ti) is
+`perf-runs/20260702-005326-tq-baseline-decode-slope`: default matrix wall
+2618s, output 1090 MB (vs 2717s / 1064 MB before the 2026-07-01 decoder-thread
+and slope changes). run-suite.sh also samples host CPU/RAM/disk into a `.host`
+log per clip; analyze.py reports cpu_mean/cpu_p90/mem_avail_min.
+
+A complete feature (Sully, 1h56m 4K HDR) was validated 2026-07-02
+(`perf-runs/20260702-013705-feature-validation`): wall 6232s (1.12x realtime
+-- the per-title planning number for 4K features), 670 chunks at 1.39
+probes/chunk, 100% converged, zero maxed chunks, all finals in band. The old
+feature-length probe tail is CLOSED, not just deferred. Host CPU peaked at
+77% p90 and the GPU held 53-56C over 4 hours of continuous load -- no thermal
+or host-saturation risk for long batches.
+
+CVVDP early-abort (stopping doomed probes mid-pass) was evaluated on 1305
+milestone-logged probes and REJECTED: mid-pass running scores err vs final by
+up to 0.47 JOD (wider than the target band), so a safe guard catches too few
+doomed probes to matter (~1-2% of metric work). Do not revisit without a
+fundamentally better mid-pass predictor.
 
 Metric workers default to **4 at every resolution**. A 2026-06-30 HD A/B found
 4 workers slightly faster than the old 6-worker below-UHD default (683s vs 691s,
@@ -62,6 +76,33 @@ Metric workers default to **4 at every resolution**. A 2026-06-30 HD A/B found
 +2.6%) and used much more VRAM. UHD remains at 4 because 4K runs are mostly
 encoder/memory-bandwidth bound, so extra metric concurrency is not the wall-time
 lever.
+
+The CVVDP **source decoder uses 2 threads** (probe decoder 1). One thread
+starved the GPU at 4K (HEVC10 ~23 fps single-thread vs a ~50 fps GPU CVVDP
+ceiling): threads=2 cut 4K metric_s 12-18% and wall up to -8.8% (kbv1), neutral
+at 1080p (2026-07-01, kept). Do not escalate to 4 threads or a src/dist
+producer split without re-measuring: encode lanes already absorb the freed CPU
+(encode_lane_s +8-12%).
+
+The initial JOD-per-CRF slope is **0.025 for every tier** (2026-07-01; the old
+SDR-only 0.04 under-stepped clean digital content title-long: air -18.5% wall
+under 0.025). Grainy low-CRF content (true slope 0.06-0.09, e.g. bts) pays a
+fixed early-window cost of ~4-8 extra probes per title until the first measured
+slope lands, then the learned median takes over. See the LOG before touching
+this constant.
+
+UHD **prime-phase concurrency stays at the resolution floor (3)**. Priming at
+the slot target (5) was tested and rejected (2026-07-01): once the metric
+decoder was unthrottled the prime-phase idle it targeted disappeared, leaving
+only extra cold-seeded probes (+4-5% probes/chunk) and +1-3% size.
+
+**A/B methodology note:** output sha256 is NOT stable run-to-run -- chunk
+completion order feeds the CRF prior, so probe paths and outputs legitimately
+drift. Gate correctness on probe-score identity at shared (chunk, CRF) points
+(bit-identical when frames and scoring are unchanged) plus probes/chunk, size,
+jod_mae/jod_min, and stop_reasons. Worker history in perf.json is sampled on a
+2s timer as of 2026-07-01; earlier runs' max_active/peak_in_flight are
+completion-biased (the old 4K "max_active 4 < target 5" was an artifact).
 
 SVT-AV1 preset stays **6**. Preset 7 was rejected on the same matrix: only -1.1%
 pooled wall, +10.3% pooled size, and the `sullyhv` stress clip was both slower
@@ -76,10 +117,29 @@ not worth changing until hardware/SVT behavior changes.
 
 ## Open items
 
+- **Shot detection is the largest remaining serial cost (2026-07-02):** 577s
+  on a 1h56m 4K feature = 9.3% of wall (34-38s on 5m 4K clips), fully serial
+  before any encoding with the GPU idle. Candidate attacks, none tested:
+  downscaled detection decode, sharing one decode pass with crop detection
+  (previously dropped as risky on its own, but worth folding into any shotdet
+  rework), NVDEC-assisted decode (audit-corrected estimate: only 1.5-2x,
+  single NVDEC engine vs 8-way software), or overlapping detection with the
+  start of encoding. Gate any of these on a boundary-identity check
+  (scripts/chunkbench "Boundary hash").
+- **Cross-title pairing (deferred by choice, 2026-07-01):** run one 1080p and
+  one 4K reel instance concurrently. The lanes are complementary: 1080p is
+  metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning
+  (GPU ~40%), and VRAM peaks (3.9 + 5.9 GiB) fit together on the 16 GiB card.
+  A 2026-07-01 audit projected 15-35% library-level throughput depending on
+  title mix (air+sully pair: ~475-580s vs 757s serial). Prerequisites before
+  piloting: validate the vship MITIGATE_MALLOC_ASYNC workaround holds
+  cross-process (run 1080p metric passes while a 4K encode runs; gate on
+  per-clip sha256), keep run-suite A/B benchmarking strictly sequential, and
+  put the pairing policy in spindle, not reel.
 - Clean digital 1080p (e.g. ARRI-sourced, grain-free) gains little from
   full-scan (~+2% size) while paying the full wall cost. A variance-triggered
   hybrid was considered and rejected as not worth the complexity; revisit only if
   a 1080p-heavy clean-content batch makes the wall cost bite.
-- If a future full-feature encode shows the old probe-tail behavior again, build
-  a new stress clip or revalidate `sullyhv`; under current full-scan/wide-band
-  search it is **not** in the old feature regime (1.52 probes/chunk, 0% maxed).
+- ~~Probe-tail revalidation~~ CLOSED 2026-07-02: the complete Sully feature ran
+  1.39 probes/chunk, 100% converged, zero maxed chunks
+  (`perf-runs/20260702-013705-feature-validation`).

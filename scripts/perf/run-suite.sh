@@ -57,7 +57,11 @@ need() { [[ $# -ge 2 ]] || die "$1 requires a value"; }
 # interrupted run never leaves an nvidia-smi loop polling the GPU and skewing a
 # later run (the single GPU must host one reel process at a time).
 sampler_pid=""
-cleanup() { [[ -n "${sampler_pid:-}" ]] && kill "$sampler_pid" 2>/dev/null || true; }
+host_sampler_pid=""
+cleanup() {
+	[[ -n "${sampler_pid:-}" ]] && kill "$sampler_pid" 2>/dev/null || true
+	[[ -n "${host_sampler_pid:-}" ]] && kill "$host_sampler_pid" 2>/dev/null || true
+}
 trap cleanup EXIT INT TERM
 
 while [[ $# -gt 0 ]]; do
@@ -219,6 +223,32 @@ for token in "${CLIPS[@]}"; do
 		sampler_pid=$!
 	fi
 
+	# Host sampler: "cpu_busy_pct, mem_available_kib, disk_read_bytes, disk_write_bytes"
+	# per interval (deltas over whole nvme disks, partitions excluded). Answers
+	# whether an encode phase is CPU-saturated, memory-pressured, or IO-bound.
+	hostlog="$clip_dir/$stem.host"
+	: > "$hostlog"
+	host_sampler_pid=""
+	( prev_total=0; prev_idle=0; prev_rd=0; prev_wr=0
+	  while true; do
+		read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
+		total=$((user+nice+system+idle+iowait+irq+softirq+steal))
+		idle_all=$((idle+iowait))
+		mem_avail_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+		rd=0; wr=0
+		while read -r _ _ dev _ _ rsec _ _ _ wsec _; do
+			case "$dev" in nvme[0-9]n1) rd=$((rd+rsec)); wr=$((wr+wsec));; esac
+		done < /proc/diskstats
+		if [[ $prev_total -gt 0 ]]; then
+			dt=$((total-prev_total)); di=$((idle_all-prev_idle))
+			cpu=$(awk -v dt="$dt" -v di="$di" 'BEGIN{if(dt>0)printf "%.1f",100*(dt-di)/dt; else print "na"}')
+			echo "$cpu, $mem_avail_kb, $(( (rd-prev_rd)*512 )), $(( (wr-prev_wr)*512 ))" >> "$hostlog"
+		fi
+		prev_total=$total; prev_idle=$idle_all; prev_rd=$rd; prev_wr=$wr
+		sleep "$GPU_INTERVAL"
+	  done ) &
+	host_sampler_pid=$!
+
 	echo "run-suite: [$stem] encoding..."
 	start=$(date +%s)
 	set +e
@@ -228,6 +258,8 @@ for token in "${CLIPS[@]}"; do
 	elapsed=$(( $(date +%s) - start ))
 	[[ -n "$sampler_pid" ]] && kill "$sampler_pid" 2>/dev/null || true
 	sampler_pid=""
+	[[ -n "$host_sampler_pid" ]] && kill "$host_sampler_pid" 2>/dev/null || true
+	host_sampler_pid=""
 
 	# Harvest the small JSON artifacts out of the workdir.
 	workdir="$(find "$clip_dir" -maxdepth 1 -type d -name ".reel-${stem}-*" | head -1)"

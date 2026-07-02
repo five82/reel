@@ -138,6 +138,39 @@ def load_results_tsv(run_dir):
     return rows
 
 
+def host_stats(clip_dir):
+    """Summarize the .host sample log (cpu_busy_pct, mem_available_kib,
+    disk_read_bytes, disk_write_bytes per interval) written by run-suite.sh."""
+    logs = [e for e in os.listdir(clip_dir) if e.endswith(".host")]
+    if not logs:
+        return {}
+    cpu, mem_kb, rd, wr = [], [], [], []
+    try:
+        with open(os.path.join(clip_dir, logs[0])) as f:
+            for line in f:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) != 4 or parts[0] == "na":
+                    continue
+                cpu.append(float(parts[0]))
+                mem_kb.append(float(parts[1]))
+                rd.append(float(parts[2]))
+                wr.append(float(parts[3]))
+    except (OSError, ValueError):
+        return {}
+    if not cpu:
+        return {}
+    cpu_sorted = sorted(cpu)
+    # Per-sample byte deltas over the wall interval approximate MB/s only if
+    # the interval is known; report per-sample means and let the reader scale.
+    return {
+        "cpu_mean": round(sum(cpu) / len(cpu), 1),
+        "cpu_p90": cpu_sorted[max(0, int(0.9 * len(cpu_sorted)) - 1)],
+        "mem_avail_min_gib": round(min(mem_kb) / 1048576, 2),
+        "disk_read_mb_per_sample": round(sum(rd) / len(rd) / 1e6, 1),
+        "disk_write_mb_per_sample": round(sum(wr) / len(wr) / 1e6, 1),
+    }
+
+
 def summarize_clip(clip_dir, results_row=None):
     perf = _find_json(clip_dir, "perf.json")
     tq = _find_json(clip_dir, "target-quality.json")
@@ -152,6 +185,7 @@ def summarize_clip(clip_dir, results_row=None):
     out.update(perf_stats(perf))
     if tq:
         out.update(tq_stats(tq))
+    out.update(host_stats(clip_dir))
     return out
 
 
@@ -189,11 +223,12 @@ def _fmt(v, spec):
 
 def print_table(summaries):
     cols = ["clip", "wall_s", "MB", "gpu%", "vram", "chunks", "p/ch",
-            "jod_mean", "mae", "enc_s", "met_s", "encode_s", "shot_s"]
+            "jod_mean", "mae", "enc_s", "met_s", "encode_s", "shot_s",
+            "cpu%", "mem_gib"]
     print(f"{cols[0]:<26} {cols[1]:>7} {cols[2]:>7} {cols[3]:>5} {cols[4]:>6} "
           f"{cols[5]:>6} {cols[6]:>5} {cols[7]:>8} {cols[8]:>6} {cols[9]:>7} "
-          f"{cols[10]:>7} {cols[11]:>8} {cols[12]:>7}")
-    print("-" * 118)
+          f"{cols[10]:>7} {cols[11]:>8} {cols[12]:>7} {cols[13]:>5} {cols[14]:>7}")
+    print("-" * 132)
     for s in summaries:
         mb = (s.get("out_bytes") or 0) / 1e6
         print(f"{s['clip']:<26} "
@@ -208,7 +243,9 @@ def print_table(summaries):
               f"{_fmt(s.get('encode_lane_s'), '7.0f')} "
               f"{_fmt(s.get('metric_s'), '7.0f')} "
               f"{_fmt(s.get('phase_encode_s'), '8.0f')} "
-              f"{_fmt(s.get('phase_shotdet_s'), '7.1f')}")
+              f"{_fmt(s.get('phase_shotdet_s'), '7.1f')} "
+              f"{_fmt(s.get('cpu_mean'), '5.0f')} "
+              f"{_fmt(s.get('mem_avail_min_gib'), '7.1f')}")
 
 
 def main():

@@ -34,6 +34,11 @@ const (
 	// per completed chunk after priming. Each completed chunk adds a usable
 	// CRF prior, so concurrency opens up roughly in step with prior coverage.
 	targetQualityFlightGrowth = 3
+
+	// targetQualityProgressSampleInterval paces the timer-based progress
+	// sampler. Matches the perf collector's unchanged-sample throttle so the
+	// worker history stays bounded.
+	targetQualityProgressSampleInterval = 2 * time.Second
 )
 
 type TargetQualityConfig struct {
@@ -130,6 +135,11 @@ func EncodeTargetQuality(
 
 	maxWorkers := MaxAdaptiveWorkers()
 	initialWorkers := initialAdaptiveWorkers(maxWorkers, width, height, availableMemoryBytes())
+	// Priming at the UHD slot target (5) instead of the floor (3) was tested
+	// and rejected (2026-07-01): once the metric decoder stopped starving the
+	// GPU the prime-phase idle it targeted mostly disappeared, so it bought no
+	// wall beyond noise and cost extra cold-seeded probes (+4-5% probes/chunk)
+	// and +1-3% size on two of three 4K clips. See PERFORMANCE_TESTING_LOG.md.
 	primeConcurrency := resolutionWorkerFloor(maxWorkers, width, height)
 	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
@@ -188,6 +198,19 @@ func EncodeTargetQuality(
 		return p
 	}
 
+	// progressCb is invoked from both the collector goroutine and the sampling
+	// ticker; serialize calls so downstream reporters and the perf collector
+	// see a single ordered stream.
+	var progressCbMu sync.Mutex
+	emitProgress := func(p worker.Progress) {
+		if progressCb == nil {
+			return
+		}
+		progressCbMu.Lock()
+		defer progressCbMu.Unlock()
+		progressCb(p)
+	}
+
 	var flightMu sync.Mutex
 	flightCond := sync.NewCond(&flightMu)
 
@@ -203,7 +226,7 @@ func EncodeTargetQuality(
 		return nil
 	}
 
-	initialJODPerCRF := targetQualityInitialJODPerCRF(width, height, inf)
+	initialJODPerCRF := float32(targetQualityDefaultJODPerCRF)
 	searchCtx := quality.SearchContext{
 		Target:     tq.Target,
 		Tolerance:  tq.Tolerance,
@@ -298,8 +321,28 @@ func EncodeTargetQuality(
 			logsMu.Lock()
 			logs = append(logs, result.Log)
 			logsMu.Unlock()
-			if progressCb != nil {
-				progressCb(p)
+			emitProgress(p)
+		}
+	}()
+
+	// Chunk-completion callbacks alone sample the scheduler at a biased
+	// instant -- the finishing worker just released its encode slot -- which
+	// under-reports active/in-flight in perf.json and leaves blind windows
+	// behind slow chunks. A coarse ticker adds unbiased samples between
+	// completions; the perf collector drops unchanged samples, so the history
+	// stays small.
+	go func() {
+		ticker := time.NewTicker(targetQualityProgressSampleInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				progressMu.Lock()
+				p := snapshotProgress()
+				progressMu.Unlock()
+				emitProgress(p)
 			}
 		}
 	}()
@@ -546,24 +589,15 @@ func probeIVFPath(workDir string, chunkIdx int, crf float32) string {
 
 const (
 	targetQualityNeighborMaxDistance = 8
-	targetQualityDefaultJODPerCRF    = 0.04
-	targetQualityLargeJODPerCRF      = 0.025
-	targetQualityPriorMaxAdjustment  = 3.0
+	// targetQualityDefaultJODPerCRF is the no-information JOD-per-CRF slope
+	// used until measured slopes accumulate. Observed slopes across the 1080p
+	// and 4K test corpus cluster at 0.02-0.03; the former SDR-only 0.04 halved
+	// the cold second-probe step and cost extra probes on high-CRF SDR content
+	// (2026-07-01 replay simulation + A/B, see PERFORMANCE_TESTING_LOG.md), so
+	// one slope now serves every tier.
+	targetQualityDefaultJODPerCRF   = 0.025
+	targetQualityPriorMaxAdjustment = 3.0
 )
-
-func targetQualityInitialJODPerCRF(width, height uint32, inf *video.Info) float32 {
-	if targetQualityIsHDR(inf) || width >= 3000 || height >= 1600 {
-		return targetQualityLargeJODPerCRF
-	}
-	return targetQualityDefaultJODPerCRF
-}
-
-func targetQualityIsHDR(inf *video.Info) bool {
-	if inf == nil || inf.TransferCharacteristics == nil {
-		return false
-	}
-	return *inf.TransferCharacteristics == 16 || *inf.TransferCharacteristics == 18
-}
 
 type targetQualityPrior struct {
 	mu            sync.Mutex
@@ -701,8 +735,19 @@ func (p *targetQualityPrior) InitialCRF(chunkIdx int) (float32, string) {
 	case upperNear:
 		return clampCRF(upperCRF, p.minCRF, p.maxCRF), "neighbor"
 	default:
+		// Seeding from the nearest completed chunk instead of the median was
+		// tested and rejected (2026-07-02): flat on sullyhv, worse on ko.
+		// Beyond the neighbor cap a single distant chunk is a noisier
+		// estimator than the median. See PERFORMANCE_TESTING_LOG.md.
 		return medianCRF(values, p.minCRF, p.maxCRF), "median"
 	}
+}
+
+func medianCRF(values []float32, minCRF, maxCRF float32) float32 {
+	if len(values) == 0 {
+		return clampCRF(0, minCRF, maxCRF)
+	}
+	return clampCRF(medianFloat32(values), minCRF, maxCRF)
 }
 
 func probeSlopes(probes []quality.Probe) []float32 {
@@ -726,13 +771,6 @@ func probeSlopes(probes []quality.Probe) []float32 {
 		}
 	}
 	return slopes
-}
-
-func medianCRF(values []float32, minCRF, maxCRF float32) float32 {
-	if len(values) == 0 {
-		return clampCRF(0, minCRF, maxCRF)
-	}
-	return clampCRF(medianFloat32(values), minCRF, maxCRF)
 }
 
 func medianFloat32(values []float32) float32 {

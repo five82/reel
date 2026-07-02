@@ -14,6 +14,208 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- Hard-kill resume validated at stress-clip scale
+
+- **Question:** Does chunk-level resume survive a hard SIGKILL mid-encode (the
+  batch-crash scenario) outside unit tests?
+- **Method/artifacts:** sullyhv encode SIGKILLed at t=240s (4/110 chunks done),
+  rerun with the same output dir. Ephemeral test dir (removed after -- stale
+  `.test-outputs` workdirs are a resume-contamination trap).
+- **Decisive result:** Resume run completed rc=0 in 945s vs ~1156s fresh
+  (saving ~= the killed run's banked progress); shot-cut plan reused from cache
+  (0s vs 93s), completed chunks skipped immediately (progress started 4/110),
+  crop re-ran (~17s, not cached -- known and cheap). Output normal.
+- **Decision:** Resume is batch-safe for crash/restart. No changes needed.
+
+### 2026-07-02 -- CVVDP setup hoist + ring depth 3: rejected
+
+- **Question:** Does moving per-pass host setup (demuxer opens, seek preroll,
+  ring fill) before the metric-pool checkout, plus a 3-deep buffer ring,
+  recover the remaining 1080p GPU idle (audit estimate ~1-2% matrix)?
+- **Method/artifacts:** Split Open/Compute/Close API in quality; checkout moved
+  after OpenChunkCVVDP in scoreChunkProbe. `run-suite.sh --label
+  cvvdp-setup-hoist air/bts/im/sully` vs the 20260702-005326 baseline.
+  Artifacts: `perf-runs/20260702-032557-cvvdp-setup-hoist`.
+- **Decisive result:** Total wall -1.0% (1084 -> 1073s), but bts's -3.5% came
+  with 2 fewer probes (inside the ±2 noise band); excluding that, ~-0.5% --
+  below the noise floor. GPU mean unchanged (air 83.6 -> 83.1). Quality
+  byte-neutral. The remaining 1080p idle is CRF-search serialization
+  (probe N+1 cannot encode until probe N scores), which setup hoisting cannot
+  touch.
+- **Decision:** Rejected; single-function ComputeChunkCVVDP restored (comment
+  at the function documents the outcome). Ring stays 2 pairs.
+
+### 2026-07-02 -- New matrix baseline; full-feature validation (probe-tail item CLOSED); CVVDP early-abort rejected on milestone data
+
+- **Question:** (a) What is the current-code baseline after the kept 2026-07-01
+  changes (decoder threads=2, slope 0.025, timer sampling)? (b) Does a real
+  full feature reproduce the healthy probe behavior, and what does per-title
+  planning look like? (c) Do mid-pass running scores predict final scores well
+  enough to abort doomed probes (early-abort step 1)?
+- **Method/artifacts:** Full default matrix (`--label tq-baseline-decode-slope`)
+  then the complete Sully feature (1h56m 4K HDR, 46 GB rip) through the same
+  harness, both with the new host CPU/RAM/IO sampler in run-suite.sh and
+  temporary 25/50/75% running-score milestones logged per probe; a 10s
+  nvidia-smi dmon log ran across the ~4h for thermal drift. Artifacts:
+  `perf-runs/20260702-005326-tq-baseline-decode-slope`,
+  `perf-runs/20260702-013705-feature-validation`.
+- **Decisive result:** Matrix 2618s / 1090 MB vs the 2026-07-01 baseline's
+  2717s / 1064 MB: -3.6% wall, +2.4% size, quality in-band everywhere.
+  Feature: wall 6232s (1.12x realtime for a ~2h 4K title -- the batch planning
+  number), 670 chunks, 1.39 probes/chunk, 100% converged, ZERO chunks at the
+  6-probe budget, jod_min/max 9.151/9.548 (entirely in band) -- the old
+  3.11-probes/chunk feature regime is gone; the deferred probe-tail item is
+  CLOSED. Host telemetry: CPU 59% mean / 77% p90, min 30 GiB available -- no
+  host saturation; GPU 53-56C across 4h continuous load with no clock/power
+  decay (no thermal risk for multi-day batches). Shot detection is now the
+  largest single serial cost at feature scale: 577s = 9.3% of the feature
+  wall. Early-abort: across 1305 milestone-logged probes (357 finished
+  out-of-band), running-score error vs final at the 50% milestone is
+  median 0.037 but max 0.469 JOD -- wider than the whole 0.4 band -- so a
+  zero-false-abort guard aborts only 8% of doomed probes (50%) / 12% (75%),
+  saving ~1-2% of metric work. Far below the audit's ~3-4% estimate.
+- **Decision:** New reference baseline is
+  `perf-runs/20260702-005326-tq-baseline-decode-slope`. Probe-tail item
+  closed. Early-abort REJECTED and the milestone instrumentation removed
+  (method documented here; re-adding is ~20 lines if a future question needs
+  it). Shot-detection acceleration/overlap recorded as the top open item.
+
+### 2026-07-02 -- Nearest-chunk seed fallback: rejected
+
+- **Question:** The replay simulation suggested seeding no-neighbor chunks from
+  the nearest completed chunk instead of the median (-4 probes on sullyhv,
+  moderate confidence). Real?
+- **Method/artifacts:** InitialCRF median fallback -> nearest completed chunk;
+  `run-suite.sh --label nearest-seed ko-5m sullyhv-15m` (the two clips with the
+  most fallback seeds; anchors: 20260701-222552 for sullyhv,
+  20260701-235631 for ko). Artifacts: `perf-runs/20260702-001943-nearest-seed`.
+- **Decisive result:** sullyhv flat (probes 163->162, inside the ±2 noise
+  band; wall -2.4% is scheduling noise). ko worse: probes 46->50 (+8.7%), wall
+  +4.8%, size +3.4%. Mechanism post-mortem: beyond the 8-chunk neighbor cap a
+  single distant chunk is a noisier estimator than the median -- ko's converged
+  CRFs span 31.75-57.75, so "nearest" carries no locality there.
+- **Decision:** Rejected; median fallback restored (comment at the fallback
+  site). The seeding bundle is now fully resolved: slope 0.025 kept, default
+  sweep / stagger / nearest all rejected.
+
+### 2026-07-02 -- Content-coverage characterization: io/ko/soms first runs under current code
+
+- **Question:** io, ko, and soms had never run under the full-scan/mw4/
+  decode-threads/slope-0.025 code. What are their regimes, and does the slope
+  change's early-window cost generalize?
+- **Method/artifacts:** `run-suite.sh --label content-coverage io-5m ko-5m
+  soms-5m`. Characterization, not an A/B. Artifacts:
+  `perf-runs/20260701-235631-content-coverage`.
+- **Decisive result:** io (clean CG 4K): 484s, 1.39 probes/chunk, median CRF
+  38.75. ko (grain-emulation 4K): 610s -- the slowest 5m clip in the corpus,
+  encode_lane 1664s, GPU 49%; digitally added grain is the 4K encode stress
+  case, ~1.5x a sully-like title for batch planning. soms (light-grain 1080p):
+  241s, median CRF 24.75 -- same low-CRF regime as bts and the same slope-0.025
+  early-window signature (6 of 37 chunks at 3 probes) with clean quality
+  (jod_min 9.169, mae 0.072). Library CRF regimes are bimodal: grainy 1080p
+  ~25-26 vs everything else ~39-47.
+- **Decision:** Characterization recorded; no defaults changed. ko is the
+  preferred 4K encode-stress clip alongside kbv1 (grain-heavy source) for
+  future encoder-side A/Bs.
+
+### 2026-07-01 -- One initial JOD/CRF slope (0.025) for all tiers: kept
+
+- **Question:** The replay simulation said the SDR no-information slope 0.04 is
+  ~2x steeper than measured slopes (0.02-0.03) and predicted -10 suite probes
+  from unifying on 0.025 (the existing HDR/4K value). Does it hold in a real
+  run?
+- **Method/artifacts:** `targetQualityDefaultJODPerCRF` 0.04 -> 0.025, deleted
+  the per-tier split (`targetQualityLargeJODPerCRF`,
+  `targetQualityInitialJODPerCRF`, `targetQualityIsHDR`).
+  `run-suite.sh --label sdr-slope-025` on air/bts/im. Artifacts:
+  `perf-runs/20260701-234200-sdr-slope-025`.
+- **Decisive result:** Mixed per clip, positive net, and the regression is a
+  proven transient. air: probes 57->46, wall 314->256s (-18.5%), the 3-4-probe
+  tail collapsed (probe_hist 3+: 9 -> 1). im: neutral. bts: probes 35->42,
+  wall 191->230s (+20%) -- its true slope is 0.06-0.09 (implied by probe pairs),
+  so the flat default overshoots. BUT all 4 regressed bts chunks started before
+  the first measured slope existed (first multi-probe chunk completed 23:49:14;
+  regressed starts 23:46:28-23:47:52); the prior switches to the measured
+  median after ONE learned slope, and every later chunk converged in 1 probe.
+  The cost is therefore a fixed early-window ~4-8 probes per bts-like title,
+  independent of title length, while air-like titles win title-long. Net on
+  the set: wall -20s (-2.9%), size +2.0% pooled (in-band CRF wobble; jod_min
+  unchanged, all converged). Simulator post-mortem: it missed the bts
+  regression because 1-probe chunks gave it no slope data to extrapolate
+  overshoots -- treat its extrapolation-certified predictions as optimistic on
+  1-probe-dominated content.
+- **Decision:** Kept 0.025 for every tier (also -20 lines). If feature-length
+  validation shows the early window biting harder than expected, the follow-up
+  is faster slope seeding (e.g. pseudo-slopes from default-seed probe + prior
+  results), not a return to 0.04.
+
+### 2026-07-01 -- UHD prime concurrency at slot target: rejected
+
+- **Question:** With the metric decoder unthrottled, does raising the 4K
+  prime-phase in-flight cap from the resolution floor (3) to the initial slot
+  target (5) convert the prime-phase idle into wall? (The audit estimated
+  -25-45s per 4K 5m clip, computed against the pre-decode-threads baseline.)
+- **Method/artifacts:** `primeConcurrency := initialWorkers` at
+  target_quality.go; `run-suite.sh --label prime-slot-target` on
+  sully/kbv1/sullyhv vs anchor `perf-runs/20260701-222552-metric-decode-threads`.
+  Artifacts: `perf-runs/20260701-230633-prime-slot-target`.
+- **Decisive result:** Net wall ~zero: sully -9s and kbv1 -6s (at/inside the
+  ~±8s noise band), sullyhv +20s WORSE. Costs were real: probes/chunk +4.7%
+  (sully) / +4.3% (sullyhv) from the two extra cold-seeded prime chunks, size
+  +1.1% (sully) / +2.8% (sullyhv). The prime-phase GPU idle this targeted was
+  measured against the old slow-metric baseline; faster metric passes already
+  drained the prime window, so the lever's premise expired.
+- **Decision:** Rejected; reverted to the resolution-floor prime. Do not
+  retest unless the prime phase reappears as measured idle in worker history
+  (now trustworthy via the timer sampler).
+
+### 2026-07-01 -- CVVDP source decoder 2 threads (kept); timer-based worker sampling; environment probes closed; seed-policy simulation
+
+- **Question:** A multi-agent performance audit ranked the remaining levers. Top
+  code candidates: (1) the CVVDP metric producer opens both decoders with
+  threads=1 while 4K HEVC10 decodes ~23 fps single-thread against a ~50 fps GPU
+  CVVDP ceiling (GPU idled at 38-42% during 4K scoring) -- does 2-thread source
+  decode convert to wall? (2) perf.json worker history was sampled only at
+  chunk-completion callbacks (biased instants; the baseline's 4K
+  `max_active 4 < target 5` was suspected to be an artifact). Also: is the GPU
+  power-limited, is PCIe degraded, and which first-probe seed policies are
+  worth an encode A/B?
+- **Method/artifacts:** `run-suite.sh --label metric-decode-threads` on
+  air/sully/kbv1/sullyhv vs `perf-runs/20260701-001943-tq-baseline-final`;
+  artifacts `perf-runs/20260701-222552-metric-decode-threads`. Correctness by
+  cross-run probe comparison (scores at identical (chunk, CRF) probes must be
+  bit-identical). Environment: `nvidia-smi -q`/`dmon` during the metric-bound
+  air phase. Seeding: offline replay simulator over the baseline
+  target-quality.json trajectories (validation-gated: reproduced all 279
+  initial CRFs and 384 probe sequences exactly before evaluating policies).
+- **Decisive result:** Decode threads=2: 4K metric_s -12.5..-18.1%, per-pass
+  fps 10.2->12.7 (kbv1), wall kbv1 -8.8% (396->361s), sully -5.7% (437->412s),
+  sullyhv -2.8% (1193->1160s), air -1.9% (noise); encode_lane_s +8-12% (freed
+  CPU absorbed by encode lanes -- expected). 192 shared (chunk,CRF) probes all
+  scored bit-identical; jod_min unchanged; probes/chunk and size within noise.
+  Output sha256 is NOT stable run-to-run (completion-order prior
+  nondeterminism), so future A/Bs must gate on probe-score identity + quality
+  stats, not hashes. Sampler fix: 4K now reports max_active=5 -- the baseline's
+  max_active=4 was confirmed a sampling artifact. Environment: PCIe trains
+  Gen5 x8 under load (full width for the card); GPU draws 111-126 W of the
+  180 W limit at 96% SM during the metric-bound phase (not power-capped;
+  raising to 206 W is pointless); NVDEC unused (dec 0%), decode is CPU-side.
+  Spindle stages encodes on local NVMe (same class as baselines). Seed
+  simulation: measured JOD/CRF slopes are 0.02-0.03 vs the 0.04 SDR initial;
+  slope 0.025 is the only policy positive under optimistic AND worst-case
+  accounting (-10 suite probes, air -17%); nearest-chunk fallback adds -4
+  (sullyhv). Raised default cold CRF and staggered prime seeds WASH OUT:
+  content is bimodal (bts/im/kbv1 converge ~26 first-try; air/sully/sullyhv
+  ~43-47), so any raised/spread cold seed trades air's win for losses
+  elsewhere.
+- **Decision:** Kept metricSourceDecoderThreads=2 (probe decoder stays 1; do
+  not escalate to 4 threads or a src/dist producer split while encode lanes
+  absorb the freed CPU). Kept the 2s timer-based worker sampler. Closed the
+  power-limit/PCIe/workdir environment questions -- none hide a win. Queued
+  slope 0.025 (+ optional nearest-seed) for a real A/B; rejected default-CRF
+  sweep and staggered prime seeds without encodes. Simulator + report:
+  `seedsim-20260701/` (seedsim.py, report.md, results.json).
+
 ### 2026-07-01 -- Current-code baseline; metric workers 4 below UHD; preset 7 rejected
 
 - **Question:** After deleting sampled probes, which remaining performance knobs
@@ -77,6 +279,15 @@ Local durable artifacts under `$REEL_TESTING_DIR` (default `~/testing`):
 
 | Path | Contents |
 |------|----------|
+| `perf-runs/20260702-032557-cvvdp-setup-hoist/` | CVVDP setup hoist + ring-3 A/B (rejected, sub-noise) on air/bts/im/sully. |
+| `perf-runs/20260702-005326-tq-baseline-decode-slope/` | Current reference baseline: full default matrix after decoder-threads + slope-0.025 + timer-sampling changes, with host telemetry. |
+| `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (1h56m 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection. |
+| `perf-runs/20260702-001943-nearest-seed/` | Nearest-chunk seed fallback A/B (rejected) on ko/sullyhv. |
+| `perf-runs/20260701-235631-content-coverage/` | First current-code characterization of io/ko/soms. |
+| `perf-runs/20260701-234200-sdr-slope-025/` | Unified initial JOD/CRF slope 0.025 A/B (kept) on air/bts/im. |
+| `perf-runs/20260701-230633-prime-slot-target/` | UHD prime concurrency at slot target A/B (rejected) on sully/kbv1/sullyhv. |
+| `perf-runs/20260701-222552-metric-decode-threads/` | CVVDP source decoder threads=2 A/B (kept) vs the final baseline; air/sully/kbv1/sullyhv. |
+| `seedsim-20260701/` | Offline seed-policy replay simulator + report over the final-baseline trajectories (validation-gated; slope-0.025 winner, sweep/stagger rejected). |
 | `perf-runs/20260701-001943-tq-baseline-final/` | Final current-code default baseline after the metric-worker default change; includes `source-diff-internal-config.patch` and `post-change-checks.log`. |
 | `perf-runs/20260630-210303-tq-baseline/` | Pre-change default baseline used as the A/B anchor. |
 | `perf-runs/20260630-215633-mw4-hd/` | HD metric-workers=4 A/B against baseline. |
