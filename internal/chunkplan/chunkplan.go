@@ -305,14 +305,17 @@ func shotDetectWorkers(frames, requested int) int {
 		// request, still floored by the per-worker frame count.
 		return max(1, min(requested, maxByFrames))
 	}
-	// Half the physical cores. decoderThreads()/workers is floored at 2, so
-	// cores/2 workers (8 on a 16-core box) keep total decoder threads at the
-	// core count while maximizing segment parallelism. A/B over four 4K 20m
-	// clips plus the Sully feature (2026-06-27, see
-	// docs/PERFORMANCE_TESTING_LOG.md) had cores/2 beat cores/4 by 2-21% with
-	// identical boundary hashes; 6 workers is a trap (16/6 floors to 2
-	// threads/worker = 12 total, fewer than cap4's 16).
-	workers := max(util.PhysicalCores(), 1) / 2
+	// Half the LOGICAL cores. decoderThreads()/workers is floored at 2, so
+	// logical/2 workers put total decoder threads at the logical core count --
+	// detection runs in a serial phase with the rest of the machine idle
+	// (measured 39% CPU during the phase at the old physical/2 default), so
+	// SMT capacity is free. 2026-07-02 A/B: 16 workers cut the Sully-feature
+	// detection 575s -> 415s (-28%) and sullyhv 93.5s -> 71.9s, identical
+	// boundary hashes; on non-SMT boxes logical/2 == the physical/2 default
+	// this replaces. Earlier history (2026-06-27): physical/2 beat physical/4
+	// by 2-21%; 6 workers is a trap (16/6 floors to 2 threads/worker = 12
+	// total, fewer than cap4's 16). See docs/PERFORMANCE_TESTING_LOG.md.
+	workers := max(util.LogicalCores(), 1) / 2
 	return max(1, min(workers, maxByFrames))
 }
 

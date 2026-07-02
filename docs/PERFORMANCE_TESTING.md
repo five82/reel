@@ -117,15 +117,19 @@ not worth changing until hardware/SVT behavior changes.
 
 ## Open items
 
-- **Shot detection is the largest remaining serial cost (2026-07-02):** 577s
-  on a 1h56m 4K feature = 9.3% of wall (34-38s on 5m 4K clips), fully serial
-  before any encoding with the GPU idle. Candidate attacks, none tested:
-  downscaled detection decode, sharing one decode pass with crop detection
-  (previously dropped as risky on its own, but worth folding into any shotdet
-  rework), NVDEC-assisted decode (audit-corrected estimate: only 1.5-2x,
-  single NVDEC engine vs 8-way software), or overlapping detection with the
-  start of encoding. Gate any of these on a boundary-identity check
-  (scripts/chunkbench "Boundary hash").
+- **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
+  a 1h56m 4K feature (9.3% of wall); the logical/2 worker default cut it to
+  ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode
+  throughput -- the per-frame analysis is a trivial 64x36 luma signature.
+  Remaining attacks, none tested: overlapping detection with the start of
+  encoding (streams boundaries into the dispatcher; hides most of the
+  remaining ~7 min/feature but is invasive -- dispatcher, resume, and prior
+  seeding all assume a complete plan), NVDEC-assisted decode (estimated only
+  1.5-2x: one NVDEC engine vs 16-way software), or folding crop detection
+  into the same pass (~17s). Gate anything here on identical
+  scripts/chunkbench "Boundary hash". Note: 5m test clips cap at 4 workers via
+  the 1500-frames-per-worker floor, so worker-count changes only show on
+  sullyhv or feature-length content.
 - **Cross-title pairing (deferred by choice, 2026-07-01):** run one 1080p and
   one 4K reel instance concurrently. The lanes are complementary: 1080p is
   metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning

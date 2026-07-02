@@ -14,6 +14,34 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- Shot-detection workers: physical/2 -> logical/2 (kept)
+
+- **Question:** The feature run showed shot detection costs 577s (9.3% of
+  wall) while host CPU sits at 39% mean / 44% max -- the 8-worker default
+  (physical/2, 16 decode threads) leaves the machine mostly idle during a
+  fully serial phase. Does scaling workers into that headroom convert?
+- **Method/artifacts:** chunkbench sweeps via REEL_SHOT_DETECT_WORKERS
+  (boundary hash must be identical -- worker-count invariance): sullyhv at
+  8/12/14 workers, Sully feature at 8/16. Then the default changed to
+  max(LogicalCores(),1)/2 (16 here; 32 decode threads = logical core count)
+  and an end-to-end run-suite check on sullyhv.
+- **Decisive result:** sullyhv detection 93.5s -> 75.4s (12) -> 71.9s (14,
+  -23%); Sully feature 575s -> 415s (16 workers, -28%, -160s per 2h title).
+  Boundary hashes identical everywhere (sullyhv a0d0920628547dad, feature
+  6e860d05af911e7f). Scaling is sub-linear (SMT sharing), but the phase runs
+  alone so the capacity is free. Note the 1500-frames-per-worker floor already
+  caps 5m clips at 4 workers -- this change only helps content longer than
+  ~8.3 min (at 24 fps), i.e. exactly the production case. On non-SMT boxes
+  logical/2 == physical/2, so the default is unchanged there.
+- **Decision:** Kept `workers = max(LogicalCores(),1)/2` in
+  chunkplan.shotDetectWorkers. Per-feature serial cost drops from ~9.3% to
+  ~6.7% of wall. End-to-end check
+  (`perf-runs/20260702-110142-shotdet-logical-workers`, sullyhv):
+  phase_shotdet_s 94.8 -> 71.6 (-24.4%), identical 110-chunk plan, quality
+  clean; the run's +26s wall is probe-count noise (170 probes vs 163; sullyhv
+  has ranged 162-170 across identical-plan runs -- judge worker changes by the
+  phase counter and boundary hash, not this clip's wall).
+
 ### 2026-07-02 -- Hard-kill resume validated at stress-clip scale
 
 - **Question:** Does chunk-level resume survive a hard SIGKILL mid-encode (the
@@ -279,6 +307,7 @@ Local durable artifacts under `$REEL_TESTING_DIR` (default `~/testing`):
 
 | Path | Contents |
 |------|----------|
+| `perf-runs/20260702-110142-shotdet-logical-workers/` | Shot-detection logical/2 worker default end-to-end check (kept) on sullyhv. |
 | `perf-runs/20260702-032557-cvvdp-setup-hoist/` | CVVDP setup hoist + ring-3 A/B (rejected, sub-noise) on air/bts/im/sully. |
 | `perf-runs/20260702-005326-tq-baseline-decode-slope/` | Current reference baseline: full default matrix after decoder-threads + slope-0.025 + timer-sampling changes, with host telemetry. |
 | `perf-runs/20260702-013705-feature-validation/` | Complete Sully feature (1h56m 4K HDR) validation run: probe-tail closed, per-title planning numbers, milestone dataset for the early-abort rejection. |
