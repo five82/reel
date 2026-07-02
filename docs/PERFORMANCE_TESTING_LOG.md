@@ -14,6 +14,35 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-02 -- CVVDP target range vs streaming philosophy: assessed (no change)
+
+- **Question:** Given the AGENTS.md streaming-first philosophy (speed
+  first-class, quality loss invisible at viewing distance is acceptable),
+  should the CVVDP target range (9.15-9.55), its center, the display model, or
+  the CRF search range (4.25-63.75) change?
+- **Method/artifacts:** No new encodes. Git provenance (band widened +-0.135
+  -> +-0.20 on 2026-06-14, commit 714ac5f, full-feature validated: probes
+  3.11 -> 1.46/chunk, wall -51%) plus the Sully feature log
+  (`perf-runs/20260702-013705-feature-validation`).
+- **Decisive result:** The band is already at the speed-oriented point: 0.40
+  wide ~= 5x probe noise (0.075 JOD), 1.39 probes/chunk, 70% one-probe
+  convergence against a 1.0 floor -- further widening buys at most a few
+  percent of wall while growing the constructive mid-shot join-step bound
+  (0.40 -> 0.60 JOD at +-0.30) and lowering the floor to 9.05. The 06-14 win
+  came from escaping the band-narrower-than-noise regime, which no longer
+  applies. Center/display model are size levers, not speed levers: the model
+  assumes near-critical viewing (55" 4K at 1.3 m ~= 77 px/deg vs ~151 at a
+  typical 2.7 m), so the measured floor (mean 9.385, p10 9.234, min 9.151 on
+  the feature) has real-world margin. A display-model change would also
+  invalidate the calibrated constants (noise 0.075, slope 0.025) and all
+  baselines. CRF range: feature finals spanned 15.25-63.75; the one
+  ceiling chunk converged in-band, and the unused 4.25 floor is harmless.
+- **Decision:** No change to range, center, display model, or CRF bounds.
+  Revisit the center/display model only as a user-coordinated size-policy
+  decision; revisit width only on a measured probe tail. Also fixed the
+  config.go band comment's dangling LOG-entry reference (the entry was
+  condensed away; provenance is commit 714ac5f and this entry).
+
 ### 2026-07-02 -- Current-code baseline refreshed; perf matrices made explicit
 
 - **Question:** After the shot-detection worker default landed, what is the

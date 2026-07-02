@@ -28,8 +28,8 @@ const (
 	// setting: probe measurement noise is ~0.075 JOD, so a half-width below
 	// ~2x that wastes probes landing just outside the band and marching the
 	// search to extra probes. At +-0.20 chunks converge in 1-2 probes with no
-	// streaming-visible quality loss. See docs/PERFORMANCE_TESTING.md and the
-	// log entry "Target band WIDTH is the real probe-tail lever".
+	// streaming-visible quality loss. See docs/PERFORMANCE_TESTING.md
+	// ("Target band and CVVDP display model") before changing this.
 	DefaultTargetQuality = "9.15-9.55"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.

@@ -37,6 +37,30 @@ costs ~+16.6% pooled 1080p wall (1080p is metric-bound) but is exact (score-lie
 0.000 by construction) and far simpler. The wall cost falls only on 1080p, the
 faster tier; 4K is unaffected. Deleting sampling removed ~620 lines.
 
+## Target band and CVVDP display model
+
+The default target range is **9.15-9.55 JOD** (center 9.35, half-width 0.20).
+Band width is the probe-cost knob: it was widened from +-0.135 on 2026-06-14
+(commit 714ac5f, full-feature validated: probes/chunk 3.11 -> 1.46, wall -51%)
+because a band narrower than ~2x probe measurement noise (~0.075 JOD) wastes
+probes marching the search. The current band is ~5x noise, and the 2026-07-02
+feature validation shows 1.39 probes/chunk with 70% one-probe convergence, so
+further widening has thin upside (the floor is 1.0 probes/chunk) and a real
+cost: the band width is the constructive bound on mid-shot join steps (see
+Chunking) and the quality floor drops with it. Do not widen without a measured
+probe tail.
+
+The center (9.35) and the display model are quality policy, not speed levers.
+The default model scores on a 55" 4K panel at 1.3 m (~77 px/deg --
+near-critical viewing, about 2x closer than a typical living room at ~151
+px/deg), so the measured floor (feature: mean 9.385, p10 9.234, min 9.151)
+carries margin at real viewing distances. Lowering the center or relaxing the
+display model would shrink files, not speed up encodes -- treat either as a
+user-coordinated policy change, and note a display-model change invalidates
+the calibrated constants (probe noise ~0.075, initial slope 0.025) and every
+prior baseline artifact. The CRF search range (4.25-63.75) is also fine: the
+Sully feature used 15.25-63.75 and its single ceiling chunk converged in-band.
+
 ## Chunking
 
 `DefaultTargetQualityMaxChunkDuration = 12s` caps chunk size in TQ mode. It is a
