@@ -193,7 +193,15 @@ not worth changing until hardware/SVT behavior changes.
   piloting: validate the vship MITIGATE_MALLOC_ASYNC workaround holds
   cross-process (run 1080p metric passes while a 4K encode runs; gate on
   per-clip sha256), keep run-suite A/B benchmarking strictly sequential, and
-  put the pairing policy in spindle, not reel.
+  put the pairing policy in spindle, not reel. Adjacent evidence
+  (2026-07-04, spindle task-graph Phase 4c): a continuous WhisperX CUDA
+  process (3.3 GiB VRAM) running alongside full reel TQ encodes (air-5m +
+  sully-5m) left probe scores bit-identical at all 56 shared (chunk, CRF)
+  points -- a foreign CUDA process does not perturb CVVDP scoring. This
+  does NOT close the reel-vs-reel cross-process prerequisite (different
+  allocator/vship regime); artifacts at perf-runs/20260703-210442-coex-solo
+  and 20260703-211638-coex-whisperx. Coexistence wall cost on the encode:
+  1080p +29.7%, 4K +7.5%.
 - Clean digital 1080p (e.g. ARRI-sourced, grain-free) gains little from
   full-scan (~+2% size) while paying the full wall cost. A variance-triggered
   hybrid was considered and rejected as not worth the complexity; revisit only if
