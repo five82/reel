@@ -184,6 +184,16 @@ not worth changing until hardware/SVT behavior changes.
   scripts/chunkbench "Boundary hash". Note: 5m test clips cap at 4 workers via
   the 1500-frames-per-worker floor, so worker-count changes only show on
   sullyhv or feature-length content.
+- **Cross-title pairing -- PREREQUISITES MET, implemented consumer-side
+  (2026-07-04):** the vship MITIGATE_MALLOC_ASYNC workaround holds
+  cross-process: a 1080p and a 4K encode as two concurrent reel processes
+  left probe scores bit-identical at all 72 shared (chunk, CRF) points vs
+  solo baselines (perf-runs/20260703-210442-coex-solo vs
+  ~/testing/coex-20260704/pair), pooled wall 510s vs 670s sequential
+  (+23.9%, inside the projected 15-35%). Spindle now schedules one encode
+  slot per resolution tier (its task-graph Phase 5), keeping run-suite
+  A/B benchmarking strictly sequential as required. Original item kept
+  below for provenance.
 - **Cross-title pairing (deferred by choice, 2026-07-01):** run one 1080p and
   one 4K reel instance concurrently. The lanes are complementary: 1080p is
   metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning
