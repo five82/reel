@@ -204,6 +204,12 @@ func ProcessChunked(
 			rep.Verbose(message)
 		}
 	}
+	// Worker reductions and the critical cancel are degraded-behavior events
+	// (they change what the encode does), so they reach the reporter
+	// unconditionally rather than only in verbose mode.
+	encCfg.WarningCallback = func(message string) {
+		rep.Warning(message)
+	}
 
 	finishStep = startPhase(perfc, rep, "Resume setup")
 	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting)

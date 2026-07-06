@@ -144,7 +144,7 @@ func EncodeTargetQuality(
 	// and +1-3% size on two of three 4K clips. See PERFORMANCE_TESTING_LOG.md.
 	primeConcurrency := resolutionWorkerFloor(maxWorkers, width, height)
 	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
-	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback)
+	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback, cfg.WarningCallback)
 	cfg.LevelOfParallelism = resolveLevelOfParallelism(cfg.LevelOfParallelism, rampCeiling)
 
 	// One VSHIP/CUDA handler PER metric worker, scored concurrently. CVVDP is a

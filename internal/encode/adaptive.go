@@ -67,6 +67,11 @@ type adaptiveLimiter struct {
 	slotWaitNanos atomic.Int64
 
 	status statusCallback
+	// warn receives degraded-behavior limiter messages (worker reductions and
+	// the critical cancel) so they can reach the consumer unconditionally,
+	// independent of verbose mode. See statusCallback field for the
+	// verbose-only ramp-up path.
+	warn statusCallback
 
 	observedFrames int
 	totalFrames    int
@@ -83,7 +88,7 @@ func MaxAdaptiveWorkers() int {
 	return max(util.LogicalCores(), 1)
 }
 
-func newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames int, status statusCallback) *adaptiveLimiter {
+func newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames int, status, warn statusCallback) *adaptiveLimiter {
 	maxWorkers = max(maxWorkers, 1)
 	initialWorkers = min(max(initialWorkers, 1), maxWorkers)
 	if rampCeiling <= 0 || rampCeiling > maxWorkers {
@@ -98,6 +103,7 @@ func newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames int
 		target:      initialWorkers,
 		totalFrames: max(totalFrames, 0),
 		status:      status,
+		warn:        warn,
 	}
 	l.cond = sync.NewCond(&l.mu)
 	return l
@@ -291,9 +297,10 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 		swapGrowthInterval := positiveDelta(currentSwapUsed, lastSwapUsed)
 		lastSwapUsed = currentSwapUsed
 
-		if l.criticalPressure(availableFraction, swapGrowthTotal, stats) {
-			setError(ErrMemoryPressure)
-			l.statusf("Memory pressure is critical; canceling encode before swap exhaustion")
+		if critical, reason := l.criticalPressure(availableFraction, swapGrowthTotal, stats); critical {
+			detail := fmt.Sprintf("%s, available %.0f%%, swap +%s", reason, availableFraction*100, util.FormatBytesReadable(swapGrowthTotal))
+			setError(fmt.Errorf("%w: %s", ErrMemoryPressure, detail))
+			l.warnf("Memory pressure is critical (%s); canceling encode before swap exhaustion", detail)
 			cancel()
 			l.wake()
 			return
@@ -329,20 +336,36 @@ func swapRampTotalGrowthLimit(stats util.MemoryStats) uint64 {
 	return max(limit, stats.SwapTotal/swapRampTotalGrowthDenominator)
 }
 
-func (l *adaptiveLimiter) criticalPressure(availableFraction float64, swapGrowth uint64, stats util.MemoryStats) bool {
+// criticalPressure reports whether encoding must stop immediately to avoid a
+// genuine OOM/thrash spiral, and if so, names the signal that fired.
+//
+// Invariant: swap growth alone is never critical. Linux swaps out cold
+// anonymous pages under heavy page-cache churn (e.g. another process
+// streaming tens of GB of files through the page cache) even while tens of
+// GiB of MemAvailable remain -- that is the kernel rebalancing memory, not a
+// machine heading for OOM. A genuine spiral pairs swap growth with low
+// MemAvailable. So the swap-growth triggers below only fire once
+// availableFraction has already dropped into the pressure band
+// (memoryPressureAvailableFraction); low available memory alone is always
+// critical regardless of swap.
+func (l *adaptiveLimiter) criticalPressure(availableFraction float64, swapGrowth uint64, stats util.MemoryStats) (bool, string) {
 	if availableFraction < memoryCriticalAvailableFraction {
-		return true
+		return true, "available memory critically low"
+	}
+	if availableFraction >= memoryPressureAvailableFraction {
+		return false, ""
 	}
 	if swapGrowth >= swapCriticalGrowthBytes {
-		return true
+		return true, "swap growth under low available memory"
 	}
 	// Swap is a performance cliff, not normal operating headroom. If Reel has
-	// already consumed a meaningful fraction of swap during this encode, stop
-	// before the machine spends minutes thrashing or reaches OOM.
+	// already consumed a meaningful fraction of swap during this encode while
+	// available memory is also low, stop before the machine spends minutes
+	// thrashing or reaches OOM.
 	if stats.SwapTotal > 0 && swapGrowth > stats.SwapTotal/20 {
-		return true
+		return true, "swap growth under low available memory"
 	}
-	return false
+	return false, ""
 }
 
 func (l *adaptiveLimiter) hasPressure(availableFraction float64, swapGrowth uint64) bool {
@@ -366,7 +389,7 @@ func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uin
 	l.mu.Unlock()
 
 	if newTarget < old {
-		l.statusf("Memory pressure detected; reducing workers %d -> %d (active %d, available %.0f%%, swap +%s)",
+		l.warnf("Memory pressure detected; reducing workers %d -> %d (active %d, available %.0f%%, swap +%s)",
 			old, newTarget, active, availableFraction*100, util.FormatBytesReadable(swapGrowth))
 	}
 }
@@ -412,5 +435,14 @@ func (l *adaptiveLimiter) maybeRampUp(memoryStable bool) {
 func (l *adaptiveLimiter) statusf(format string, args ...any) {
 	if l.status != nil {
 		l.status(fmt.Sprintf(format, args...))
+	}
+}
+
+// warnf reports degraded-behavior limiter decisions (worker reductions and
+// the critical cancel). Unlike statusf, this is meant to reach the consumer
+// unconditionally rather than only in verbose mode.
+func (l *adaptiveLimiter) warnf(format string, args ...any) {
+	if l.warn != nil {
+		l.warn(fmt.Sprintf(format, args...))
 	}
 }

@@ -216,7 +216,7 @@ func sampleUtilization(l *adaptiveLimiter, active, ticks int, memoryStable bool)
 }
 
 func TestAdaptiveLimiterAccumulatesSlotWait(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 1, 4, 0, nil)
+	limiter := newAdaptiveLimiter(4, 1, 4, 0, nil, nil)
 	ctx := context.Background()
 
 	// The only slot is taken without waiting, so no time is charged.
@@ -247,7 +247,7 @@ func TestAdaptiveLimiterAccumulatesSlotWait(t *testing.T) {
 }
 
 func TestAdaptiveLimiterRampsUpWhenSlotsSaturated(t *testing.T) {
-	limiter := newAdaptiveLimiter(8, 2, 8, 0, nil)
+	limiter := newAdaptiveLimiter(8, 2, 8, 0, nil, nil)
 
 	// Slots fully utilized for a full window: expect a ramp.
 	sampleUtilization(limiter, 2, rampWindowTicks, true)
@@ -258,7 +258,7 @@ func TestAdaptiveLimiterRampsUpWhenSlotsSaturated(t *testing.T) {
 }
 
 func TestAdaptiveLimiterDoesNotRampWhenSlotsIdle(t *testing.T) {
-	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil)
+	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil, nil)
 
 	// Only half the slots used: utilization 0.5 < threshold, no ramp.
 	sampleUtilization(limiter, 2, rampWindowTicks*3, true)
@@ -269,7 +269,7 @@ func TestAdaptiveLimiterDoesNotRampWhenSlotsIdle(t *testing.T) {
 }
 
 func TestAdaptiveLimiterDoesNotRampUnderMemoryPressure(t *testing.T) {
-	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil)
+	limiter := newAdaptiveLimiter(8, 4, 8, 0, nil, nil)
 
 	// Saturated slots but memory not stable: no ramp.
 	sampleUtilization(limiter, 4, rampWindowTicks*2, false)
@@ -280,7 +280,7 @@ func TestAdaptiveLimiterDoesNotRampUnderMemoryPressure(t *testing.T) {
 }
 
 func TestAdaptiveLimiterRampStepGrowsWithTarget(t *testing.T) {
-	limiter := newAdaptiveLimiter(64, 8, 64, 0, nil)
+	limiter := newAdaptiveLimiter(64, 8, 64, 0, nil, nil)
 
 	// At target 8, step is max(1, 8/4) = 2 -> 10.
 	sampleUtilization(limiter, 8, rampWindowTicks, true)
@@ -291,7 +291,7 @@ func TestAdaptiveLimiterRampStepGrowsWithTarget(t *testing.T) {
 }
 
 func TestAdaptiveLimiterHoldsCooldownAfterPressure(t *testing.T) {
-	limiter := newAdaptiveLimiter(8, 6, 8, 0, nil)
+	limiter := newAdaptiveLimiter(8, 6, 8, 0, nil, nil)
 	limiter.reduceTarget(0.15, swapPressureGrowthBytes)
 	reduced := func() int { _, target, _ := limiter.stats(); return target }()
 	if reduced >= 6 {
@@ -303,6 +303,65 @@ func TestAdaptiveLimiterHoldsCooldownAfterPressure(t *testing.T) {
 	if got := func() int { _, target, _ := limiter.stats(); return target }(); got != reduced {
 		t.Fatalf("target ramped during cooldown = %d, want %d", got, reduced)
 	}
+}
+
+// TestCriticalPressure pins the invariant that swap growth alone never stops
+// an encode: Linux swaps out cold anonymous pages under heavy page-cache
+// churn from unrelated processes even while tens of GiB of MemAvailable
+// remain free, which is harmless kernel rebalancing, not a genuine
+// OOM/thrash spiral. A real spiral pairs swap growth with low available
+// memory, so both swap-growth triggers (the flat swapCriticalGrowthBytes
+// threshold and the SwapTotal/20 threshold) only fire once availableFraction
+// has dropped below memoryPressureAvailableFraction. Low available memory
+// alone is always critical regardless of swap.
+func TestCriticalPressure(t *testing.T) {
+	l := &adaptiveLimiter{}
+
+	t.Run("flat threshold gated by available memory", func(t *testing.T) {
+		stats := util.MemoryStats{SwapTotal: 64 << 30} // 64 GiB: SwapTotal/20 = 3.2 GiB, above the 2 GiB growth used here.
+		swapGrowth := uint64(2 << 30)                  // Above swapCriticalGrowthBytes (1 GiB).
+
+		if critical, reason := l.criticalPressure(0.40, swapGrowth, stats); critical {
+			t.Fatalf("2 GiB swap growth with 40%% available should not be critical, got reason %q", reason)
+		}
+		critical, reason := l.criticalPressure(0.15, swapGrowth, stats)
+		if !critical {
+			t.Fatal("2 GiB swap growth with 15% available should be critical")
+		}
+		if reason == "" {
+			t.Fatal("expected a non-empty reason when critical")
+		}
+	})
+
+	t.Run("low available memory alone is critical", func(t *testing.T) {
+		stats := util.MemoryStats{SwapTotal: 64 << 30}
+		critical, reason := l.criticalPressure(0.05, 0, stats)
+		if !critical {
+			t.Fatal("5% available with zero swap growth should be critical")
+		}
+		if reason == "" {
+			t.Fatal("expected a non-empty reason when critical")
+		}
+	})
+
+	t.Run("SwapTotal/20 threshold gated by available memory", func(t *testing.T) {
+		stats := util.MemoryStats{SwapTotal: 8 << 30} // SwapTotal/20 = 429.5 MiB, well under swapCriticalGrowthBytes.
+		swapGrowth := stats.SwapTotal/20 + (10 << 20)  // Just over the SwapTotal/20 floor, far under the flat 1 GiB threshold.
+
+		if critical, reason := l.criticalPressure(0.40, swapGrowth, stats); critical {
+			t.Fatalf("SwapTotal/20 growth with 40%% available should not be critical, got reason %q", reason)
+		}
+		if critical, _ := l.criticalPressure(0.15, swapGrowth, stats); !critical {
+			t.Fatal("SwapTotal/20 growth with 15% available should be critical")
+		}
+	})
+
+	t.Run("no pressure", func(t *testing.T) {
+		stats := util.MemoryStats{SwapTotal: 64 << 30}
+		if critical, reason := l.criticalPressure(0.90, 0, stats); critical {
+			t.Fatalf("no pressure should not be critical, got reason %q", reason)
+		}
+	})
 }
 
 func TestSwapGrowthStableForRamp(t *testing.T) {
@@ -322,7 +381,7 @@ func TestSwapGrowthStableForRamp(t *testing.T) {
 }
 
 func TestAdaptiveLimiterDoesNotRampLateInEncode(t *testing.T) {
-	limiter := newAdaptiveLimiter(4, 2, 4, 100, nil)
+	limiter := newAdaptiveLimiter(4, 2, 4, 100, nil, nil)
 	limiter.observeProgress(80) // 80% complete -> late-encode ramp guard
 
 	sampleUtilization(limiter, 2, rampWindowTicks*2, true)

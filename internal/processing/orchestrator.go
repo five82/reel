@@ -231,10 +231,14 @@ func ProcessVideos(
 				break
 			}
 			if errors.Is(encodeError, encodepipe.ErrMemoryPressure) {
+				// encodeError wraps ErrMemoryPressure with the trigger and the
+				// measured availableFraction/swap-growth numbers from the
+				// limiter (see adaptiveLimiter.criticalPressure); surface them
+				// here rather than just the sentinel's static text.
 				rep.Error(reporter.ReporterError{
 					Title:      "Memory Pressure",
 					Message:    fmt.Sprintf("Stopped encoding %s because Reel could not keep memory usage safely below RAM", inputFilename),
-					Context:    fmt.Sprintf("File: %s", inputPath),
+					Context:    fmt.Sprintf("File: %s; %v", inputPath, encodeError),
 					Suggestion: "Run the same command to resume from completed chunks; Reel will restart conservatively and adapt again",
 				})
 				break
