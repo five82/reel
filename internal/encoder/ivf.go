@@ -26,6 +26,44 @@ func writeIVFHeader(w io.Writer, width, height uint16, fpsNum, fpsDen uint32) er
 	return nil
 }
 
+// PeakSecondBps returns the highest one-second bitrate in an IVF file,
+// bucketing frame payloads by displayed second (frame pts is the frame index
+// in EncodeChunkToIVF's output). Hardware decoders are provisioned for the
+// signaled level's instantaneous rate, so the target-quality search gates
+// probes on this rather than on the chunk average.
+func PeakSecondBps(r io.Reader, fpsNum, fpsDen uint32) (float64, error) {
+	if fpsNum == 0 || fpsDen == 0 {
+		return 0, fmt.Errorf("invalid frame rate %d/%d", fpsNum, fpsDen)
+	}
+	var hdr [32]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return 0, fmt.Errorf("failed to read IVF header: %w", err)
+	}
+	buckets := make(map[uint64]uint64)
+	var frameHdr [12]byte
+	for {
+		if _, err := io.ReadFull(r, frameHdr[:]); err == io.EOF {
+			break
+		} else if err != nil {
+			return 0, fmt.Errorf("failed to read IVF frame header: %w", err)
+		}
+		size := binary.LittleEndian.Uint32(frameHdr[0:4])
+		pts := binary.LittleEndian.Uint64(frameHdr[4:12])
+		second := pts * uint64(fpsDen) / uint64(fpsNum)
+		buckets[second] += uint64(size)
+		if _, err := io.CopyN(io.Discard, r, int64(size)); err != nil {
+			return 0, fmt.Errorf("failed to skip IVF frame data: %w", err)
+		}
+	}
+	var peak uint64
+	for _, bytes := range buckets {
+		if bytes > peak {
+			peak = bytes
+		}
+	}
+	return float64(peak) * 8, nil
+}
+
 // writeIVFFrame writes a single IVF frame (4 bytes size + 8 bytes pts + data).
 func writeIVFFrame(w io.Writer, data []byte, pts int64) error {
 	if err := binary.Write(w, binary.LittleEndian, uint32(len(data))); err != nil {

@@ -264,3 +264,84 @@ func TestInterpolateCRFFourProbesUsesLocalSegment(t *testing.T) {
 		t.Fatalf("InterpolateCRF = %g, want 31.5", got)
 	}
 }
+
+// Rate-aware search: probes whose encodes escaped the bitstream cap are
+// steering-only ("go higher"), never winners. Sizes below use FPS=24,
+// Frames=240 (10s), MaxRateBps=40e6: over-rate above 52.5 MB (42 Mbps with
+// the 5% slack).
+
+func rateCtx() SearchContext {
+	return SearchContext{
+		Target: 9.35, Tolerance: 0.15,
+		CRFMin: 4.25, CRFMax: 63.75, MaxProbes: 6,
+		MaxRateBps: 40e6, FPS: 24,
+	}
+}
+
+func TestSearchOverRateProbeCannotConverge(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	// In-tolerance score but 48 Mbps: must not converge, must push CRF up.
+	state.AddProbe(ctx, Probe{CRF: 10, Score: 9.35, Size: 60e6, Frames: 240})
+	if state.StopReason == StopConverged {
+		t.Fatal("over-rate probe must not converge the search")
+	}
+	if state.SearchMin != 10.25 {
+		t.Fatalf("SearchMin = %g, want 10.25", state.SearchMin)
+	}
+}
+
+func TestSearchBestProbeSkipsOverRateProbes(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 25, Score: 8.7, Size: 30e6, Frames: 240})
+	// Closer to target but over-rate (the chunk-0378 failure shape).
+	state.AddProbe(ctx, Probe{CRF: 8.5, Score: 9.3, Size: 65e6, Frames: 240})
+	best, ok := state.BestProbe(ctx)
+	if !ok || best.CRF != 25 {
+		t.Fatalf("best probe CRF = %g ok=%v, want in-rate probe at 25", best.CRF, ok)
+	}
+}
+
+func TestSearchMonotonicityIgnoresOverRateProbes(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	// Over-rate probe with a regulator-distorted (high) score.
+	state.AddProbe(ctx, Probe{CRF: 13, Score: 9.3, Size: 60e6, Frames: 240})
+	// In-rate probe at higher CRF with lower score would trip the guard if
+	// compared against the distorted probe.
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.0, Size: 30e6, Frames: 240})
+	if state.StopReason == StopMonotonicity {
+		t.Fatal("monotonicity guard must ignore over-rate probes")
+	}
+}
+
+func TestSearchAllOverRateFallsBackToHighestCRF(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 10, Score: 9.4, Size: 70e6, Frames: 240})
+	state.AddProbe(ctx, Probe{CRF: 14, Score: 9.2, Size: 60e6, Frames: 240})
+	best, ok := state.BestProbe(ctx)
+	if !ok || best.CRF != 14 {
+		t.Fatalf("best probe CRF = %g ok=%v, want least-violating probe at 14", best.CRF, ok)
+	}
+}
+
+func TestSearchPeakRateGatesProbe(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	// Average well under the cap (24 Mbps) but a 50 Mbps worst second: the
+	// probe must be treated as over-rate.
+	state.AddProbe(ctx, Probe{CRF: 18, Score: 9.35, Size: 30e6, Frames: 240, PeakBps: 50e6})
+	if state.StopReason == StopConverged {
+		t.Fatal("peak-violating probe must not converge the search")
+	}
+	if state.SearchMin != 18.25 {
+		t.Fatalf("SearchMin = %g, want 18.25", state.SearchMin)
+	}
+	// A peak just at the cap passes the gate.
+	state.AddProbe(ctx, Probe{CRF: 22, Score: 9.35, Size: 30e6, Frames: 240, PeakBps: 41e6})
+	if state.StopReason != StopConverged {
+		t.Fatalf("stop reason = %q, want converged for peak-legal probe", state.StopReason)
+	}
+}

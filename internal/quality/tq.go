@@ -24,6 +24,7 @@ type Probe struct {
 	CRF           float32 `json:"crf"`
 	Score         float32 `json:"score"`
 	Size          uint64  `json:"size"`
+	PeakBps       float64 `json:"peak_bps,omitempty"`
 	EncodeSeconds float64 `json:"encode_seconds,omitempty"`
 	MetricSeconds float64 `json:"metric_seconds,omitempty"`
 	Frames        int     `json:"frames,omitempty"`
@@ -38,6 +39,31 @@ type SearchContext struct {
 	MaxProbes  int
 	InitialCRF float32
 	JODPerCRF  float32
+	MaxRateBps float64 // bitstream cap; probes exceeding it cannot be selected (0 disables)
+	FPS        float64 // frames per second, used to compute probe bitrate
+}
+
+// overRate reports whether a probe's bitrate exceeds the cap, on chunk
+// average or on its worst one-second window. Encodes run with the cap active,
+// so an over-rate probe means the rate regulator failed to hold at that CRF:
+// the probe is unusable regardless of score, and its score is distorted by
+// regulator thrash. Decoders chew seconds, not chunk averages, hence the peak
+// gate; observed stutter on hardware provisioned for the signaled level came
+// from single-second spikes inside chunks whose averages honored the cap. The
+// slack keeps legitimately regulated probes that land at the cap from being
+// rejected as noise, with the peak gate slightly looser for single-second
+// granularity.
+func overRate(ctx SearchContext, p Probe) bool {
+	if ctx.MaxRateBps <= 0 {
+		return false
+	}
+	if p.PeakBps > ctx.MaxRateBps*1.10 {
+		return true
+	}
+	if ctx.FPS <= 0 || p.Frames <= 0 {
+		return false
+	}
+	return float64(p.Size)*8*ctx.FPS/float64(p.Frames) > ctx.MaxRateBps*1.05
 }
 
 // SearchState tracks target-quality search for one chunk.
@@ -96,6 +122,27 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 		if old.CRF == probe.CRF {
 			return
 		}
+	}
+
+	if overRate(ctx, probe) {
+		// The only usable lesson from a cap-violating probe is "search
+		// higher CRFs"; its score must not converge the search or feed the
+		// monotonicity guard.
+		s.Probes = append(s.Probes, probe)
+		s.tried[crfKey(probe.CRF)] = true
+		s.SearchMin = RoundCRFToQuarter(probe.CRF + 0.25)
+		if s.SearchMin > s.SearchMax {
+			s.StopReason = StopBoundsCrossed
+		} else if ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes {
+			s.StopReason = StopMaxProbes
+		}
+		return
+	}
+
+	for _, old := range s.Probes {
+		if overRate(ctx, old) {
+			continue
+		}
 		if (old.CRF-probe.CRF)*(old.Score-probe.Score) >= 0 {
 			s.Probes = append(s.Probes, probe)
 			s.tried[crfKey(probe.CRF)] = true
@@ -132,12 +179,23 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 		return Probe{}, false
 	}
 	best, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
-		return probe.Score >= ctx.Target-ctx.Tolerance
+		return !overRate(ctx, probe) && probe.Score >= ctx.Target-ctx.Tolerance
 	})
 	if found {
 		return best, true
 	}
-	best, _ = bestProbeMatching(ctx, s.Probes, func(Probe) bool { return true })
+	if best, found = bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
+		return !overRate(ctx, probe)
+	}); found {
+		return best, true
+	}
+	// Every probe blew the cap; the highest CRF is the least-violating one.
+	best = s.Probes[0]
+	for _, probe := range s.Probes[1:] {
+		if probe.CRF > best.CRF {
+			best = probe
+		}
+	}
 	return best, true
 }
 
@@ -172,14 +230,23 @@ func initialSearchCRF(ctx SearchContext) float32 {
 }
 
 func nextCRFWithHistory(ctx SearchContext, state *SearchState) float32 {
-	if probesBracketTarget(ctx, state.Probes) {
-		candidate := InterpolateCRF(state.Probes, ctx.Target)
+	// Over-rate probes carry regulator-distorted scores; only rate-legal
+	// probes may steer score-based interpolation. (Their CRFs still shaped
+	// the search bounds when they were added.)
+	usable := make([]Probe, 0, len(state.Probes))
+	for _, probe := range state.Probes {
+		if !overRate(ctx, probe) {
+			usable = append(usable, probe)
+		}
+	}
+	if probesBracketTarget(ctx, usable) {
+		candidate := InterpolateCRF(usable, ctx.Target)
 		if candidate >= state.SearchMin && candidate <= state.SearchMax {
 			return candidate
 		}
 	}
-	if probesAreAllAboveTarget(ctx, state.Probes) {
-		return unbracketedHighCRF(ctx, state)
+	if probesAreAllAboveTarget(ctx, usable) {
+		return unbracketedHighCRF(ctx, state, usable)
 	}
 	return RoundCRFToQuarter((state.SearchMin + state.SearchMax) / 2)
 }
@@ -217,9 +284,9 @@ func probeTargetSide(ctx SearchContext, probe Probe) int {
 	return 0
 }
 
-func unbracketedHighCRF(ctx SearchContext, state *SearchState) float32 {
+func unbracketedHighCRF(ctx SearchContext, state *SearchState, usable []Probe) float32 {
 	candidate := (state.SearchMin + state.SearchMax) / 2
-	if shouldUseAggressiveHighCRFJump(ctx, state.Probes) {
+	if shouldUseAggressiveHighCRFJump(ctx, usable) {
 		candidate = state.SearchMin + (state.SearchMax-state.SearchMin)*0.75
 	}
 	return RoundCRFToQuarter(candidate)

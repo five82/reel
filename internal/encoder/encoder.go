@@ -151,6 +151,8 @@ func SvtParamsDisplay(acBias float32, enableVarianceBoost bool, tune uint8) stri
 		"keyint=10s",
 		"scd=0",
 		"scm=0",
+		"level=5.1",
+		fmt.Sprintf("mbr=%d", maxBitRateBps),
 	)
 
 	return strings.Join(params, ":")

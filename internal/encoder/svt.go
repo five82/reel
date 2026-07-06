@@ -230,6 +230,35 @@ func (e *svtEncoder) close() {
 	C.reel_malloc_trim()
 }
 
+// Playback compatibility contract: every encode signals AV1 level 5.1 main
+// tier and caps the bitstream at that level's main-tier maximum bitrate.
+// SVT's auto level derives only from resolution/fps, so uncapped CRF encodes
+// of grainy content can burst far past the signaled level's bitrate bound.
+// Hardware decoders provision buffers and throughput from the signaled level
+// and stall on the violation (observed: Pixel 10 Pro stalling on a 56 Mbps
+// burst in a 1080p stream that signaled level 4.0 / 12 Mbps). Level 5.1
+// (4096x2176@60) covers every disc source Reel encodes and is the baseline
+// capability of AV1 hardware decoders. The cap engages SVT's capped-CRF mode.
+//
+// On chunks where the cap binds hard, lowering CRF degrades CVVDP (the rate
+// regulator thrashes), so the target-quality search's monotonicity guard
+// fires and the chunk falls back to its initial CRF with the cap holding the
+// rate. That fallback is the intended behavior, not a search failure.
+
+// signaledLevel is EbSvtAv1EncConfiguration.level's encoding of AV1
+// level 5.1 (major*10 + minor).
+const signaledLevel = 51
+
+// maxBitRateBps is AV1 level 5.1 main tier MaxBitrate in bits/second.
+// A var so tests can encode an uncapped baseline; production never mutates it.
+var maxBitRateBps = uint32(40_000_000)
+
+// MaxBitRateBps returns the bitstream cap applied to every encode, for the
+// target-quality search to reject probes whose encodes escaped it.
+func MaxBitRateBps() uint32 {
+	return maxBitRateBps
+}
+
 // setSvtConfig populates the SVT-AV1 configuration using parse_parameter.
 func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 	fps := float64(cfg.Inf.FPSNum) / float64(cfg.Inf.FPSDen)
@@ -262,6 +291,20 @@ func setSvtConfig(config *C.EbSvtAv1EncConfiguration, cfg *EncConfig) error {
 	}
 	if cfg.LevelOfParallelism > 0 {
 		C.reel_set_level_of_parallelism(config, C.uint32_t(cfg.LevelOfParallelism))
+	}
+
+	// Set directly: "level" has no parse_parameter name, and max_bit_rate's
+	// struct field is unambiguously bits/second while the CLI's "mbr" is kbps.
+	config.level = C.uint32_t(signaledLevel)
+	config.max_bit_rate = C.uint32_t(maxBitRateBps)
+	if maxBitRateBps > 0 {
+		// Plain max_bit_rate is only loosely enforced (observed ~60%
+		// overshoot at the default allowance). gop-constraint-rc would be the
+		// principled fix but SVT restricts it to VBR. Tightening the
+		// overshoot allowance is the remaining lever in capped-CRF mode.
+		if err := parseSvtParam(config, "mbr-overshoot-pct", "0"); err != nil {
+			return err
+		}
 	}
 
 	var optionalParams [][2]string

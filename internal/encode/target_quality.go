@@ -1,6 +1,7 @@
 package encode
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"codeberg.org/five82/reel/internal/chunk"
+	"codeberg.org/five82/reel/internal/encoder"
 	"codeberg.org/five82/reel/internal/quality"
 	"codeberg.org/five82/reel/internal/video"
 	"codeberg.org/five82/reel/internal/worker"
@@ -235,6 +237,8 @@ func EncodeTargetQuality(
 		MaxProbes:  tq.MaxProbes,
 		InitialCRF: tq.InitialCRF,
 		JODPerCRF:  initialJODPerCRF,
+		MaxRateBps: float64(encoder.MaxBitRateBps()),
+		FPS:        float64(inf.FPSNum) / float64(inf.FPSDen),
 	}
 	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
 	seedTargetQualityPrior(workDir, doneSet, prior)
@@ -535,14 +539,35 @@ func encodeChunkProbe(
 		return quality.Probe{}, fmt.Errorf("no frames scored for chunk %04d", ch.Idx)
 	}
 
+	peakBps, err := probePeakSecondBps(probePath, inf)
+	if err != nil {
+		return quality.Probe{}, err
+	}
+
 	return quality.Probe{
 		CRF:           crf,
 		Score:         result.Score,
 		Size:          probeResult.Size,
+		PeakBps:       peakBps,
 		EncodeSeconds: encodeSeconds,
 		MetricSeconds: result.MetricSeconds,
 		Frames:        result.Frames,
 	}, nil
+}
+
+// probePeakSecondBps measures a probe IVF's worst one-second bitrate for the
+// search's rate gate.
+func probePeakSecondBps(probePath string, inf *video.Info) (float64, error) {
+	f, err := os.Open(probePath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open probe for peak-rate scan: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	peakBps, err := encoder.PeakSecondBps(bufio.NewReaderSize(f, 1<<20), inf.FPSNum, inf.FPSDen)
+	if err != nil {
+		return 0, fmt.Errorf("failed to scan probe peak rate: %w", err)
+	}
+	return peakBps, nil
 }
 
 func scoreChunkProbe(
