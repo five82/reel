@@ -306,7 +306,7 @@ func (l *adaptiveLimiter) monitor(ctx context.Context, cancel context.CancelFunc
 			return
 		}
 
-		if l.hasPressure(availableFraction, swapGrowthInterval) {
+		if l.hasPressure(availableFraction) {
 			l.reduceTarget(availableFraction, swapGrowthInterval)
 			continue
 		}
@@ -339,12 +339,13 @@ func swapRampTotalGrowthLimit(stats util.MemoryStats) uint64 {
 // criticalPressure reports whether encoding must stop immediately to avoid a
 // genuine OOM/thrash spiral, and if so, names the signal that fired.
 //
-// Invariant: swap growth alone is never critical. Linux swaps out cold
-// anonymous pages under heavy page-cache churn (e.g. another process
-// streaming tens of GB of files through the page cache) even while tens of
-// GiB of MemAvailable remain -- that is the kernel rebalancing memory, not a
-// machine heading for OOM. A genuine spiral pairs swap growth with low
-// MemAvailable. So the swap-growth triggers below only fire once
+// Invariant: swap growth alone is never memory pressure -- not for the
+// critical cancel here and not for worker reductions (hasPressure). Linux
+// swaps out cold anonymous pages under heavy page-cache churn (e.g. another
+// process streaming tens of GB of files through the page cache) even while
+// tens of GiB of MemAvailable remain -- that is the kernel rebalancing
+// memory, not a machine heading for OOM. A genuine spiral pairs swap growth
+// with low MemAvailable. So the swap-growth triggers below only fire once
 // availableFraction has already dropped into the pressure band
 // (memoryPressureAvailableFraction); low available memory alone is always
 // critical regardless of swap.
@@ -368,8 +369,12 @@ func (l *adaptiveLimiter) criticalPressure(availableFraction float64, swapGrowth
 	return false, ""
 }
 
-func (l *adaptiveLimiter) hasPressure(availableFraction float64, swapGrowth uint64) bool {
-	return availableFraction < memoryPressureAvailableFraction || swapGrowth >= swapPressureGrowthBytes
+// hasPressure follows the criticalPressure invariant: only low available
+// memory is pressure. Swap growth at high availability is cache-churn noise
+// (it throttled a healthy solo 4K encode to 1 worker for hours with 59-75%
+// available); within the band it escalates the reduction step instead.
+func (l *adaptiveLimiter) hasPressure(availableFraction float64) bool {
+	return availableFraction < memoryPressureAvailableFraction
 }
 
 func (l *adaptiveLimiter) reduceTarget(availableFraction float64, swapGrowth uint64) {

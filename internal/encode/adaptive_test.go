@@ -364,6 +364,24 @@ func TestCriticalPressure(t *testing.T) {
 	})
 }
 
+// TestHasPressure pins the same invariant for worker reductions: swap growth
+// with high available memory is cache-churn noise, never pressure. Before
+// this gate, a healthy solo 4K encode was throttled to 1 worker for hours by
+// swap trickle at 59-75% available.
+func TestHasPressure(t *testing.T) {
+	l := &adaptiveLimiter{}
+
+	if l.hasPressure(0.75) {
+		t.Fatal("75% available should not be pressure regardless of swap")
+	}
+	if l.hasPressure(memoryPressureAvailableFraction) {
+		t.Fatal("exactly at the band boundary should not be pressure")
+	}
+	if !l.hasPressure(0.15) {
+		t.Fatal("15% available should be pressure")
+	}
+}
+
 func TestSwapGrowthStableForRamp(t *testing.T) {
 	stats := util.MemoryStats{SwapTotal: 64 << 30}
 
