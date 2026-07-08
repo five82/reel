@@ -22,6 +22,8 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 | spindle | `~/projects/spindle/` | Orchestrator that shells out to Reel during ENCODING |
 | flyer | `~/projects/flyer/` | Read-only TUI for Spindle |
 
+Spindle pins reel in its `go.mod` by commit. After pushing reel changes, bump the dependency in spindle (`go get codeberg.org/five82/reel@main && go mod tidy`), run spindle's `./check-ci.sh`, and commit/push spindle.
+
 ## Critical Expectations
 
 - Apply YAGNI ("You Aren't Gonna Need It") and KISS ("Keep It Simple, Stupid"). Build only what the current task requires -- do not add abstractions, generality, or "future-proofing" for needs that do not yet exist. When two approaches work, take the simpler one. (Configuration/knobs are covered by the next bullet.)
