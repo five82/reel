@@ -150,8 +150,10 @@ func TestMaxBitRateCapsBitstream(t *testing.T) {
 	// The achieved rate must track the cap value, not a QP-ceiling floor:
 	// this pins max_bit_rate's units as bits/second (a kbps misread would
 	// crush the output to single-digit Mbps). The regulator lands anywhere
-	// from ~70% to ~130% of the cap depending on threading.
-	if cappedMbps < 20 || cappedMbps > 55 {
+	// from ~50% to ~130% of the cap depending on platform and threading
+	// (observed: ~20 Mbps on an ARM LOP-3 CI runner, ~39 Mbps locally), so
+	// the floor only needs to clear the single-digit kbps-misread case.
+	if cappedMbps < 12 || cappedMbps > 55 {
 		t.Errorf("capped encode %.1f Mbps not tracking the 40 Mbps cap", cappedMbps)
 	}
 }
