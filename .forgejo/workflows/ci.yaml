@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@v7
 
       - name: Install native dependencies
         run: |
