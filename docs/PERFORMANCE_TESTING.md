@@ -31,10 +31,17 @@ exactly 20 chunks dual-score every probe to calibrate the title's SSIMU2
 offset from the `60.8 + 36*(JOD-9.35)` anchor, then later chunks search at
 `60.8+offset +/- 7.2`. **HDR and >1080p use CVVDP** as before, and explicit
 `--target-quality`/`--cvvdp-display` forces CVVDP. Measured: im-20m wall -47%
-(769->407s), feature-scale projection ~-50%; ground-truth quality mean
+(769->407s), feature-scale projection ~-50%; full-output CVVDP validation mean
 9.39-9.40 with rare per-chunk outliers to ~9.07; size -2..+12% by title
-(typical +2-5%). The tolerance band and initial slope are defined in JOD and
-scale onto the SSIMU2 axis by the fixed 36x anchor slope
+(typical +2-5%). An independent 2026-07-11 reassessment says **keep the warmup
+while CVVDP defines SDR policy**: five title point estimates cut mapping bias
+0.075->0.016 JOD (only one title held out), and on that held-out title pure
+global SSIMU2 spent +27% total size while a pure known-offset A/B isolated 13%
+of size to the missing correction. This validates SSIMU2 as a fast local CVVDP
+surrogate, not CVVDP as subjective ground truth; choosing native SSIMU2's grain
+preference requires a blinded subjective test. See the LOG entry and
+`$REEL_TESTING_DIR/calibration-evaluation-20260711/`. The tolerance band and
+initial slope are defined in JOD and scale onto the SSIMU2 axis by the fixed 36x anchor slope
 (`quality/metric.go`), so the band/slope guidance below covers both tiers.
 Do NOT benchmark SDR-tier changes on 5m clips (warmup dominates them); use
 im-20m or longer. See the two 2026-07-10 LOG entries.

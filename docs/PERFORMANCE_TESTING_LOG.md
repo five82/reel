@@ -14,6 +14,36 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-11 -- SDR SSIMU2 calibration independently reassessed: KEEP for CVVDP policy
+
+- **Question:** Is the unusual per-title CVVDP warmup a valid/valuable way to
+  calibrate SDR SSIMU2, or should Reel delete it and use a fixed native SSIMU2
+  target? HDR remains CVVDP-only either way.
+- **Method/artifacts:** Audited the estimator and metric literature; reanalyzed
+  the 4-title/136-final/144-ladder-point corpus; recovered and SSIMU2-scored
+  every retained warmup probe (101 pairs); then added a held-out 5m 1080p SDR
+  *Breaking Bad* title with hybrid, pure-global, and pure-oracle-offset A/Bs
+  plus a preselected 6-chunk x 6-CRF held-out ladder. Full report and new metric
+  artifacts: `$REEL_TESTING_DIR/calibration-evaluation-20260711/`; runs:
+  `perf-runs/20260711-120257-*`, `20260711-121152-*`, `20260711-124042-*`.
+- **Decisive result:** The intercept correction is valid **as a fast surrogate
+  for Reel's existing CVVDP-denominated policy**, not as proof that CVVDP is
+  subjective ground truth. Five title point estimates reduced mean absolute
+  mapping bias 0.075->0.016 JOD and worst bias 0.196->0.025; only BB was truly
+  held out. Its warmup offset -4.217 predicted a preselected non-warmup ladder's
+  -4.014 median residual (-0.006 JOD bias vs +0.111 global). Pure global vs
+  pure oracle isolated the correction at -13.0% total size with equal wall;
+  end-to-end pure global vs hybrid was +27.3% size for +0.094 frame-weighted
+  mean JOD. The prior grain stress title was +32% size under global SSIMU2.
+  Averages do not establish subjective invisibility; a blinded grain A/B is
+  required to choose SSIMU2's perceptual preference over CVVDP's.
+- **Decision:** KEEP calibration while CVVDP defines SDR quality policy; HDR is
+  unchanged. Deleting only the warmup is a policy change, not cleanup, and
+  retaining `60.8 +/- 7.2` would still be corpus-CVVDP-derived rather than
+  independent SSIMU2. Do not add slope fitting or periodic recalibration.
+  Low-priority follow-ups: log the exact 20 lock pairs; broaden validation to
+  animation/CG, 720p, clean digital, and restored/denoised SDR.
+
 ### 2026-07-11 -- NVDEC metric decode tested and REJECTED (both metric paths)
 
 - **Question:** 1080p metric passes are decode-bound per-worker (59-91 fps
@@ -119,8 +149,9 @@ For a new entry, keep the format short:
     2da7cf8 (AV1 level 5.1 contract) legitimately changed 4K bitstreams.
 - **Decision:** kept (pending user commit). Known accepted trade-offs:
   occasional per-chunk mapping outlier below the old floor (worst observed
-  9.07, ~1-2 per 136 chunks, invisible at real viewing distances per the
-  display-model margin); title size centering scatter roughly -2..+12%
+  9.07, ~1-2 per 136 chunks; the display model predicts viewing-distance
+  margin, but subjective visibility was not tested); title size centering
+  scatter roughly -2..+12%
   (typical +2-5%) vs CVVDP -- the offset estimator samples the first ~16-20
   dispatched chunks (largest-first within a block), a diversity/bias
   follow-up if it bites. Other follow-ups: close the warmup CVVDP scorer
