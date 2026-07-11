@@ -168,7 +168,7 @@ not worth changing until hardware/SVT behavior changes.
 
 ## Open items
 
-- **SDR <=1080p SSIMU2 probes -- IMPLEMENTED 2026-07-10 (uncommitted):**
+- **SDR <=1080p SSIMU2 probes -- IMPLEMENTED 2026-07-10:**
   SDR sources at or below 1080p auto-probe with SSIMULACRA2 after a
   bounded per-title CVVDP warmup (20 dual-scored chunks calibrate the
   title's SSIMU2 offset from the `60.8 + 36*(JOD-9.35)` anchor; later
@@ -185,11 +185,14 @@ not worth changing until hardware/SVT behavior changes.
   during the warmup window, then 182 MiB steady state for the rest of
   the run; wall unchanged). Follow-ups, none blocking: offset estimator
   samples the first ~16-20 dispatched (largest-first) chunks -- add
-  diversity if title size centering bites; 1080p metric passes are now
-  DECODE-bound (59-91 fps/worker vs 395 GPU fps) -- metric decoder
-  threads and NVDEC-assisted metric decode are the next 1080p levers
-  (hardware decode is on the user's backlog; it pays in the encode phase
-  where decode competes with SVT lanes, not in shot detection).
+  diversity if title size centering bites. NVDEC metric decode was fully
+  implemented, A/B tested, and REJECTED 2026-07-11: bit-exact and +11-15%
+  SSIMU2 probe throughput, but wall-NEUTRAL (the metric phase is not the
+  1080p critical path at 4 metric workers) and CVVDP probes got 5-8%
+  slower with +1.6 GiB 4K VRAM. Per-worker decode speed is NOT a 1080p
+  wall lever; do not retest decode-side changes unless metric workers
+  become the critical path. See the LOG entry (implementation preserved
+  as a patch next to the A/B artifacts).
 - **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
   a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
   ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode

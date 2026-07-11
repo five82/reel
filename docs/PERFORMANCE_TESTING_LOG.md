@@ -14,6 +14,41 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-11 -- NVDEC metric decode tested and REJECTED (both metric paths)
+
+- **Question:** 1080p metric passes are decode-bound per-worker (59-91 fps
+  software vs 395 GPU fps SSIMU2); does NVDEC hardware decode of the metric
+  source/probe cut wall time, and is it safe (bit-exact) for scoring?
+- **Method/artifacts:** Implemented `video.OpenHWDecode`: shared CUDA device
+  context (primary-context flag, shares VSHIP's context), whitelist
+  H.264/HEVC/VC-1/AV1 (spec-exact codecs only; MPEG-2 excluded -- IDCT not
+  bit-exact and DVD decode is cheap), automatic software fallback at open and
+  in-stream via get_format, exact NV12/P010 plane conversions (not swscale)
+  for bit-identity, `REEL_DISABLE_HWDEC=1` kill switch, and a
+  `scripts/hwdeccheck` diagnostic. A/B via run-suite:
+  `$REEL_TESTING_DIR/perf-runs/20260711-*hwdec-*` (im-5m/bts-5m/sully-5m
+  pair, then 2x im-20m pairs). The full implementation is preserved as
+  `$REEL_TESTING_DIR/perf-runs/20260711-hwdec-implementation.patch` (applies
+  to faefa07).
+- **Decisive result:** Decode is provably safe: hwdeccheck 360/360 frames
+  byte-identical across all three codecs (RTX 5060 Ti hw-decodes VC-1), and
+  probe-score bit-identity held in real encodes (5m pair 98/101 shared points
+  identical, im-20m 104/108; every diff had a differing probe size = SVT
+  encode nondeterminism). But it does not pay: CVVDP probes got consistently
+  5-8% SLOWER (sully-5m 11.7 vs 12.6 fps/probe) with 4K VRAM peak up
+  5.9->7.5 GiB -- CVVDP is GPU-compute-bound and NVDEC download traffic
+  contends with VSHIP compute. SSIMU2 probes got +11-15% faster (im-20m
+  47.1/47.9 vs 43.0/41.5 fps/probe over two pairs) yet wall time was neutral
+  to slightly worse (hw 416/434s vs sw 406/430s): the metric phase is not
+  the 1080p critical path at 4 metric workers, so per-probe decode speed
+  does not reach wall time.
+- **Decision:** REJECTED everywhere and removed; reverted to software decode
+  on both metric paths. Probe throughput that does not reach wall time is
+  not worth a second decode path. Do not retest unless metric workers become
+  the wall-time critical path (e.g. cross-title pairing lands or GPU scoring
+  gets much faster); if that happens, start from the preserved patch, and
+  keep MPEG-2 software-only.
+
 ### 2026-07-11 -- Warmup CVVDP scorer pool closed after calibration lock
 
 - **Question:** The SSIMU2 warmup pool held ~3.5 GiB of CVVDP handler VRAM
