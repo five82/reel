@@ -21,21 +21,38 @@ history, with only the decisive summary kept here.
 
 ## Target-quality probe strategy (current)
 
-Every probe scores the **whole chunk** with a single CVVDP pass, at every
+Every probe scores the **whole chunk** in a single metric pass, at every
 resolution. The converged probe IVF is reused verbatim as the final chunk (no
 re-encode). There is no sampled-window mode and no full-probe threshold.
 
-Why (2026-06-30 full-scan-vs-sampled matrix, all 4 1080p clips ground-truth
-validated; see LOG): the old 3x48 sampled windows used a worst-window pooling
-that was systematically pessimistic on the 257-288 frame band (~25% of chunks),
-so it under-reported quality and **over-encoded** -- 6 chunks pushed above the
-target band across the set, larger files (pooled -8.3% size for full-scan,
-content-dependent: clean +2%, film grain +22%), and worse accuracy
-(mean_abs_error 0.093 sampled vs 0.082 full). 4K already full-scanned (the 06-29
-change) and showed the same thing harder (sampled +7-32% bigger). Full-scan
-costs ~+16.6% pooled 1080p wall (1080p is metric-bound) but is exact (score-lie
-0.000 by construction) and far simpler. The wall cost falls only on 1080p, the
-faster tier; 4K is unaffected. Deleting sampling removed ~620 lines.
+The probe metric is tiered (2026-07-10): **SDR sources at or below 1080p
+auto-probe with SSIMULACRA2** (vship) after a bounded per-title CVVDP warmup --
+exactly 20 chunks dual-score every probe to calibrate the title's SSIMU2
+offset from the `60.8 + 36*(JOD-9.35)` anchor, then later chunks search at
+`60.8+offset +/- 7.2`. **HDR and >1080p use CVVDP** as before, and explicit
+`--target-quality`/`--cvvdp-display` forces CVVDP. Measured: im-20m wall -47%
+(769->407s), feature-scale projection ~-50%; ground-truth quality mean
+9.39-9.40 with rare per-chunk outliers to ~9.07; size -2..+12% by title
+(typical +2-5%). The tolerance band and initial slope are defined in JOD and
+scale onto the SSIMU2 axis by the fixed 36x anchor slope
+(`quality/metric.go`), so the band/slope guidance below covers both tiers.
+Do NOT benchmark SDR-tier changes on 5m clips (warmup dominates them); use
+im-20m or longer. See the two 2026-07-10 LOG entries.
+
+Why whole-chunk scoring (2026-06-30 full-scan-vs-sampled matrix, all 4 1080p
+clips ground-truth validated; see LOG): the old 3x48 sampled windows used a
+worst-window pooling that was systematically pessimistic on the 257-288 frame
+band (~25% of chunks), so it under-reported quality and **over-encoded** -- 6
+chunks pushed above the target band across the set, larger files (pooled -8.3%
+size for full-scan, content-dependent: clean +2%, film grain +22%), and worse
+accuracy (mean_abs_error 0.093 sampled vs 0.082 full). 4K already full-scanned
+(the 06-29 change) and showed the same thing harder (sampled +7-32% bigger).
+Full-scan cost ~+16.6% pooled 1080p wall when measured -- that was the
+CVVDP-everywhere era, when 1080p was metric-bound; since the SSIMU2 switch the
+metric phase is no longer the SDR 1080p critical path (2026-07-11 NVDEC LOG
+entry), so the residual full-scan cost is smaller still. Full-scan is exact
+(score-lie 0.000 by construction) and far simpler. Deleting sampling removed
+~620 lines.
 
 ## Target band and CVVDP display model
 
@@ -100,6 +117,14 @@ reference was 2618s / 1090 MB at
 host CPU/RAM/disk into a `.host` log per clip; analyze.py reports
 cpu_mean/cpu_p90/mem_avail_min.
 
+**The 20260702 reference predates the 2026-07-10 SSIMU2 metric switch.** Its
+1080p rows are stale as an A/B anchor -- current code takes a different probe
+path on every SDR <=1080p clip -- and the default matrix's 5m 1080p clips are
+warmup-dominated under SSIMU2, so they no longer characterize steady-state
+SDR behavior. Refresh the baseline (default matrix for the historical anchor
+plus `--matrix long` for a meaningful SDR steady-state row) before the next
+1080p-affecting A/B. The 4K/HDR rows still reflect current code paths.
+
 Matrix hygiene: keep the default matrix as the historical A/B anchor. Use
 `--matrix coverage` for broad target-quality behavior changes, `--matrix
 encoder` for 4K encoder-side changes, and `--matrix long` for serial-phase or
@@ -126,7 +151,10 @@ Metric workers default to **4 at every resolution**. A 2026-06-30 HD A/B found
 -1.2% pooled) while cutting VRAM by roughly 1-2 GiB; 8 workers regressed (709s,
 +2.6%) and used much more VRAM. UHD remains at 4 because 4K runs are mostly
 encoder/memory-bandwidth bound, so extra metric concurrency is not the wall-time
-lever.
+lever. The below-UHD A/B is from the CVVDP-everywhere era; under SSIMU2 the
+metric phase is no longer the SDR 1080p critical path at 4 workers (2026-07-11
+NVDEC test), so below-UHD worker count is not a wall lever in either direction
+-- leave it at 4.
 
 The CVVDP **source decoder uses 2 threads** (probe decoder 1). One thread
 starved the GPU at 4K (HEVC10 ~23 fps single-thread vs a ~50 fps GPU CVVDP
@@ -168,31 +196,25 @@ not worth changing until hardware/SVT behavior changes.
 
 ## Open items
 
-- **SDR <=1080p SSIMU2 probes -- IMPLEMENTED 2026-07-10:**
-  SDR sources at or below 1080p auto-probe with SSIMULACRA2 after a
-  bounded per-title CVVDP warmup (20 dual-scored chunks calibrate the
-  title's SSIMU2 offset from the `60.8 + 36*(JOD-9.35)` anchor; later
-  chunks wait for the lock, then search at `60.8+offset +/- 7.2`).
-  Explicit `--target-quality`/`--cvvdp-display` forces CVVDP; HDR and
-  >1080p unchanged. Measured: im-20m wall -47% (769->407s), feature-scale
-  projection ~-50% (warmup ~4% of a feature's chunks); ground-truth
-  quality mean 9.39-9.40 with rare per-chunk outliers to ~9.07; size
-  -2..+12% by title (typical +2-5%). Do NOT benchmark this on 5m clips --
-  warmup dominates them. VMAF was tested and rejected. See the two LOG
-  2026-07-10 entries and `$REEL_TESTING_DIR/metric-research-20260710/`.
+- **SDR <=1080p SSIMU2 follow-ups (the shipped design and measured results
+  are in the strategy section above; VMAF was tested and rejected -- see the
+  2026-07-10 LOG entries and `$REEL_TESTING_DIR/metric-research-20260710/`):**
   The warmup CVVDP scorer pool closes as soon as the last warmup chunk
   finishes after the lock (2026-07-11, measured on im-20m: 3.3 GiB peak
   during the warmup window, then 182 MiB steady state for the rest of
-  the run; wall unchanged). Follow-ups, none blocking: offset estimator
-  samples the first ~16-20 dispatched (largest-first) chunks -- add
-  diversity if title size centering bites. NVDEC metric decode was fully
-  implemented, A/B tested, and REJECTED 2026-07-11: bit-exact and +11-15%
-  SSIMU2 probe throughput, but wall-NEUTRAL (the metric phase is not the
-  1080p critical path at 4 metric workers) and CVVDP probes got 5-8%
-  slower with +1.6 GiB 4K VRAM. Per-worker decode speed is NOT a 1080p
-  wall lever; do not retest decode-side changes unless metric workers
-  become the critical path. See the LOG entry (implementation preserved
-  as a patch next to the A/B artifacts).
+  the run; wall unchanged). Remaining follow-ups, none blocking:
+  (a) the feature-scale ~-50% wall projection is extrapolated from im-20m,
+  not yet validated on a full-length SDR 1080p disc title -- one real-title
+  run before a large batch would close it; (b) offset estimator samples the
+  first ~16-20 dispatched (largest-first) chunks -- add diversity if title
+  size centering bites. NVDEC metric decode was fully implemented, A/B
+  tested, and REJECTED 2026-07-11: bit-exact and +11-15% SSIMU2 probe
+  throughput, but wall-NEUTRAL (the metric phase is not the SDR 1080p
+  critical path at 4 metric workers) and CVVDP probes got 5-8% slower with
+  +1.6 GiB 4K VRAM. Per-worker decode speed is NOT a 1080p wall lever; do
+  not retest decode-side changes unless metric workers become the critical
+  path. See the LOG entry (implementation preserved as a patch next to the
+  A/B artifacts).
 - **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
   a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
   ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode
@@ -235,8 +257,10 @@ not worth changing until hardware/SVT behavior changes.
   pooled wall 510s vs 670s sequential
   (perf-runs/20260703-210442-coex-solo vs ~/testing/coex-20260704/pair).
   Original item kept below for provenance.
-- **Cross-title pairing (deferred by choice, 2026-07-01):** run one 1080p and
-  one 4K reel instance concurrently. The lanes are complementary: 1080p is
+- **Cross-title pairing (deferred by choice, 2026-07-01; provenance only --
+  the utilization profile below is pre-SSIMU2, when 1080p was CVVDP-scored):**
+  run one 1080p and one 4K reel instance concurrently. The lanes are
+  complementary: 1080p is
   metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning
   (GPU ~40%), and VRAM peaks (3.9 + 5.9 GiB) fit together on the 16 GiB card.
   A 2026-07-01 audit projected 15-35% library-level throughput depending on
@@ -253,10 +277,10 @@ not worth changing until hardware/SVT behavior changes.
   allocator/vship regime); artifacts at perf-runs/20260703-210442-coex-solo
   and 20260703-211638-coex-whisperx. Coexistence wall cost on the encode:
   1080p +29.7%, 4K +7.5%.
-- Clean digital 1080p (e.g. ARRI-sourced, grain-free) gains little from
-  full-scan (~+2% size) while paying the full wall cost. A variance-triggered
-  hybrid was considered and rejected as not worth the complexity; revisit only if
-  a 1080p-heavy clean-content batch makes the wall cost bite.
+- ~~Clean digital 1080p full-scan wall cost~~ largely SUPERSEDED 2026-07-10:
+  the SSIMU2 switch cut SDR 1080p wall ~47%, removing most of the motivation
+  (the +16.6% full-scan cost was a CVVDP-era number). The variance-triggered
+  hybrid stays rejected.
 - ~~Probe-tail revalidation~~ CLOSED 2026-07-02: the complete Sully feature ran
   1.39 probes/chunk, 100% converged, zero maxed chunks
   (`perf-runs/20260702-013705-feature-validation`).
