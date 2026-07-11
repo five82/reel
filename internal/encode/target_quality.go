@@ -192,15 +192,34 @@ func EncodeTargetQuality(
 
 	// SSIMU2 runs also need CVVDP scorers: each title starts with a CVVDP
 	// warmup that calibrates the title's SSIMU2 offset (see tq_calibration.go).
+	// The pool is skipped entirely on resume with a persisted offset, and
+	// closed as soon as the last warmup chunk finishes after the lock --
+	// CVVDP handlers hold ~3.5 GiB of VRAM that the rest of the run does not
+	// need, and freeing it is what makes cross-title pairing headroom real.
 	var warmupPool chan quality.ChunkScorer
 	var calibration *ssimu2Calibration
+	var warmupOutstanding atomic.Int64
+	var warmupCloseOnce sync.Once
+	closeWarmupPool := func() {
+		warmupCloseOnce.Do(func() {
+			closeScorerPool(warmupPool)
+			if tq.Verbose != nil {
+				tq.Verbose("TQ warmup CVVDP scorers closed (VRAM released)")
+			}
+		})
+	}
 	if tq.Metric == quality.MetricSSIMU2 {
-		warmupPool, err = newScorerPool(quality.MetricCVVDP)
-		if err != nil {
-			return 0, err
-		}
-		defer closeScorerPool(warmupPool)
 		calibration = newSSIMU2Calibration(workDir)
+		if _, locked := calibration.Offset(); !locked {
+			warmupPool, err = newScorerPool(quality.MetricCVVDP)
+			if err != nil {
+				return 0, err
+			}
+			// Same once as the post-lock close: on titles too short to ever
+			// lock, all scorers are back in the pool by the time workers
+			// drain, so this cannot block.
+			defer closeWarmupPool()
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -312,9 +331,12 @@ func EncodeTargetQuality(
 				chunkSearchCtx := searchCtx
 				chunkPool := metricPool
 				var chunkDualPool chan quality.ChunkScorer
+				isWarmupChunk := false
 				if calibration != nil {
 					offset, locked := calibration.Offset()
 					if !locked && calibration.ClaimWarmup() {
+						isWarmupChunk = true
+						warmupOutstanding.Add(1)
 						chunkSearchCtx = warmupSearchCtx
 						chunkPool = warmupPool
 						chunkDualPool = metricPool
@@ -354,6 +376,14 @@ func EncodeTargetQuality(
 				chunkSearchCtx.InitialCRF = initialCRF
 				chunkSearchCtx.JODPerCRF = prior.JODPerCRF() * chunkSearchCtx.Metric.ScoreScale() / tq.Metric.ScoreScale()
 				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, chunkPool, chunkDualPool, calibration, limiter, prior, initialCRFSource, tq.Verbose)
+				if isWarmupChunk && warmupOutstanding.Add(-1) == 0 {
+					// Last in-flight warmup chunk. New claims are impossible
+					// once the offset locks, so the CVVDP pool is idle for
+					// the rest of the run -- release its VRAM now.
+					if _, locked := calibration.Offset(); locked {
+						closeWarmupPool()
+					}
+				}
 				limiter.release()
 				resultChan <- result
 			}

@@ -14,6 +14,26 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-11 -- Warmup CVVDP scorer pool closed after calibration lock
+
+- **Question:** The SSIMU2 warmup pool held ~3.5 GiB of CVVDP handler VRAM
+  for the whole run even though nothing uses it after the offset locks --
+  the prerequisite blocking the cross-title pairing retest (pairing was
+  removed in spindle 090ae7b after two full-size CVVDP pools OOM'd the
+  16 GiB card).
+- **Method/artifacts:** Pool created only when the persisted offset is
+  absent; the last in-flight warmup chunk to finish after the lock drains
+  and closes it (run-end defer shares the same sync.Once for titles too
+  short to lock). Verified with a 5s nvidia-smi poll during an im-20m
+  encode.
+- **Decisive result:** VRAM 3.3 GiB peak during the ~19-chunk warmup
+  window, then **182 MiB steady state** for the rest of the run. Offset
+  (+2.19), quality summaries, and wall (421s vs 406/408s prior runs) all
+  unchanged.
+- **Decision:** kept. Pairing retest now needs only the real-disc peak
+  VRAM measurement; the worst case is the 1080p warmup window overlapping
+  the 4K encode (see the pairing open item).
+
 ### 2026-07-10 -- SSIMU2 SDR <=1080p pilot IMPLEMENTED: per-title CVVDP warmup calibration
 
 - **Question:** Implement the SSIMU2 probe switch validated by the research

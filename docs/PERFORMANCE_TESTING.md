@@ -180,15 +180,16 @@ not worth changing until hardware/SVT behavior changes.
   -2..+12% by title (typical +2-5%). Do NOT benchmark this on 5m clips --
   warmup dominates them. VMAF was tested and rejected. See the two LOG
   2026-07-10 entries and `$REEL_TESTING_DIR/metric-research-20260710/`.
-  Follow-ups, none blocking: close the warmup CVVDP scorer pool after
-  lock (steady-state VRAM would drop ~3.5GiB -> ~0.4GiB -- directly helps
-  cross-title pairing); offset estimator samples the first ~16-20
-  dispatched (largest-first) chunks -- add diversity if title size
-  centering bites; 1080p metric passes are now DECODE-bound (59-91
-  fps/worker vs 395 GPU fps) -- metric decoder threads and NVDEC-assisted
-  metric decode are the next 1080p levers (hardware decode is on the
-  user's backlog; it pays in the encode phase where decode competes with
-  SVT lanes, not in shot detection).
+  The warmup CVVDP scorer pool closes as soon as the last warmup chunk
+  finishes after the lock (2026-07-11, measured on im-20m: 3.3 GiB peak
+  during the warmup window, then 182 MiB steady state for the rest of
+  the run; wall unchanged). Follow-ups, none blocking: offset estimator
+  samples the first ~16-20 dispatched (largest-first) chunks -- add
+  diversity if title size centering bites; 1080p metric passes are now
+  DECODE-bound (59-91 fps/worker vs 395 GPU fps) -- metric decoder
+  threads and NVDEC-assisted metric decode are the next 1080p levers
+  (hardware decode is on the user's backlog; it pays in the encode phase
+  where decode competes with SVT lanes, not in shot detection).
 - **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
   a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
   ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode
@@ -205,16 +206,32 @@ not worth changing until hardware/SVT behavior changes.
   scripts/chunkbench "Boundary hash". Note: 5m test clips cap at 4 workers via
   the 1500-frames-per-worker floor, so worker-count changes only show on
   sullyhv or feature-length content.
-- **Cross-title pairing -- PREREQUISITES MET, implemented consumer-side
-  (2026-07-04):** the vship MITIGATE_MALLOC_ASYNC workaround holds
-  cross-process: a 1080p and a 4K encode as two concurrent reel processes
-  left probe scores bit-identical at all 72 shared (chunk, CRF) points vs
-  solo baselines (perf-runs/20260703-210442-coex-solo vs
-  ~/testing/coex-20260704/pair), pooled wall 510s vs 670s sequential
-  (+23.9%, inside the projected 15-35%). Spindle now schedules one encode
-  slot per resolution tier (its task-graph Phase 5), keeping run-suite
-  A/B benchmarking strictly sequential as required. Original item kept
-  below for provenance.
+- **Cross-title pairing -- implemented 2026-07-04, REMOVED 2026-07-07,
+  retest after the SSIMU2 warmup-pool follow-up:** spindle's Phase 5
+  pairing (spindle c3f97e0) was backed out (spindle 090ae7b) after a real
+  1080p + UHD disc pair OOM'd: each reel process sized its CVVDP metric
+  pool as if it owned the GPU and both encodes died with vship OutOfVRAM
+  on the 16 GiB card. The 2026-07-04 gate measured score identity and
+  throughput on 5m clips but NOT peak VRAM of two concurrent metric pools
+  at real disc resolutions -- that is the missing gate for any retry.
+  Spindle encoding now uses a single encode slot (capacity 1); its slot
+  mechanism survives, so re-enabling is a spindle-side policy change.
+  The 2026-07-10 SSIMU2 switch changes the calculus, and the warmup-pool
+  prerequisite landed 2026-07-11: after the calibration lock the 1080p
+  side drops to a measured 182 MiB of metric VRAM (im-20m trace: 3.3 GiB
+  peak only during the ~16-20 chunk warmup window), so a paired 1080p+4K
+  total falls from ~10 GiB to ~6 GiB outside that window. Remaining
+  retest steps: (1) measure solo peak VRAM at real disc resolutions (not
+  5m clips) for both tiers -- the worst case is the 1080p warmup window
+  overlapping the 4K encode, which still stacks ~3.3 + ~5.9 GiB and is
+  exactly the configuration class that OOM'd; (2) re-gate pairing in
+  spindle on that measured headroom plus the existing score-identity
+  check (spindle could also simply delay the 4K partner until the 1080p
+  calibration lock line, shrinking the overlap risk to zero). The prior evidence (still valid): MITIGATE_MALLOC_ASYNC holds
+  cross-process -- 72/72 shared (chunk, CRF) probe scores bit-identical,
+  pooled wall 510s vs 670s sequential
+  (perf-runs/20260703-210442-coex-solo vs ~/testing/coex-20260704/pair).
+  Original item kept below for provenance.
 - **Cross-title pairing (deferred by choice, 2026-07-01):** run one 1080p and
   one 4K reel instance concurrently. The lanes are complementary: 1080p is
   metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning
