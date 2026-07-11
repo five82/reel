@@ -44,6 +44,9 @@ const (
 )
 
 type TargetQualityConfig struct {
+	// Metric selects the probe metric; Target/Tolerance are denominated in
+	// its units (CVVDP JOD or SSIMU2 points). Empty means CVVDP.
+	Metric        quality.MetricKind
 	Target        float32
 	Tolerance     float32
 	CRFMin        float32
@@ -63,6 +66,7 @@ type targetQualityResult struct {
 type chunkTargetLog struct {
 	ChunkIdx         int                `json:"chunk_idx"`
 	Frames           int                `json:"frames"`
+	Metric           string             `json:"metric,omitempty"`
 	Target           float32            `json:"target"`
 	Tolerance        float32            `json:"tolerance"`
 	CRFMin           float32            `json:"crf_min"`
@@ -147,30 +151,57 @@ func EncodeTargetQuality(
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback, cfg.WarningCallback)
 	cfg.LevelOfParallelism = resolveLevelOfParallelism(cfg.LevelOfParallelism, rampCeiling)
 
-	// One VSHIP/CUDA handler PER metric worker, scored concurrently. CVVDP is a
-	// per-handler temporal metric and Vship forbids using one handler from two
-	// threads at once, so each worker owns a distinct handler. CORRECTNESS DEPENDS
-	// on libvship being built with MITIGATE_MALLOC_ASYNC: the default
-	// cudaMallocAsync allocator races across coexisting handlers, silently
-	// corrupts scores, trips the floor guard, and can cascade into huge output-size
-	// swings. Verify the linked library with scripts/handlertest; see
-	// docs/VSHIP_CONCURRENCY_BUG.md.
-	metricPool := make(chan *quality.VshipProcessor, tq.MetricWorkers)
-	for i := 0; i < tq.MetricWorkers; i++ {
-		processor, err := quality.NewVshipProcessor(width, height, inf, tq.DisplayPath)
-		if err != nil {
-			for j := 0; j < i; j++ {
-				_ = (<-metricPool).Close()
+	if tq.Metric == "" {
+		tq.Metric = quality.MetricCVVDP
+	}
+	// One VSHIP/CUDA handler PER metric worker, scored concurrently. Vship
+	// forbids using one handler from two threads at once (and CVVDP handlers
+	// carry per-handler temporal state), so each worker owns a distinct
+	// scorer. CORRECTNESS DEPENDS on libvship being built with
+	// MITIGATE_MALLOC_ASYNC: the default cudaMallocAsync allocator races
+	// across coexisting handlers, silently corrupts scores, trips the floor
+	// guard, and can cascade into huge output-size swings. Verify the linked
+	// library with scripts/handlertest; see docs/VSHIP_CONCURRENCY_BUG.md.
+	newScorerPool := func(kind quality.MetricKind) (chan quality.ChunkScorer, error) {
+		pool := make(chan quality.ChunkScorer, tq.MetricWorkers)
+		for i := 0; i < tq.MetricWorkers; i++ {
+			scorer, err := quality.NewChunkScorer(kind, width, height, inf, tq.DisplayPath)
+			if err != nil {
+				for j := 0; j < i; j++ {
+					_ = (<-pool).Close()
+				}
+				return nil, err
 			}
+			pool <- scorer
+		}
+		return pool, nil
+	}
+	closeScorerPool := func(pool chan quality.ChunkScorer) {
+		if pool == nil {
+			return
+		}
+		for i := 0; i < tq.MetricWorkers; i++ {
+			_ = (<-pool).Close()
+		}
+	}
+	metricPool, err := newScorerPool(tq.Metric)
+	if err != nil {
+		return 0, err
+	}
+	defer closeScorerPool(metricPool)
+
+	// SSIMU2 runs also need CVVDP scorers: each title starts with a CVVDP
+	// warmup that calibrates the title's SSIMU2 offset (see tq_calibration.go).
+	var warmupPool chan quality.ChunkScorer
+	var calibration *ssimu2Calibration
+	if tq.Metric == quality.MetricSSIMU2 {
+		warmupPool, err = newScorerPool(quality.MetricCVVDP)
+		if err != nil {
 			return 0, err
 		}
-		metricPool <- processor
+		defer closeScorerPool(warmupPool)
+		calibration = newSSIMU2Calibration(workDir)
 	}
-	defer func() {
-		for i := 0; i < tq.MetricWorkers; i++ {
-			_ = (<-metricPool).Close()
-		}
-	}()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -228,8 +259,9 @@ func EncodeTargetQuality(
 		return nil
 	}
 
-	initialJODPerCRF := float32(targetQualityDefaultJODPerCRF)
+	initialJODPerCRF := tq.Metric.DefaultSlopePerCRF()
 	searchCtx := quality.SearchContext{
+		Metric:     tq.Metric,
 		Target:     tq.Target,
 		Tolerance:  tq.Tolerance,
 		CRFMin:     tq.CRFMin,
@@ -240,8 +272,25 @@ func EncodeTargetQuality(
 		MaxRateBps: float64(encoder.MaxBitRateBps()),
 		FPS:        float64(inf.FPSNum) / float64(inf.FPSDen),
 	}
-	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF)
-	seedTargetQualityPrior(workDir, doneSet, prior)
+	prior := newTargetQualityPrior(tq.InitialCRF, tq.CRFMin, tq.CRFMax, tq.Target, initialJODPerCRF, tq.Metric)
+	seedTargetQualityPrior(workDir, doneSet, prior, tq.Metric, calibration)
+
+	// Warmup chunks search with CVVDP at the JOD anchor band while the
+	// per-title SSIMU2 offset calibrates; once it locks, later chunks search
+	// with SSIMU2 against the offset-corrected target and the prior's target
+	// shifts to match.
+	warmupSearchCtx := searchCtx
+	warmupSearchCtx.Metric = quality.MetricCVVDP
+	warmupSearchCtx.Target = quality.JODAnchorTarget
+	warmupSearchCtx.Tolerance = quality.JODAnchorTolerance
+	var calibrationLocked sync.Once
+	if calibration != nil {
+		if offset, locked := calibration.Offset(); locked {
+			// Resumed run with a persisted offset.
+			calibrationLocked.Do(func() {})
+			prior.SetTarget(tq.Target + offset)
+		}
+	}
 
 	var workerWg sync.WaitGroup
 	for i := 0; i < maxWorkers; i++ {
@@ -260,11 +309,51 @@ func EncodeTargetQuality(
 					limiter.release()
 					continue
 				}
-				initialCRF, initialCRFSource := prior.InitialCRF(ch.Idx)
 				chunkSearchCtx := searchCtx
+				chunkPool := metricPool
+				var chunkDualPool chan quality.ChunkScorer
+				if calibration != nil {
+					offset, locked := calibration.Offset()
+					if !locked && calibration.ClaimWarmup() {
+						chunkSearchCtx = warmupSearchCtx
+						chunkPool = warmupPool
+						chunkDualPool = metricPool
+					} else {
+						if !locked {
+							// Warmup is fully claimed; wait for the offset
+							// instead of paying CVVDP cost. Release the
+							// encode slot -- the warmup probes need it. The
+							// loop invariant is one held slot per chunk, so
+							// on failure release only if re-acquired.
+							limiter.release()
+							waitErr := calibration.WaitLocked(ctx)
+							_, acqErr := limiter.acquire(ctx)
+							if waitErr != nil || acqErr != nil {
+								if acqErr == nil {
+									limiter.release()
+								}
+								err := waitErr
+								if err == nil {
+									err = acqErr
+								}
+								resultChan <- targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}}
+								continue
+							}
+							offset, _ = calibration.Offset()
+						}
+						calibrationLocked.Do(func() {
+							prior.SetTarget(tq.Target + offset)
+							if tq.Verbose != nil {
+								tq.Verbose(fmt.Sprintf("TQ ssimu2 calibration locked: offset %+.2f -> target %.1f +/- %.1f (%d warmup probes)", offset, tq.Target+offset, tq.Tolerance, calibration.SampleCount()))
+							}
+						})
+						chunkSearchCtx.Target = tq.Target + offset
+					}
+				}
+				initialCRF, initialCRFSource := prior.InitialCRF(ch.Idx)
 				chunkSearchCtx.InitialCRF = initialCRF
-				chunkSearchCtx.JODPerCRF = prior.JODPerCRF()
-				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, metricPool, limiter, prior, initialCRFSource, tq.Verbose)
+				chunkSearchCtx.JODPerCRF = prior.JODPerCRF() * chunkSearchCtx.Metric.ScoreScale() / tq.Metric.ScoreScale()
+				result := encodeTargetQualityChunk(ctx, inputPath, inf, cfg, workDir, cropRect, width, height, ch, chunkSearchCtx, chunkPool, chunkDualPool, calibration, limiter, prior, initialCRFSource, tq.Verbose)
 				limiter.release()
 				resultChan <- result
 			}
@@ -387,7 +476,7 @@ func EncodeTargetQuality(
 	workerWg.Wait()
 	close(resultChan)
 	collectorWg.Wait()
-	writeAggregateTargetLog(workDir, logs, tq)
+	writeAggregateTargetLog(workDir, logs, tq, calibration)
 	logTargetAggregate(logs, tq.Verbose)
 	return maxWorkers, getError()
 }
@@ -419,15 +508,22 @@ func encodeTargetQualityChunk(
 	width, height uint32,
 	ch chunk.Chunk,
 	searchCtx quality.SearchContext,
-	metricPool chan *quality.VshipProcessor,
+	metricPool chan quality.ChunkScorer,
+	dualPool chan quality.ChunkScorer,
+	calibration *ssimu2Calibration,
 	limiter *adaptiveLimiter,
 	prior *targetQualityPrior,
 	initialCRFSource string,
 	verbose func(string),
 ) targetQualityResult {
+	metric := searchCtx.Metric
+	if metric == "" {
+		metric = quality.MetricCVVDP
+	}
 	log := chunkTargetLog{
 		ChunkIdx:         ch.Idx,
 		Frames:           ch.Frames(),
+		Metric:           string(metric),
 		Target:           searchCtx.Target,
 		Tolerance:        searchCtx.Tolerance,
 		CRFMin:           searchCtx.CRFMin,
@@ -447,6 +543,19 @@ func encodeTargetQualityChunk(
 		if err != nil {
 			return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 		}
+		if dualPool != nil {
+			// Warmup probe in an SSIMU2 run: also score the same IVF with
+			// SSIMU2 (cheap) to feed the per-title offset calibration.
+			limiter.release()
+			s2, _, dualErr := scoreChunkProbe(ctx, dualPool, inputPath, probeIVFPath(workDir, ch.Idx, crf), inf, ch, cropRect, width, height)
+			if _, err := limiter.acquire(ctx); err != nil && dualErr == nil {
+				dualErr = err
+			}
+			if dualErr != nil {
+				return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: dualErr}, Log: log}
+			}
+			calibration.AddSample(probe.Score, s2)
+		}
 		state.AddProbe(searchCtx, probe)
 		log.Probes = append(log.Probes, probe)
 		if verbose != nil {
@@ -458,7 +567,7 @@ func encodeTargetQualityChunk(
 			if state.Round == 1 {
 				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
 			}
-			verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s%s cvvdp=%.4f delta=%+.4f size=%d frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.Frames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s%s score=%.4f delta=%+.4f size=%d frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.Frames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break
@@ -469,7 +578,19 @@ func encodeTargetQualityChunk(
 	if !ok {
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("no target-quality probes completed for chunk %04d", ch.Idx)}, Log: log}
 	}
-	prior.AddResult(ch.Idx, best.CRF, log.Probes)
+	priorProbes := log.Probes
+	if calibration != nil && metric == quality.MetricCVVDP {
+		// Warmup chunk in an SSIMU2 run: the prior operates on the SSIMU2
+		// scale, so map JOD probe scores through the anchor plus whatever
+		// offset is known by now (0 while still calibrating).
+		offset := calibration.CurrentOffset()
+		priorProbes = make([]quality.Probe, len(log.Probes))
+		for i, p := range log.Probes {
+			p.Score = quality.SSIMU2FromJOD(p.Score) + offset
+			priorProbes[i] = p
+		}
+	}
+	prior.AddResult(ch.Idx, best.CRF, priorProbes)
 	// Every probe is a whole-chunk encode kept at its CRF path, so the converged
 	// probe is reused verbatim as the final chunk -- no re-encode. copyFile errors
 	// if that IVF is somehow absent.
@@ -488,13 +609,13 @@ func encodeTargetQualityChunk(
 	log.CompletedAt = time.Now()
 	_ = writeChunkTargetLog(workDir, log)
 	if verbose != nil {
-		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s cvvdp=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
+		verbose(fmt.Sprintf("TQ final chunk=%04d crf=%s score=%.4f size=%d probes=%d stop=%s", ch.Idx, quality.FormatCRF(best.CRF), best.Score, log.FinalSize, len(log.Probes), log.StopReason))
 	}
 	return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Frames: ch.Frames(), Size: uint64(stat.Size())}, Log: log}
 }
 
 // encodeChunkProbe encodes the whole chunk at crf to a reusable IVF and scores
-// it against the source with a single whole-chunk CVVDP pass. The probe IVF is
+// it against the source with a single whole-chunk metric pass. The probe IVF is
 // kept (fsynced) so the converged probe can be reused verbatim as the final
 // chunk. The encode slot is released while the GPU scores and re-acquired before
 // returning, so the caller keeps the invariant that a slot is held on entry and
@@ -509,7 +630,7 @@ func encodeChunkProbe(
 	width, height uint32,
 	ch chunk.Chunk,
 	crf float32,
-	metricPool chan *quality.VshipProcessor,
+	metricPool chan quality.ChunkScorer,
 	limiter *adaptiveLimiter,
 ) (quality.Probe, error) {
 	if ch.Frames() <= 0 {
@@ -528,15 +649,12 @@ func encodeChunkProbe(
 	// Release the encode slot while the GPU scores, then re-acquire it so other
 	// chunks can encode during the metric wait.
 	limiter.release()
-	result, scoreErr := scoreChunkProbe(ctx, metricPool, inputPath, probePath, inf, ch, cropRect, width, height)
+	score, metricSeconds, scoreErr := scoreChunkProbe(ctx, metricPool, inputPath, probePath, inf, ch, cropRect, width, height)
 	if _, err := limiter.acquire(ctx); err != nil && scoreErr == nil {
 		scoreErr = err
 	}
 	if scoreErr != nil {
 		return quality.Probe{}, scoreErr
-	}
-	if result.Frames == 0 {
-		return quality.Probe{}, fmt.Errorf("no frames scored for chunk %04d", ch.Idx)
 	}
 
 	peakBps, err := probePeakSecondBps(probePath, inf)
@@ -546,12 +664,12 @@ func encodeChunkProbe(
 
 	return quality.Probe{
 		CRF:           crf,
-		Score:         result.Score,
+		Score:         score,
 		Size:          probeResult.Size,
 		PeakBps:       peakBps,
 		EncodeSeconds: encodeSeconds,
-		MetricSeconds: result.MetricSeconds,
-		Frames:        result.Frames,
+		MetricSeconds: metricSeconds,
+		Frames:        ch.Frames(),
 	}, nil
 }
 
@@ -572,24 +690,24 @@ func probePeakSecondBps(probePath string, inf *video.Info) (float64, error) {
 
 func scoreChunkProbe(
 	ctx context.Context,
-	metricPool chan *quality.VshipProcessor,
+	metricPool chan quality.ChunkScorer,
 	inputPath string,
 	probePath string,
 	inf *video.Info,
 	ch chunk.Chunk,
 	cropRect *video.CropRect,
 	width, height uint32,
-) (quality.CVVDPResult, error) {
-	var processor *quality.VshipProcessor
+) (float32, float64, error) {
+	var scorer quality.ChunkScorer
 	select {
-	case processor = <-metricPool:
+	case scorer = <-metricPool:
 	case <-ctx.Done():
-		return quality.CVVDPResult{}, ctx.Err()
+		return 0, 0, ctx.Err()
 	}
-	defer func() { metricPool <- processor }()
+	defer func() { metricPool <- scorer }()
 
 	metricStart := time.Now()
-	metricResult, err := quality.ComputeChunkCVVDP(ctx, quality.CVVDPOptions{
+	score, metricSeconds, err := scorer.ScoreChunk(ctx, quality.ChunkScoreRequest{
 		SourcePath: inputPath,
 		ProbePath:  probePath,
 		Info:       inf,
@@ -597,15 +715,14 @@ func scoreChunkProbe(
 		CropRect:   cropRect,
 		Width:      width,
 		Height:     height,
-		Processor:  processor,
 	})
 	if err != nil {
-		return quality.CVVDPResult{}, err
+		return 0, 0, err
 	}
-	if metricResult.MetricSeconds == 0 {
-		metricResult.MetricSeconds = time.Since(metricStart).Seconds()
+	if metricSeconds == 0 {
+		metricSeconds = time.Since(metricStart).Seconds()
 	}
-	return metricResult, nil
+	return score, metricSeconds, nil
 }
 
 func probeIVFPath(workDir string, chunkIdx int, crf float32) string {
@@ -633,12 +750,15 @@ type targetQualityPrior struct {
 	maxCRF        float32
 	target        float32
 	defaultJODCRF float32
+	slopeMin      float32
+	slopeMax      float32
 }
 
-func newTargetQualityPrior(defaultCRF, minCRF, maxCRF, target, defaultJODPerCRF float32) *targetQualityPrior {
+func newTargetQualityPrior(defaultCRF, minCRF, maxCRF, target, defaultJODPerCRF float32, metric quality.MetricKind) *targetQualityPrior {
 	if defaultJODPerCRF <= 0 {
-		defaultJODPerCRF = targetQualityDefaultJODPerCRF
+		defaultJODPerCRF = metric.DefaultSlopePerCRF()
 	}
+	slopeMin, slopeMax := metric.SlopeClamp()
 	return &targetQualityPrior{
 		crfs:          make(map[int]float32),
 		defaultCRF:    clampCRF(defaultCRF, minCRF, maxCRF),
@@ -646,10 +766,12 @@ func newTargetQualityPrior(defaultCRF, minCRF, maxCRF, target, defaultJODPerCRF 
 		maxCRF:        maxCRF,
 		target:        target,
 		defaultJODCRF: defaultJODPerCRF,
+		slopeMin:      slopeMin,
+		slopeMax:      slopeMax,
 	}
 }
 
-func seedTargetQualityPrior(workDir string, doneSet map[int]bool, prior *targetQualityPrior) {
+func seedTargetQualityPrior(workDir string, doneSet map[int]bool, prior *targetQualityPrior, metric quality.MetricKind, calibration *ssimu2Calibration) {
 	for idx := range doneSet {
 		path := filepath.Join(workDir, "tq", fmt.Sprintf("%04d.json", idx))
 		data, err := os.ReadFile(path)
@@ -660,7 +782,21 @@ func seedTargetQualityPrior(workDir string, doneSet map[int]bool, prior *targetQ
 		if err := json.Unmarshal(data, &log); err != nil {
 			continue
 		}
-		prior.AddResult(idx, log.FinalCRF, log.Probes)
+		probes := log.Probes
+		if metric == quality.MetricSSIMU2 && log.Metric != string(quality.MetricSSIMU2) {
+			// Warmup (CVVDP) chunk from an interrupted SSIMU2 run: map its
+			// JOD scores onto the prior's SSIMU2 scale.
+			offset := float32(0)
+			if calibration != nil {
+				offset = calibration.CurrentOffset()
+			}
+			probes = make([]quality.Probe, len(log.Probes))
+			for i, p := range log.Probes {
+				p.Score = quality.SSIMU2FromJOD(p.Score) + offset
+				probes[i] = p
+			}
+		}
+		prior.AddResult(idx, log.FinalCRF, probes)
 	}
 }
 
@@ -670,7 +806,7 @@ func (p *targetQualityPrior) AddResult(chunkIdx int, crf float32, probes []quali
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.slopes = append(p.slopes, probeSlopes(probes)...)
+	p.slopes = append(p.slopes, probeSlopes(probes, p.slopeMin, p.slopeMax)...)
 	p.crfs[chunkIdx] = p.normalizedCRF(crf, probes)
 }
 
@@ -678,6 +814,16 @@ func (p *targetQualityPrior) Count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.crfs)
+}
+
+// SetTarget shifts the score the prior normalizes against; called once when
+// the per-title SSIMU2 calibration locks. Entries recorded earlier were
+// normalized against the pre-lock target, which is at most the calibration
+// offset away -- inside the +-3 CRF normalization clamp.
+func (p *targetQualityPrior) SetTarget(target float32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.target = target
 }
 
 func (p *targetQualityPrior) JODPerCRF() float32 {
@@ -775,7 +921,7 @@ func medianCRF(values []float32, minCRF, maxCRF float32) float32 {
 	return clampCRF(medianFloat32(values), minCRF, maxCRF)
 }
 
-func probeSlopes(probes []quality.Probe) []float32 {
+func probeSlopes(probes []quality.Probe, slopeMin, slopeMax float32) []float32 {
 	if len(probes) < 2 {
 		return nil
 	}
@@ -791,7 +937,7 @@ func probeSlopes(probes []quality.Probe) []float32 {
 			continue
 		}
 		slope := -scoreDelta / crfDelta
-		if slope >= 0.005 && slope <= 0.2 {
+		if slope >= slopeMin && slope <= slopeMax {
 			slopes = append(slopes, slope)
 		}
 	}
@@ -832,6 +978,28 @@ func encodeProbe(ctx context.Context, inputPath string, inf *video.Info, cfg *En
 
 func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	if verbose == nil || len(logs) == 0 {
+		return
+	}
+	// SSIMU2 runs mix scales: warmup chunks carry JOD scores, the rest
+	// SSIMU2 points. Aggregate per metric so the summary stays meaningful.
+	byMetric := make(map[string][]chunkTargetLog)
+	for _, log := range logs {
+		byMetric[log.Metric] = append(byMetric[log.Metric], log)
+	}
+	if len(byMetric) > 1 {
+		keys := make([]string, 0, len(byMetric))
+		for key := range byMetric {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			name := key
+			if name == "" {
+				name = string(quality.MetricCVVDP)
+			}
+			verbose(fmt.Sprintf("TQ aggregate for %s-scored chunks:", name))
+			logTargetAggregate(byMetric[key], verbose)
+		}
 		return
 	}
 	sort.Slice(logs, func(i, j int) bool { return logs[i].ChunkIdx < logs[j].ChunkIdx })
@@ -882,7 +1050,7 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			commonCount = count
 		}
 	}
-	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d probes_per_chunk=%.2f jod_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, float64(probes)/float64(len(logs)), minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
+	verbose(fmt.Sprintf("TQ summary chunks=%d probes=%d probes_per_chunk=%.2f score_min=%.4f mean=%.4f max=%.4f mean_abs_error=%.4f common_crf=%s", len(logs), probes, float64(probes)/float64(len(logs)), minScore, meanScore, maxScore, meanErr, quality.FormatCRF(commonCRF)))
 	verbose(fmt.Sprintf("TQ decisions stops=%s probe_counts=%s initial_sources=%s", formatStopCounts(stopCounts), formatIntCounts(probeCounts), formatStringCounts(sourceCounts)))
 	if len(multiProbeLogs) > 0 {
 		verbose(fmt.Sprintf("TQ multi-probe chunks: %s", formatMultiProbeChunks(multiProbeLogs, 8)))
@@ -942,7 +1110,7 @@ func formatMultiProbeChunks(logs []chunkTargetLog, limit int) string {
 	for _, log := range logs[:limit] {
 		first := log.Probes[0]
 		last := log.Probes[len(log.Probes)-1]
-		parts = append(parts, fmt.Sprintf("%04d:%d probes crf %s->%s jod %.4f->%.4f stop=%s", log.ChunkIdx, len(log.Probes), quality.FormatCRF(first.CRF), quality.FormatCRF(last.CRF), first.Score, last.Score, log.StopReason))
+		parts = append(parts, fmt.Sprintf("%04d:%d probes crf %s->%s score %.4f->%.4f stop=%s", log.ChunkIdx, len(log.Probes), quality.FormatCRF(first.CRF), quality.FormatCRF(last.CRF), first.Score, last.Score, log.StopReason))
 	}
 	if limit < len(logs) {
 		parts = append(parts, fmt.Sprintf("+%d more", len(logs)-limit))
@@ -990,19 +1158,33 @@ func writeChunkTargetLog(workDir string, log chunkTargetLog) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQualityConfig) {
+func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQualityConfig, calibration *ssimu2Calibration) {
 	sort.Slice(logs, func(i, j int) bool { return logs[i].ChunkIdx < logs[j].ChunkIdx })
+	metric := tq.Metric
+	if metric == "" {
+		metric = quality.MetricCVVDP
+	}
+	var calibrationOffset *float32
+	if calibration != nil {
+		if offset, locked := calibration.Offset(); locked {
+			calibrationOffset = &offset
+		}
+	}
 	data, err := json.MarshalIndent(struct {
-		Target            float32          `json:"target"`
-		Tolerance         float32          `json:"tolerance"`
-		CRFMin            float32          `json:"crf_min"`
-		CRFMax            float32          `json:"crf_max"`
-		MetricWorkers     int              `json:"metric_workers"`
-		DefaultInitialCRF float32          `json:"default_initial_crf"`
-		Chunks            []chunkTargetLog `json:"chunks"`
+		Metric            quality.MetricKind `json:"metric"`
+		Target            float32            `json:"target"`
+		Tolerance         float32            `json:"tolerance"`
+		CalibrationOffset *float32           `json:"ssimu2_calibration_offset,omitempty"`
+		CRFMin            float32            `json:"crf_min"`
+		CRFMax            float32            `json:"crf_max"`
+		MetricWorkers     int                `json:"metric_workers"`
+		DefaultInitialCRF float32            `json:"default_initial_crf"`
+		Chunks            []chunkTargetLog   `json:"chunks"`
 	}{
+		Metric:            metric,
 		Target:            tq.Target,
 		Tolerance:         tq.Tolerance,
+		CalibrationOffset: calibrationOffset,
 		CRFMin:            tq.CRFMin,
 		CRFMax:            tq.CRFMax,
 		MetricWorkers:     tq.MetricWorkers,

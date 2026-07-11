@@ -46,6 +46,7 @@ dmypy.json
 /chunkbench
 /fullvalidate
 /handlertest
+/metriccompare
 *.exe
 *.exe~
 *.dll

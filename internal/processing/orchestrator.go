@@ -177,7 +177,7 @@ func ProcessVideos(
 			EncoderVersion:     encoder.SVTVersion(),
 			Preset:             fmt.Sprintf("%d", encodeParams.Preset),
 			Tune:               fmt.Sprintf("%d", encodeParams.Tune),
-			Quality:            formatQualityDescription(videoProps.Width, encodeParams.Quality, &fileCfg),
+			Quality:            formatQualityDescription(vidInf, encodeParams.Quality, &fileCfg),
 			PixelFormat:        encodeParams.PixelFormat,
 			MatrixCoefficients: encodeParams.MatrixCoefficients,
 			AudioCodec:         "Opus",
@@ -437,8 +437,12 @@ func formatDynamicRange(isHDR bool) string {
 	return "SDR"
 }
 
-func formatQualityDescription(width uint32, crf float32, cfg *config.Config) string {
+func formatQualityDescription(inf *video.Info, crf float32, cfg *config.Config) string {
+	width := inf.Width
 	if cfg.QualityMode == config.QualityModeTarget {
+		if probeMetricFor(cfg, inf) == quality.MetricSSIMU2 {
+			return fmt.Sprintf("SSIMULACRA2 target %.1f-%.1f (auto for SDR <=1080p; initial CRF %s with adaptive priors, whole-chunk probes, CRF search %s, metric workers %d)", quality.SSIMU2Target-quality.SSIMU2Tolerance, quality.SSIMU2Target+quality.SSIMU2Tolerance, quality.FormatCRF(crf), cfg.CRFSearchRange, cfg.MetricWorkers)
+		}
 		return fmt.Sprintf("CVVDP target %.2f-%.2f JOD (initial CRF %s with adaptive priors, whole-chunk probes, CRF search %s, metric workers %d)", cfg.TargetQualityMin, cfg.TargetQualityMax, quality.FormatCRF(crf), cfg.CRFSearchRange, cfg.MetricWorkers)
 	}
 	var tier string

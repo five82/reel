@@ -21,7 +21,7 @@ func TestFormatMultiProbeChunksShowsFirstAndLastProbe(t *testing.T) {
 		},
 	}
 	got := formatMultiProbeChunks(logs, 8)
-	want := "[0002:3 probes crf 27->58.5 jod 9.9255->9.7000 stop=max_probes]"
+	want := "[0002:3 probes crf 27->58.5 score 9.9255->9.7000 stop=max_probes]"
 	if got != want {
 		t.Fatalf("formatMultiProbeChunks() = %q, want %q", got, want)
 	}
@@ -50,7 +50,7 @@ func TestOrderTargetQualityChunksSortsLargestFirstWithinTimelineBlocks(t *testin
 }
 
 func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	crf, source := prior.InitialCRF(100)
 	if crf != 26 || source != "default" {
 		t.Fatalf("InitialCRF = %g %q, want 26 default", crf, source)
@@ -58,7 +58,7 @@ func TestTargetQualityPriorUsesDefaultWithoutHistory(t *testing.T) {
 }
 
 func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	prior.AddResult(96, 20, nil)
 	prior.AddResult(104, 28, nil)
 	crf, source := prior.InitialCRF(100)
@@ -68,7 +68,7 @@ func TestTargetQualityPriorUsesWeightedNeighborCRF(t *testing.T) {
 }
 
 func TestTargetQualityPriorFallsBackToMedianForDistantHistory(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	prior.AddResult(10, 20, nil)
 	prior.AddResult(20, 30, nil)
 	prior.AddResult(30, 40, nil)
@@ -79,7 +79,7 @@ func TestTargetQualityPriorFallsBackToMedianForDistantHistory(t *testing.T) {
 }
 
 func TestTargetQualityPriorLearnsJODPerCRF(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	prior.AddResult(10, 25, []quality.Probe{
 		{CRF: 20, Score: 9.7},
 		{CRF: 30, Score: 9.3},
@@ -90,7 +90,7 @@ func TestTargetQualityPriorLearnsJODPerCRF(t *testing.T) {
 }
 
 func TestTargetQualityPriorNormalizesCRFToTarget(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	prior.AddResult(10, 25, []quality.Probe{
 		{CRF: 20, Score: 9.7},
 		{CRF: 25, Score: 9.58},
@@ -103,7 +103,7 @@ func TestTargetQualityPriorNormalizesCRFToTarget(t *testing.T) {
 }
 
 func TestTargetQualityPriorNormalizesCRFWithAdjustmentCap(t *testing.T) {
-	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF)
+	prior := newTargetQualityPrior(26, 4.25, 63.75, 9.5, targetQualityDefaultJODPerCRF, quality.MetricCVVDP)
 	prior.AddResult(10, 25, []quality.Probe{{CRF: 25, Score: 9.9}})
 	crf, source := prior.InitialCRF(11)
 	if crf != 28 || source != "neighbor" {

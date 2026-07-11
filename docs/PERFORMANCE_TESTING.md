@@ -168,6 +168,27 @@ not worth changing until hardware/SVT behavior changes.
 
 ## Open items
 
+- **SDR <=1080p SSIMU2 probes -- IMPLEMENTED 2026-07-10 (uncommitted):**
+  SDR sources at or below 1080p auto-probe with SSIMULACRA2 after a
+  bounded per-title CVVDP warmup (20 dual-scored chunks calibrate the
+  title's SSIMU2 offset from the `60.8 + 36*(JOD-9.35)` anchor; later
+  chunks wait for the lock, then search at `60.8+offset +/- 7.2`).
+  Explicit `--target-quality`/`--cvvdp-display` forces CVVDP; HDR and
+  >1080p unchanged. Measured: im-20m wall -47% (769->407s), feature-scale
+  projection ~-50% (warmup ~4% of a feature's chunks); ground-truth
+  quality mean 9.39-9.40 with rare per-chunk outliers to ~9.07; size
+  -2..+12% by title (typical +2-5%). Do NOT benchmark this on 5m clips --
+  warmup dominates them. VMAF was tested and rejected. See the two LOG
+  2026-07-10 entries and `$REEL_TESTING_DIR/metric-research-20260710/`.
+  Follow-ups, none blocking: close the warmup CVVDP scorer pool after
+  lock (steady-state VRAM would drop ~3.5GiB -> ~0.4GiB -- directly helps
+  cross-title pairing); offset estimator samples the first ~16-20
+  dispatched (largest-first) chunks -- add diversity if title size
+  centering bites; 1080p metric passes are now DECODE-bound (59-91
+  fps/worker vs 395 GPU fps) -- metric decoder threads and NVDEC-assisted
+  metric decode are the next 1080p levers (hardware decode is on the
+  user's backlog; it pays in the encode phase where decode competes with
+  SVT lanes, not in shot detection).
 - **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
   a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
   ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode

@@ -30,15 +30,19 @@ type Probe struct {
 	Frames        int     `json:"frames,omitempty"`
 }
 
-// SearchContext configures per-chunk target-quality search.
+// SearchContext configures per-chunk target-quality search. Target,
+// Tolerance, and JODPerCRF are denominated in the probe metric's units
+// (CVVDP JOD or SSIMU2 points; Metric's ScoreScale converts the calibrated
+// JOD constants).
 type SearchContext struct {
+	Metric     MetricKind // zero value means CVVDP
 	Target     float32
 	Tolerance  float32
 	CRFMin     float32
 	CRFMax     float32
 	MaxProbes  int
 	InitialCRF float32
-	JODPerCRF  float32
+	JODPerCRF  float32 // score units per CRF step
 	MaxRateBps float64 // bitstream cap; probes exceeding it cannot be selected (0 disables)
 	FPS        float64 // frames per second, used to compute probe bitrate
 }
@@ -293,7 +297,8 @@ func unbracketedHighCRF(ctx SearchContext, state *SearchState, usable []Probe) f
 }
 
 func shouldUseAggressiveHighCRFJump(ctx SearchContext, probes []Probe) bool {
-	const minHighSideDelta = 0.30
+	// 0.30 JOD in the probe metric's units.
+	minHighSideDelta := 0.30 * ctx.Metric.ScoreScale()
 	score, ok := highestCRFScore(probes)
 	if !ok || score-ctx.Target < minHighSideDelta {
 		return false
@@ -332,18 +337,19 @@ func highestCRFSlope(probes []Probe) (float32, bool) {
 }
 
 func searchJODPerCRF(ctx SearchContext) float32 {
-	const defaultJODPerCRF = 0.04
 	if ctx.JODPerCRF > 0 {
 		return ctx.JODPerCRF
 	}
-	return defaultJODPerCRF
+	// Fallback for a missing slope: 0.04 JOD/CRF in the probe metric's
+	// units. Production always populates JODPerCRF.
+	return 0.04 * ctx.Metric.ScoreScale()
 }
 
 func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
 	jodPerCRF := searchJODPerCRF(ctx)
 	delta := probe.Score - ctx.Target
 	step := float32(math.Abs(float64(delta / jodPerCRF)))
-	if maxStep := secondSearchMaxStep(delta); step > maxStep {
+	if maxStep := secondSearchMaxStep(ctx, delta); step > maxStep {
 		step = maxStep
 	}
 	if delta > 0 {
@@ -354,12 +360,14 @@ func secondSearchCRF(ctx SearchContext, probe Probe) float32 {
 	return RoundCRFToQuarter(probe.CRF - step)
 }
 
-func secondSearchMaxStep(delta float32) float32 {
+func secondSearchMaxStep(ctx SearchContext, delta float32) float32 {
+	// Thresholds are 0.40 / 0.25 JOD in the probe metric's units.
+	scale := ctx.Metric.ScoreScale()
 	absDelta := float32(math.Abs(float64(delta)))
 	switch {
-	case absDelta >= 0.40:
+	case absDelta >= 0.40*scale:
 		return 30
-	case absDelta >= 0.25:
+	case absDelta >= 0.25*scale:
 		return 20
 	default:
 		return 10

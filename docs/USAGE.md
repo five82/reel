@@ -32,7 +32,7 @@ reel encode -v -i input.mkv -o output/
 
 **Quality Settings**
 - `--quality-mode target|crf`: target-quality CVVDP mode is the default in normal builds; `crf` is the default in `no_vship` builds and keeps fixed-CRF behavior
-- `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.15-9.55`)
+- `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.15-9.55`). Setting this explicitly forces CVVDP scoring even for SDR <=1080p sources (see Target-Quality Scoring)
 - `--crf-range <LOW-HIGH>`: target-quality search bounds (default `4.25-63.75`)
 - `--cvvdp-display <PATH>`: optional VSHIP/CVVDP display JSON; otherwise Reel generates a normal-viewing `reel` model. Custom JSON must contain a top-level `reel` model.
 - `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (default: `4`)
@@ -63,11 +63,14 @@ Interrupted runs can be resumed by running the same command again. Completed chu
 
 ## Target-Quality Scoring
 
-By default, target-quality mode searches for CVVDP scores in the `9.15-9.55` range and caps planned chunks at 12 seconds. Each probe encodes and scores the **whole chunk** in one CVVDP pass, so the score is exact, and the converged probe is reused verbatim as the final chunk (no re-encode).
+Each probe encodes and scores the **whole chunk** in one metric pass, so the score is exact, and the converged probe is reused verbatim as the final chunk (no re-encode). Planned chunks are capped at 12 seconds. The probe metric depends on the source:
 
-Scores slightly above the upper bound, up to `+0.02` JOD, are accepted so Reel does not spend extra probes shrinking already-excellent chunks. There is no matching lower-side grace, and a probe does not converge if the whole-chunk score falls below the lower bound.
+- **HDR and above-1080p sources** search for CVVDP scores in the `9.15-9.55` JOD range (default).
+- **SDR sources at or below 1080p** probe with SSIMULACRA2, which scores several times faster on the same GPU. Because SSIMULACRA2 values do not transfer across content (grainy titles score lower at equal perceived quality), each title starts with a short CVVDP warmup: the first ~20 chunks search with CVVDP as usual while every probe is also SSIMULACRA2-scored, the title's offset from the corpus mapping locks, and the remaining chunks search with pure SSIMULACRA2 against the calibrated target (`60.8 + offset`, tolerance `+/- 7.2`, mean-pooled per-frame scores). The offset persists in the work directory, so resumed encodes skip re-calibration.
 
-Verbose output logs each probe's whole-chunk CVVDP score and the per-chunk probe count.
+Passing an explicit `--target-quality` range (other than the built-in default string) or `--cvvdp-display` forces CVVDP scoring for that encode, since both options are CVVDP-denominated.
+
+Verbose output logs each probe's whole-chunk score, the per-chunk probe count, and (for SDR <=1080p) the calibration lock line with the title's offset.
 
 ## HDR Support
 

@@ -14,6 +14,133 @@ For a new entry, keep the format short:
 
 ## Entries
 
+### 2026-07-10 -- SSIMU2 SDR <=1080p pilot IMPLEMENTED: per-title CVVDP warmup calibration
+
+- **Question:** Implement the SSIMU2 probe switch validated by the research
+  entry below. Two iterations were forced by measured failures: (1) a pure
+  global SSIMU2 band (60.8 +/- 7.2) over-encoded grain catastrophically --
+  bts +32% size (585 -> 771 MB, delivered 9.52 mean JOD) -- because titles
+  sit at systematically different SSIMU2-at-equal-JOD offsets (measured:
+  bts -6.15, air +1.58, im +0.68..+2.20, soms +0.02); (2) the fix, per-title
+  calibration, initially locked its offset from 10 samples, which was too
+  noisy (air locked +3.17 vs true +1.6 -> +17% size) and let dispatch race
+  ahead so short titles ran almost entirely CVVDP (im 32/32 chunks warmup).
+- **What shipped (uncommitted working tree):** SDR <=1080p sources
+  auto-select SSIMU2 probes (`quality.ProbeMetricForSource`; explicit
+  `--target-quality` or `--cvvdp-display` forces CVVDP -- note passing the
+  default range verbatim does NOT force CVVDP). Each title runs a bounded
+  CVVDP warmup: exactly `ssimu2CalibrationMinSamples` (20) chunks claim
+  warmup, each probe is dual-scored (CVVDP + cheap SSIMU2 pass on the same
+  IVF), the title offset locks at the median residual vs the corpus anchor
+  `SSIMU2 = 60.8 + 36*(JOD-9.35)`, and later chunks wait for the lock
+  (releasing their encode slot) then search pure SSIMU2 at
+  `60.8+offset +/- 7.2`. Offset persists to `tq/ssimu2-calibration.json`
+  for resume. Search constants scale via `MetricKind.ScoreScale()` (36);
+  the prior runs on the SSIMU2 scale with warmup probes mapped through the
+  anchor. Files: `internal/quality/metric.go`, `internal/encode/
+  tq_calibration.go`, plumbing in `target_quality.go`/`chunked.go`.
+- **Decisive result (all ground truth via fullvalidate CVVDP, artifacts
+  `$REEL_TESTING_DIR/metric-research-20260710/fv-final2-*.json`,
+  `perf-runs/20260710-*-tq-ssimu2-*`):**
+  - 5m matrix (bounded warmup, 20 of 32-37 chunks): quality mean 9.389,
+    sd 0.102, 2/136 below 9.15 (min 9.070 = the known air:0009 per-chunk
+    mapping outlier; second miss 9.141), 2 above 9.55. Sizes vs CVVDP
+    baseline: air +4.8%, im +3.1%, bts -2.2%. Wall ~= baseline (warmup
+    dominates 5m clips by construction -- do not benchmark this feature on
+    5m clips).
+  - im-20m A/B (135 chunks, warmup 16 = 12%): wall 769s -> 406/408s
+    (**-47%**, two independent pilot runs within 2s/4MB of each other),
+    size 352 -> 390/394 MB (+11%: this title's offset centered +0.033 JOD
+    high), quality mean 9.364 -> 9.397, min 9.158 -> 9.090. Feature-scale
+    warmup is ~4% of chunks, so expect ~-50% wall on 1080p features.
+  - Pure-SSIMU2 reference (iteration 1, no warmup): pooled 5m 1080p wall
+    -54% (air 256->119s, im 178->75s, bts 223->108s), GPU 80%->17%, VRAM
+    3.9GiB->0.4GiB -- the cost of the warmup is bounded by these numbers.
+  - 4K/HDR regression: CVVDP path semantics unchanged; today-vs-today
+    shared (chunk,CRF) probe scores 68/69 bit-identical across two suite
+    runs (the 1 differing kbv1 point had a different probe SIZE, i.e. rare
+    SVT encode nondeterminism on grainy content, not scoring). Comparing
+    against the 2026-07-02 baseline is invalid for bit-identity: commit
+    2da7cf8 (AV1 level 5.1 contract) legitimately changed 4K bitstreams.
+- **Decision:** kept (pending user commit). Known accepted trade-offs:
+  occasional per-chunk mapping outlier below the old floor (worst observed
+  9.07, ~1-2 per 136 chunks, invisible at real viewing distances per the
+  display-model margin); title size centering scatter roughly -2..+12%
+  (typical +2-5%) vs CVVDP -- the offset estimator samples the first ~16-20
+  dispatched chunks (largest-first within a block), a diversity/bias
+  follow-up if it bites. Other follow-ups: close the warmup CVVDP scorer
+  pool after lock (VRAM drops ~3.5GiB -> ~0.4GiB steady-state, helps
+  cross-title pairing); metric decode is now the 1080p bottleneck
+  (SSIMU2 in-pipeline 59-91 fps/worker vs 395 GPU fps) -- decoder threads
+  and NVDEC are the next levers.
+
+### 2026-07-10 -- SDR <=1080p probe metric: SSIMULACRA2 (vship) viable, VMAF rejected
+
+- **Question:** CVVDP probe scoring dominates 1080p wall (metric-worker
+  occupancy 85-91% of encode-phase wall, GPU p90 97%, baseline
+  `perf-runs/20260702-124007-tq-baseline-current`). Can SSIMULACRA2 (already
+  exported by the linked libvship) or VMAF (v0.6.1 / v0.6.1neg / the new
+  June-2026 v1.0.16 1080p-3H model, libvmaf 3.2.0 CPU AVX-512) replace CVVDP
+  for SDR <=1080p probes without breaking the "every chunk in one perceptual
+  band" promise? HDR keeps CVVDP regardless.
+- **Method/artifacts:** `$REEL_TESTING_DIR/metric-research-20260710/` (kept:
+  jobs/meta/results JSON, ladder dirs, analyze_ladder.py, EXPERIMENTS.md).
+  New uncommitted harness: `scripts/metriccompare` + SSIMU2 cgo bindings in
+  `internal/quality` (ssimu2*.go, vship_colorspace.h). Fresh TQ encodes of
+  air/im/bts/soms 5m 1080p SDR (kept workdirs); all 136 final chunks scored
+  with CVVDP+SSIMU2; VMAF on a 10-chunk/clip spread; plus a 6-chunk/clip x
+  CRF {20,26,32,38,44,50} ladder (ffmpeg libsvtav1, reel probe params:
+  preset 6, tune 0, ac-bias 0.10, scd 0) scored with all metrics.
+  Frame alignment validated three ways: metriccompare CVVDP re-scores of
+  finals bit-identical to recorded search scores (max gap 0.0000, 136/136);
+  ffmpeg fast `-ss` seek proved NOT frame-exact per clip (im -3 frames, VC-1;
+  bts mismatch even after container start_time correction) so all y4m source
+  extraction uses full-decode select-filter; a +-1-frame VMAF probe scored
+  97.8 aligned vs ~15 shifted, confirming the y4m path.
+- **Decisive result:**
+  - Throughput (RTX 5060 Ti, 1080p cropped, single handler): CVVDP 46.7 fps
+    (display-model resize to the 4K panel raster makes 1080p cost 4K-like),
+    SSIMU2 395 fps = 8.5x. In-pipeline (decode-overlapped, per worker)
+    SSIMU2 is decode-bound at 59-91 fps vs CVVDP 40-54 fps GPU-bound
+    (1.5-2.1x per worker); with 4 workers the GPU stops being the wall
+    entirely. VMAF CPU-16-threads: 218 fps (v0.6.1) / 178 fps (v1.0.16) but
+    it would compete with SVT encode lanes for CPU, unlike GPU metrics.
+  - Monotonicity: all metrics 0 violations in 120 CRF-ladder steps at
+    preset 6 (community SSIMU2 non-monotonicity reports are preset 9-10
+    low-CRF artifacts; not present here).
+  - Consistency (the deciding test). At the CVVDP=9.35 operating CRF the
+    alternatives disagree with CVVDP systematically by content (SSIMU2
+    50.9-64.3, VMAF v1 85.0-95.0 across chunks). Simulating a single global
+    target per metric on the ladder (23 chunks): SSIMU2 target 60.8
+    delivers CVVDP mean 9.404 sd 0.094, min 9.261, 0 below band / 2 above;
+    linearized over all 136 finals chunks: sd 0.103, min 9.131 (one 0.02
+    miss), 1 below / 15 above (over-encode side). VMAF (all three models):
+    delivered sd 0.19-0.24 with 6-8 of 23 chunks outside band, min
+    8.78-8.91 JOD -- real quality misses driven by ceiling saturation
+    (finals reach 99.5-100.0 where the slope is ~0.2-0.5 pts/CRF, so small
+    metric error = up to 17 CRF of displacement).
+  - Exchange rate: dSSIMU2/dJOD is stable across all four clips (33-43
+    pts/JOD, median ~36), so the current +-0.20 JOD band maps to roughly
+    +-7 SSIMU2 points globally. SSIMU2 scoring is bit-identical across
+    runs (zero probe noise vs CVVDP's calibrated ~0.075 JOD).
+  - Pooling: arithmetic mean over frames is the tightest SSIMU2 pooling
+    (cross-chunk sd 5.07 at constant CVVDP vs 6.6-7.6 for p10/p5/min);
+    percentile pooling amplifies content-dependent worst-frame variance.
+- **Decision:** VMAF rejected for TQ probing (band misses, ceiling
+  saturation, CPU contention, new dependency). SSIMULACRA2 is a validated
+  candidate for SDR <=1080p probes: same library, zero probe noise,
+  monotone, and a fixed target reproduces the CVVDP band to ~sd 0.10 JOD
+  with misses biased to over-encode. Not yet adopted -- next step is a
+  pilot: metric-kind switch (SDR <=1080p -> SSIMU2, target ~60.8 mean-pooled,
+  band from the ~36 pts/JOD exchange rate), re-derived search constants
+  (initial slope ~1.0-2.4 SSIMU2 pts/CRF by regime), then a run-suite A/B
+  vs the CVVDP baseline for wall/size/fullvalidate-JOD ground truth.
+  Caveats for the pilot: quality policy remains CVVDP-denominated (the
+  SSIMU2 target is calibrated to today's band, sacrificing none of the
+  floor); calibration rests on 4 clips x 5-6 ladder chunks -- validate the
+  clean-digital high-CRF regime (air-like) which showed the widest native
+  SSIMU2 spread; fullvalidate stays CVVDP as the ground-truth ruler.
+
 ### 2026-07-02 -- CVVDP target range vs streaming philosophy: assessed (no change)
 
 - **Question:** Given the AGENTS.md streaming-first philosophy (speed

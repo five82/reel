@@ -363,6 +363,10 @@ func ProcessChunked(
 	finishStep = startPhase(perfc, rep, "Video encoding")
 	var encodeErr error
 	if cfg.QualityMode == config.QualityModeTarget {
+		metric := probeMetricFor(cfg, vidInf)
+		tqTarget, tqTolerance := cfg.TargetQualityTarget, cfg.TargetQualityTolerance
+		// SSIMU2 runs still need the display model: each title warms up with
+		// CVVDP probes to calibrate its SSIMU2 offset (see encode/tq_calibration.go).
 		displayPath, err := quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
 		if err != nil {
 			finishStep()
@@ -371,8 +375,13 @@ func ProcessChunked(
 			finishAudioStep()
 			return CropResult{}, err
 		}
-		rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d, display %s", cfg.TargetQualityTarget, cfg.TargetQualityTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers, displayPath))
-		rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
+		if metric == quality.MetricCVVDP {
+			rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d, display %s", tqTarget, tqTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers, displayPath))
+			rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
+		} else {
+			tqTarget, tqTolerance = quality.SSIMU2Target, quality.SSIMU2Tolerance
+			rep.Verbose(fmt.Sprintf("Target-quality SSIMULACRA2 (SDR <=1080p): target %.1f +/- %.1f after per-title CVVDP warmup calibration, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d", tqTarget, tqTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers))
+		}
 		_, encodeErr = encode.EncodeTargetQuality(
 			encodeCtx,
 			chunks,
@@ -383,8 +392,9 @@ func ProcessChunked(
 			cropRect,
 			progressCallback,
 			encode.TargetQualityConfig{
-				Target:        cfg.TargetQualityTarget,
-				Tolerance:     cfg.TargetQualityTolerance,
+				Metric:        metric,
+				Target:        tqTarget,
+				Tolerance:     tqTolerance,
 				CRFMin:        cfg.CRFSearchMin,
 				CRFMax:        cfg.CRFSearchMax,
 				MaxProbes:     cfg.TargetQualityMaxProbes,
