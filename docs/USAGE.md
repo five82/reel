@@ -11,7 +11,7 @@ reel encode -i input.mkv -o output/
 # Batch encode an entire directory
 reel encode -i /videos/ -o /encoded/
 
-# Default target-quality encode (CVVDP via VSHIP/CUDA)
+# Default target-quality encode (source-selected metric via VSHIP/CUDA)
 reel encode -i input.mkv -o output/
 
 # Fixed CRF mode
@@ -31,8 +31,8 @@ reel encode -v -i input.mkv -o output/
 - `-o, --output <DIR>`: Output directory (or filename when single file)
 
 **Quality Settings**
-- `--quality-mode target|crf`: target-quality CVVDP mode is the default in normal builds; `crf` is the default in `no_vship` builds and keeps fixed-CRF behavior
-- `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.15-9.55`). Setting this explicitly forces CVVDP scoring even for SDR <=1080p sources (see Target-Quality Scoring)
+- `--quality-mode target|crf`: target-quality mode is the default in normal builds; `crf` is the default in `no_vship` builds and keeps fixed-CRF behavior
+- `--target-quality <LOW-HIGH>`: CVVDP JOD target range (default `9.15-9.55`). A non-default value forces CVVDP scoring even for SDR <=1080p sources (see Target-Quality Scoring)
 - `--crf-range <LOW-HIGH>`: target-quality search bounds (default `4.25-63.75`)
 - `--cvvdp-display <PATH>`: optional VSHIP/CVVDP display JSON; otherwise Reel generates a normal-viewing `reel` model. Custom JSON must contain a top-level `reel` model.
 - `--metric-workers <N>`: concurrent VSHIP/CUDA scoring workers (default: `4`)
@@ -59,7 +59,7 @@ Worker count adapts during encoding: Reel starts conservatively, tests higher co
 
 Target-quality mode is enabled in the default build and requires a working `libvship`/CUDA install. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
 
-Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created. See `docs/RESUME_DURABILITY.md` for the crash-recovery audit and open hardening items.
+Interrupted runs can be resumed by running the same command again. Completed chunks are kept in Reel's temporary work directory until the final output is created.
 
 ## Target-Quality Scoring
 

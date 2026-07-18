@@ -6,11 +6,11 @@
 #
 # The repo holds this harness and the clip manifest (scripts/perf/clips.tsv);
 # the clip bytes and run outputs live under $REEL_TESTING_DIR (default
-# ~/testing). See docs/PERFORMANCE_TESTING.md for the corpus, artifact
-# boundary, and current tuning guidance.
+# ~/testing). See scripts/perf/README.md for the harness and corpus, and
+# docs/PERFORMANCE_TESTING.md for prior decisions.
 #
-# Runs are strictly sequential: the single GPU and its CVVDP allocator must
-# never have two reel processes at once.
+# Runs are strictly sequential so another GPU workload cannot contaminate wall,
+# utilization, thermal, or VRAM comparisons.
 #
 # Usage:
 #   scripts/perf/run-suite.sh [options] [clip ...]
@@ -135,7 +135,7 @@ resolve_clip() {
 		printf '  %s\n' "${matches[@]}" >&2
 		return 1
 	fi
-	echo "run-suite: clip '$token' not found under $REEL_TESTING_DIR (see docs/PERFORMANCE_TESTING.md and scripts/perf/clips.tsv)" >&2
+	echo "run-suite: clip '$token' not found under $REEL_TESTING_DIR (see scripts/perf/README.md and clips.tsv)" >&2
 	return 1
 }
 

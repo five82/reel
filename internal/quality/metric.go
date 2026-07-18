@@ -20,8 +20,8 @@ const (
 // (9.15-9.55 JOD) on the 1080p SDR test corpus: the measured exchange rate is
 // ~36 SSIMU2 points per JOD (stable 33-43 across clean-digital through grainy
 // content), so 60.8 +/- 7.2 reproduces the CVVDP band to ~sd 0.10 JOD with
-// misses biased to over-encode. Details: docs/PERFORMANCE_TESTING_LOG.md
-// 2026-07-10 entry. These are mean-pooled per-frame scores (mean is the
+// misses biased to over-encode. See docs/PERFORMANCE_TESTING.md. These are
+// mean-pooled per-frame scores (mean is the
 // tightest pooling at constant CVVDP; percentiles amplify content-dependent
 // worst-frame variance).
 const (

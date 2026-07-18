@@ -35,7 +35,7 @@ Spindle embeds reel as a library. Local spindle builds use a gitignored `go.work
 - When troubleshooting, gather evidence and test. Do not blindly guess.
 - Prefer unit tests over real encodes; encoding is slow.
 - When running Reel with a timeout, use at least 120 seconds.
-- When performance tuning, record what was tried, why, measured results, and whether the change was kept or reverted. Add a compact dated entry to `docs/PERFORMANCE_TESTING_LOG.md` (the decision ledger), and update `docs/PERFORMANCE_TESTING.md` (the current-guidance summary: defaults table, strategy, open items) if a default or the active strategy changes. Read `docs/PERFORMANCE_TESTING.md` first for current state. This gives future agents context beyond git history.
+- Before performance work, read `docs/PERFORMANCE_TESTING.md` so prior decisions are not retested. Update the relevant topical decision with the question, build/hardware when relevant, artifact path, decisive measurements, outcome, and retest condition; update its prioritized open-work item and the local code comment when a default or strategy changes. Keep raw logs and per-run data under `$REEL_TESTING_DIR`, not in the doc.
 - When creating or updating open issues, assign a priority (critical, high, medium, low) and a brief reason
 
 ## Build, Test, Lint

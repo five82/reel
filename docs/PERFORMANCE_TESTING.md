@@ -1,293 +1,480 @@
-# Performance Testing
+# Performance Testing Decisions
 
-LLM quick-start for Reel performance work. Read this file before proposing a
-performance change. Open `docs/PERFORMANCE_TESTING_LOG.md` only when you need the
-decision provenance for a specific row below.
+Read this file before proposing or running performance work. It is a decision
+register, not a description of the current implementation: inspect the code for
+current behavior and defaults, and use this file to learn why the relevant
+choices were made, what alternatives already failed, and what evidence would
+justify another test.
 
-## Purpose
+Real encodes are expensive and later coding sessions do not retain experiment
+history. Keep only decisive evidence here. Raw logs, per-run JSON, GPU traces,
+and one-off analysis belong under `$REEL_TESTING_DIR` (default `~/testing`) or
+in git history.
 
-These notes exist to stop expensive retesting. Real encodes are slow, GPU/CVVDP
-results can be hardware- and build-sensitive, and a later coding session will not
-remember what a previous session already tried. The docs should therefore answer:
+## Scope and invalidation
 
-1. What are the current defaults and why are they that way?
-2. What has already been tested, kept, rejected, or marked unsafe?
-3. What is still worth testing next?
-4. Which artifact should a future agent inspect instead of rerunning an encode?
+Reel has only been tested on a Ryzen 9 7950X with an RTX 5060 Ti 16 GiB.
+Worker counts, concurrency ceilings, and CPU/GPU bottlenecks are hardware- and
+build-sensitive; reconsider them after a material CPU, memory, GPU, driver,
+SVT-AV1, or libvship change. Metric mappings and quality findings
+also depend on Reel's CVVDP display model. A display-model change invalidates
+the JOD baselines, probe-noise estimate, and SSIMULACRA2 calibration.
 
-They are not a raw lab notebook. Large logs, per-run JSON, GPU traces, and
-one-off scripts belong under `$REEL_TESTING_DIR` (default `~/testing`) or in git
-history, with only the decisive summary kept here.
+The code is the authority for current values. A decision entry may name a value
+to identify the experiment, but should not be maintained as a defaults table.
+When a test changes a local constant or invariant, keep the concise rationale
+beside the code and put the cross-cutting evidence here.
 
-## Target-quality probe strategy (current)
+## Before benchmarking
 
-Every probe scores the **whole chunk** in a single metric pass, at every
-resolution. The converged probe IVF is reused verbatim as the final chunk (no
-re-encode). There is no sampled-window mode and no full-probe threshold.
+Operational instructions, matrices, and artifact formats live in
+`scripts/perf/README.md`. The following rules exist because prior tests failed
+without them:
 
-The probe metric is tiered (2026-07-10): **SDR sources at or below 1080p
-auto-probe with SSIMULACRA2** (vship) after a bounded per-title CVVDP warmup --
-exactly 20 chunks dual-score every probe to calibrate the title's SSIMU2
-offset from the `60.8 + 36*(JOD-9.35)` anchor, then later chunks search at
-`60.8+offset +/- 7.2`. **HDR and >1080p use CVVDP** as before, and explicit
-`--target-quality`/`--cvvdp-display` forces CVVDP. Measured: im-20m wall -47%
-(769->407s), feature-scale projection ~-50%; full-output CVVDP validation mean
-9.39-9.40 with rare per-chunk outliers to ~9.07; size -2..+12% by title
-(typical +2-5%). An independent 2026-07-11 reassessment says **keep the warmup
-while CVVDP defines SDR policy**: five title point estimates cut mapping bias
-0.075->0.016 JOD (only one title held out), and on that held-out title pure
-global SSIMU2 spent +27% total size while a pure known-offset A/B isolated 13%
-of size to the missing correction. This validates SSIMU2 as a fast local CVVDP
-surrogate, not CVVDP as subjective ground truth; choosing native SSIMU2's grain
-preference requires a blinded subjective test. See the LOG entry and
-`$REEL_TESTING_DIR/calibration-evaluation-20260711/`. The tolerance band and
-initial slope are defined in JOD and scale onto the SSIMU2 axis by the fixed 36x anchor slope
-(`quality/metric.go`), so the band/slope guidance below covers both tiers.
-Do NOT benchmark SDR-tier changes on 5m clips (warmup dominates them); use
-im-20m or longer. See the two 2026-07-10 LOG entries.
+- Benchmark Reel processes sequentially on the single GPU. This isolates the
+  A/B from resource contention; it is not a claim that all cross-process VSHIP
+  use is inherently incorrect.
+- Use a fresh workdir for every variant. Reel resumes completed chunks, so a
+  shared output directory can silently reuse the previous variant.
+- Record the actual binary hash, source state, SVT/libvship versions, and
+  hardware. Comparing labels or git commits alone is insufficient for a dirty
+  build.
+- Output SHA-256 is not stable between target-quality runs. Chunk completion
+  order changes which CRF prior is available, so legitimate probe paths and
+  final bits can differ. For score-path correctness compare shared
+  `(chunk, CRF)` probe points, then inspect probes/chunk, stop reasons, size,
+  and delivered quality.
+- Keep the workdir and run `scripts/fullvalidate` when a change can affect
+  quality. The source must be byte-identical to the one used for encoding;
+  re-cutting or replacing it invalidated a previous fullvalidate corpus and
+  manufactured a roughly 0.5 JOD error.
+- SDR <=1080p five-minute clips are dominated by the bounded CVVDP calibration
+  warmup. Use 20-minute or feature-length inputs to measure steady-state
+  SSIMULACRA2 behavior.
+- Worker history before 2026-07-01 was sampled at chunk completion and
+  under-reports active/in-flight peaks. Later artifacts use an unbiased timer.
 
-Why whole-chunk scoring (2026-06-30 full-scan-vs-sampled matrix, all 4 1080p
-clips ground-truth validated; see LOG): the old 3x48 sampled windows used a
-worst-window pooling that was systematically pessimistic on the 257-288 frame
-band (~25% of chunks), so it under-reported quality and **over-encoded** -- 6
-chunks pushed above the target band across the set, larger files (pooled -8.3%
-size for full-scan, content-dependent: clean +2%, film grain +22%), and worse
-accuracy (mean_abs_error 0.093 sampled vs 0.082 full). 4K already full-scanned
-(the 06-29 change) and showed the same thing harder (sampled +7-32% bigger).
-Full-scan cost ~+16.6% pooled 1080p wall when measured -- that was the
-CVVDP-everywhere era, when 1080p was metric-bound; since the SSIMU2 switch the
-metric phase is no longer the SDR 1080p critical path (2026-07-11 NVDEC LOG
-entry), so the residual full-scan cost is smaller still. Full-scan is exact
-(score-lie 0.000 by construction) and far simpler. Deleting sampling removed
-~620 lines.
+There is currently no all-path reference baseline. The last full default matrix,
+`$REEL_TESTING_DIR/perf-runs/20260702-124007-tq-baseline-current`, predates both
+the SDR SSIMULACRA2 path and the AV1 level/bitrate contract. It is historical
+only. Refresh the default matrix plus the long matrix before an A/B that needs a
+current baseline; do not call the 2026-07-02 run current.
 
-## Target band and CVVDP display model
+## Open work
 
-The default target range is **9.15-9.55 JOD** (center 9.35, half-width 0.20).
-Band width is the probe-cost knob: it was widened from +-0.135 on 2026-06-14
-(commit 714ac5f, full-feature validated: probes/chunk 3.11 -> 1.46, wall -51%)
-because a band narrower than ~2x probe measurement noise (~0.075 JOD) wastes
-probes marching the search. The current band is ~5x noise, and the 2026-07-02
-feature validation shows 1.39 probes/chunk with 70% one-probe convergence, so
-further widening has thin upside (the floor is 1.0 probes/chunk) and a real
-cost: the band width is the constructive bound on mid-shot join steps (see
-Chunking) and the quality floor drops with it. Do not widen without a measured
-probe tail.
+### Medium - validate SDR steady state on a full-length title
 
-The center (9.35) and the display model are quality policy, not speed levers.
-The default model scores on a 55" 4K panel at 1.3 m (~77 px/deg --
-near-critical viewing, about 2x closer than a typical living room at ~151
-px/deg), so the measured floor (feature: mean 9.385, p10 9.234, min 9.151)
-carries margin at real viewing distances. Lowering the center or relaxing the
-display model would shrink files, not speed up encodes -- treat either as a
-user-coordinated policy change, and note a display-model change invalidates
-the calibrated constants (probe noise ~0.075, initial slope 0.025) and every
-prior baseline artifact. The CRF search range (4.25-63.75) is also fine: the
-Sully feature used 15.25-63.75 and its single ceiling chunk converged in-band.
+The measured `im-20m` wall reduction was about 47%; the roughly 50% feature
+projection remains an extrapolation. One full 1080p SDR disc title would close
+the throughput and quality projection.
 
-## Chunking
+### Medium - retest cross-title pairing in Spindle
 
-`DefaultTargetQualityMaxChunkDuration = 12s` caps chunk size in TQ mode. It is a
-**weak lever**: an 8-24s sweep (2026-06-30, full-scan, 1080p + 4K) found wall
-flat across the range -- metric work ~= total_frames x probes-per-chunk, which is
-independent of chunk size -- with only small content-dependent size/accuracy
-wobble and no consistent optimum. 12s is a balanced default, not a tuned peak;
-larger ("much larger") gives no throughput win and occasionally worse accuracy.
+The allocator mitigation held across processes (72/72 shared `(chunk, CRF)`
+scores matched) and pairing measured 510s versus 670s sequential, but the first
+real disc pair OOMed because both processes sized full CVVDP pools independently.
+The SDR pool now falls from about 3.3 GiB during warmup to 182 MiB after
+calibration.
 
-Boundary placement is also **not a quality lever** (2026-07-02, measured on the
-Sully feature): per-chunk TQ pushes every chunk into the band regardless of
-where boundaries fall. The worst case is a mid-shot join (synthetic split, 190
-of 669 joins), where same-shot neighbors can converge to CRFs 22 apart -- yet
-the perceptual step stayed <= 0.303 JOD, under the 0.40 band width that bounds
-it by construction and below the steps at natural cuts. Missed cuts inside a
-chunk cost bits, not quality (SVT scd=0; full-scan CVVDP still measures them).
-Improving detection accuracy or chunk uniformity buys nothing here; the only
-knob on the join step is the tolerance band. See the LOG entry.
+The remaining gate is solo peak VRAM at real disc resolutions and the worst
+overlap (1080p warmup plus 4K). Delaying the 4K partner until calibration locks
+is the simple safe option. Evidence is under
+`perf-runs/20260703-210442-coex-solo` and
+`$REEL_TESTING_DIR/coex-20260704/`; policy belongs in Spindle, not Reel.
 
-Dispatch ordering is likewise settled (2026-07-02, assessed from the Sully
-feature artifacts): timeline blocks of 32 with largest-first inside each block
-feed the neighbor prior well -- 510/670 chunks got a neighbor seed and 467
-converged in one probe. A perfect ordering could save at most ~2.5% of probes
-(~1% of wall), inside run noise, and ordering cannot affect quality. The
-adjacent levers (nearest-seed fallback, staggered prime seeds, default-CRF
-sweep, prime at slot target, smaller blocks) were all tested and rejected.
+### Medium - overlap shot detection with encoding
 
-## Current tuning baseline
+Logical/2 workers reduced feature detection to about 415s, still roughly 6.7%
+of 4K feature wall. Streaming boundaries could hide most of it, but dispatcher
+ordering, resume, and prior seeding currently require a complete plan. Require
+identical boundary hashes and an explicit design review before changing those
+invariants.
 
-Use `scripts/perf/run-suite.sh --label tq-baseline` for a clean current-code
-baseline; artifacts live under `$REEL_TESTING_DIR/perf-runs/`. The current
-reference baseline on this box (RTX 5060 Ti) is
-`perf-runs/20260702-124007-tq-baseline-current`: default matrix wall 2556s,
-output 1087 MB (refresh after the shot-detection worker default; previous
-reference was 2618s / 1090 MB at
-`perf-runs/20260702-005326-tq-baseline-decode-slope`). run-suite.sh also samples
-host CPU/RAM/disk into a `.host` log per clip; analyze.py reports
-cpu_mean/cpu_p90/mem_avail_min.
+### Low - broaden or replace the SDR calibration policy
 
-**The 20260702 reference predates the 2026-07-10 SSIMU2 metric switch.** Its
-1080p rows are stale as an A/B anchor -- current code takes a different probe
-path on every SDR <=1080p clip -- and the default matrix's 5m 1080p clips are
-warmup-dominated under SSIMU2, so they no longer characterize steady-state
-SDR behavior. Refresh the baseline (default matrix for the historical anchor
-plus `--matrix long` for a meaningful SDR steady-state row) before the next
-1080p-affecting A/B. The 4K/HDR rows still reflect current code paths.
+Current evidence covers a small live-action corpus and only one truly held-out
+title. Add animation/CG, 720p, restored/denoised material, or a blinded grain
+A/B only if deciding whether native SSIMULACRA2 preference should replace
+CVVDP-denominated policy. If title-size centering becomes a real problem, first
+test whether the largest-first warmup sample is biased before adding estimator
+complexity.
 
-Matrix hygiene: keep the default matrix as the historical A/B anchor. Use
-`--matrix coverage` for broad target-quality behavior changes, `--matrix
-encoder` for 4K encoder-side changes, and `--matrix long` for serial-phase or
-baseline-refresh checks where 5m clips understate startup/planning cost. The
-matrix definitions are in `scripts/perf/README.md` and recorded in
-`run-meta.json` for new runs.
+## Quality policy and probe metrics
 
-A complete feature (Sully, 95m50s 4K HDR) was validated 2026-07-02
-(`perf-runs/20260702-013705-feature-validation`): wall 6232s (1.08x video
-runtime -- the per-title planning number for 4K features), 670 chunks at 1.39
-probes/chunk, 100% converged, zero maxed chunks, all finals in band. The old
-feature-length probe tail is CLOSED, not just deferred. Host CPU peaked at
-77% p90 and the GPU held 53-56C over 4 hours of continuous load -- no thermal
-or host-saturation risk for long batches.
+### Target band and display model - KEEP
 
-CVVDP early-abort (stopping doomed probes mid-pass) was evaluated on 1305
-milestone-logged probes and REJECTED: mid-pass running scores err vs final by
-up to 0.47 JOD (wider than the target band), so a safe guard catches too few
-doomed probes to matter (~1-2% of metric work). Do not revisit without a
-fundamentally better mid-pass predictor.
+**Why:** The earlier half-width of 0.135 JOD fought roughly 0.075 JOD probe
+noise. Widening to half-width 0.20 reduced a full feature from 3.11 to 1.46
+probes/chunk and wall by 51%. Later feature validation measured 1.39
+probes/chunk with 70% one-probe convergence, leaving little room above the hard
+floor of one probe. Further widening lowers the quality floor and increases the
+maximum same-shot join step, while offering only a thin probe reduction.
 
-Metric workers default to **4 at every resolution**. A 2026-06-30 HD A/B found
-4 workers slightly faster than the old 6-worker below-UHD default (683s vs 691s,
--1.2% pooled) while cutting VRAM by roughly 1-2 GiB; 8 workers regressed (709s,
-+2.6%) and used much more VRAM. UHD remains at 4 because 4K runs are mostly
-encoder/memory-bandwidth bound, so extra metric concurrency is not the wall-time
-lever. The below-UHD A/B is from the CVVDP-everywhere era; under SSIMU2 the
-metric phase is no longer the SDR 1080p critical path at 4 workers (2026-07-11
-NVDEC test), so below-UHD worker count is not a wall lever in either direction
--- leave it at 4.
+The target center and display geometry are quality/size policy, not throughput
+knobs. The 55-inch 4K display at 1.3 m is deliberately near-critical viewing
+(about 77 px/degree), providing margin relative to a typical living room.
+Changing it invalidates all calibrated JOD and SSIMULACRA2 constants. A 1000
+versus 1500 nit HDR test found no quality deficit that the higher peak fixed;
+the original alarming result was the old VSHIP scoring cascade and disappeared
+on a fixed-ruler rescore.
 
-The CVVDP **source decoder uses 2 threads** (probe decoder 1). One thread
-starved the GPU at 4K (HEVC10 ~23 fps single-thread vs a ~50 fps GPU CVVDP
-ceiling): threads=2 cut 4K metric_s 12-18% and wall up to -8.8% (kbv1), neutral
-at 1080p (2026-07-01, kept). Do not escalate to 4 threads or a src/dist
-producer split without re-measuring: encode lanes already absorb the freed CPU
-(encode_lane_s +8-12%).
+The CRF search bounds were not an active limit either: the feature's selected
+CRFs spanned 15.25-63.75, and its one ceiling chunk still converged in band.
+The unused low bound is harmless.
 
-The initial JOD-per-CRF slope is **0.025 for every tier** (2026-07-01; the old
-SDR-only 0.04 under-stepped clean digital content title-long: air -18.5% wall
-under 0.025). Grainy low-CRF content (true slope 0.06-0.09, e.g. bts) pays a
-fixed early-window cost of ~4-8 extra probes per title until the first measured
-slope lands, then the learned median takes over. See the LOG before touching
-this constant.
+**Retest only if:** a current run shows a material multi-probe tail, repeated
+bounds/max-probe stops, or the user chooses a different quality/display policy.
+Subjective invisibility was not established by these metric results.
 
-UHD **prime-phase concurrency stays at the resolution floor (3)**. Priming at
-the slot target (5) was tested and rejected (2026-07-01): once the metric
-decoder was unthrottled the prime-phase idle it targeted disappeared, leaving
-only extra cold-seeded probes (+4-5% probes/chunk) and +1-3% size.
+**Provenance:** commit `714ac5f`; 2026-07-02 Sully feature artifact
+`perf-runs/20260702-013705-feature-validation`; older HDR display artifacts were
+pruned after their decisive result was recorded in git history.
 
-**A/B methodology note:** output sha256 is NOT stable run-to-run -- chunk
-completion order feeds the CRF prior, so probe paths and outputs legitimately
-drift. Gate correctness on probe-score identity at shared (chunk, CRF) points
-(bit-identical when frames and scoring are unchanged) plus probes/chunk, size,
-jod_mae/jod_min, and stop_reasons. Worker history in perf.json is sampled on a
-2s timer as of 2026-07-01; earlier runs' max_active/peak_in_flight are
-completion-biased (the old 4K "max_active 4 < target 5" was an artifact).
+### Whole-chunk scoring - KEEP; sampled windows REJECTED
 
-SVT-AV1 preset stays **6**. Preset 7 was rejected on the same matrix: only -1.1%
-pooled wall, +10.3% pooled size, and the `sullyhv` stress clip was both slower
-(+2.6%) and much larger (+57%). Do not test preset 8 unless a future encoder
-version changes that trade-off; preset 7 already crossed the size budget for too
-little wall gain.
+**Why:** On the 257-288 frame band, the old worst-window sampling was
+systematically pessimistic and over-encoded. Across four 1080p clips,
+whole-chunk scoring reduced pooled size 8.3%, improved mean absolute error
+0.093 -> 0.082, and eliminated six above-band chunks. The effect was content
+dependent: clean content was about 2% larger, while a grainy title was 22%
+smaller. The measured 1080p wall cost was 16.6% in the CVVDP-everywhere era;
+the SDR SSIMULACRA2 switch later removed that metric bottleneck. Whole-chunk
+scores are exact for the encoded IVF and let a converged probe become the final
+chunk without re-encoding.
 
-SVT `level_of_parallelism` stays on the current auto policy. Explicit lp=4 looked
-slightly faster on two homogeneous 5m 4K clips (-1.9% pooled) but lost on
-`sullyhv` (+1.6% wall); lp=2 was also slightly slower. Treat lp as tested and
-not worth changing until hardware/SVT behavior changes.
+**Retest only if:** a new method preserves whole-output quality and bit cost
+without reintroducing a proxy score. Do not resurrect the deleted sampled
+pooling, distance-space, Minkowski, or sampled early-out variants; those were
+coupled to an obsolete architecture and were individually rejected before the
+roughly 620-line sampling path was removed.
 
-## Open items
+**Artifacts:** `$REEL_TESTING_DIR/band-investigation-20260630/`.
 
-- **SDR <=1080p SSIMU2 follow-ups (the shipped design and measured results
-  are in the strategy section above; VMAF was tested and rejected -- see the
-  2026-07-10 LOG entries and `$REEL_TESTING_DIR/metric-research-20260710/`):**
-  The warmup CVVDP scorer pool closes as soon as the last warmup chunk
-  finishes after the lock (2026-07-11, measured on im-20m: 3.3 GiB peak
-  during the warmup window, then 182 MiB steady state for the rest of
-  the run; wall unchanged). Remaining follow-ups, none blocking:
-  (a) the feature-scale ~-50% wall projection is extrapolated from im-20m,
-  not yet validated on a full-length SDR 1080p disc title -- one real-title
-  run before a large batch would close it; (b) offset estimator samples the
-  first ~16-20 dispatched (largest-first) chunks -- add diversity if title
-  size centering bites. NVDEC metric decode was fully implemented, A/B
-  tested, and REJECTED 2026-07-11: bit-exact and +11-15% SSIMU2 probe
-  throughput, but wall-NEUTRAL (the metric phase is not the SDR 1080p
-  critical path at 4 metric workers) and CVVDP probes got 5-8% slower with
-  +1.6 GiB 4K VRAM. Per-worker decode speed is NOT a 1080p wall lever; do
-  not retest decode-side changes unless metric workers become the critical
-  path. See the LOG entry (implementation preserved as a patch next to the
-  A/B artifacts).
-- **Shot detection serial cost (partially addressed 2026-07-02):** was 577s on
-  a 95m50s 4K feature (9.3% of wall); the logical/2 worker default cut it to
-  ~415s (-28%, now ~6.7% of wall). Detection cost is pure HEVC decode
-  throughput -- the per-frame analysis is a trivial 64x36 luma signature. A
-  chunkbench 16/20/24/32-worker feature sweep found only a marginal additional
-  win (414/393/388/394s, identical boundary hash), so the logical/2 default stays:
-  24 workers saves just ~26s per feature and oversubscribes decoder threads in
-  a hardware-sensitive way. Remaining attacks, none tested: overlapping
-  detection with the start of encoding (streams boundaries into the dispatcher;
-  hides most of the remaining ~7 min/feature but is invasive -- dispatcher,
-  resume, and prior seeding all assume a complete plan), NVDEC-assisted decode
-  (estimated only 1.5-2x: one NVDEC engine vs 16-way software), or folding crop
-  detection into the same pass (~17s). Gate anything here on identical
-  scripts/chunkbench "Boundary hash". Note: 5m test clips cap at 4 workers via
-  the 1500-frames-per-worker floor, so worker-count changes only show on
-  sullyhv or feature-length content.
-- **Cross-title pairing -- implemented 2026-07-04, REMOVED 2026-07-07,
-  retest after the SSIMU2 warmup-pool follow-up:** spindle's Phase 5
-  pairing (spindle c3f97e0) was backed out (spindle 090ae7b) after a real
-  1080p + UHD disc pair OOM'd: each reel process sized its CVVDP metric
-  pool as if it owned the GPU and both encodes died with vship OutOfVRAM
-  on the 16 GiB card. The 2026-07-04 gate measured score identity and
-  throughput on 5m clips but NOT peak VRAM of two concurrent metric pools
-  at real disc resolutions -- that is the missing gate for any retry.
-  Spindle encoding now uses a single encode slot (capacity 1); its slot
-  mechanism survives, so re-enabling is a spindle-side policy change.
-  The 2026-07-10 SSIMU2 switch changes the calculus, and the warmup-pool
-  prerequisite landed 2026-07-11: after the calibration lock the 1080p
-  side drops to a measured 182 MiB of metric VRAM (im-20m trace: 3.3 GiB
-  peak only during the ~16-20 chunk warmup window), so a paired 1080p+4K
-  total falls from ~10 GiB to ~6 GiB outside that window. Remaining
-  retest steps: (1) measure solo peak VRAM at real disc resolutions (not
-  5m clips) for both tiers -- the worst case is the 1080p warmup window
-  overlapping the 4K encode, which still stacks ~3.3 + ~5.9 GiB and is
-  exactly the configuration class that OOM'd; (2) re-gate pairing in
-  spindle on that measured headroom plus the existing score-identity
-  check (spindle could also simply delay the 4K partner until the 1080p
-  calibration lock line, shrinking the overlap risk to zero). The prior evidence (still valid): MITIGATE_MALLOC_ASYNC holds
-  cross-process -- 72/72 shared (chunk, CRF) probe scores bit-identical,
-  pooled wall 510s vs 670s sequential
-  (perf-runs/20260703-210442-coex-solo vs ~/testing/coex-20260704/pair).
-  Original item kept below for provenance.
-- **Cross-title pairing (deferred by choice, 2026-07-01; provenance only --
-  the utilization profile below is pre-SSIMU2, when 1080p was CVVDP-scored):**
-  run one 1080p and one 4K reel instance concurrently. The lanes are
-  complementary: 1080p is
-  metric-bound (GPU ~86%, encode slots ~2 of 8 busy) while 4K is encode-leaning
-  (GPU ~40%), and VRAM peaks (3.9 + 5.9 GiB) fit together on the 16 GiB card.
-  A 2026-07-01 audit projected 15-35% library-level throughput depending on
-  title mix (air+sully pair: ~475-580s vs 757s serial). Prerequisites before
-  piloting: validate the vship MITIGATE_MALLOC_ASYNC workaround holds
-  cross-process (run 1080p metric passes while a 4K encode runs; gate on
-  per-clip sha256), keep run-suite A/B benchmarking strictly sequential, and
-  put the pairing policy in spindle, not reel. Adjacent evidence
-  (2026-07-04, spindle task-graph Phase 4c): a continuous WhisperX CUDA
-  process (3.3 GiB VRAM) running alongside full reel TQ encodes (air-5m +
-  sully-5m) left probe scores bit-identical at all 56 shared (chunk, CRF)
-  points -- a foreign CUDA process does not perturb CVVDP scoring. This
-  does NOT close the reel-vs-reel cross-process prerequisite (different
-  allocator/vship regime); artifacts at perf-runs/20260703-210442-coex-solo
-  and 20260703-211638-coex-whisperx. Coexistence wall cost on the encode:
-  1080p +29.7%, 4K +7.5%.
-- ~~Clean digital 1080p full-scan wall cost~~ largely SUPERSEDED 2026-07-10:
-  the SSIMU2 switch cut SDR 1080p wall ~47%, removing most of the motivation
-  (the +16.6% full-scan cost was a CVVDP-era number). The variance-triggered
-  hybrid stays rejected.
-- ~~Probe-tail revalidation~~ CLOSED 2026-07-02: the complete Sully feature ran
-  1.39 probes/chunk, 100% converged, zero maxed chunks
-  (`perf-runs/20260702-013705-feature-validation`).
+### SDR <=1080p SSIMULACRA2 probing - KEEP; VMAF REJECTED
+
+**Why:** CVVDP resizes 1080p input to the 4K display raster and was the dominant
+SDR cost. SSIMULACRA2 measured about 8.5x faster per isolated handler and cut an
+`im-20m` run from 769s to 406-408s. Full-output CVVDP validation remained near
+the existing policy (mean about 9.39, rare per-chunk outliers down to about
+9.07), with title size changes from roughly -2% to +12%.
+
+VMAF was rejected: all tested models saturated near the operating point,
+produced 0.19-0.24 JOD delivered spread and real misses down to 8.78-8.91, and
+would add a CPU-contending dependency. SSIMULACRA2 was monotone over all 120
+ladder steps at Reel's preset and had a stable median exchange rate near 36
+points/JOD.
+
+**Retest only if:** the metric library/model changes materially, SDR quality
+policy stops being CVVDP-denominated, or a new metric demonstrates both
+non-saturating quality consistency and an end-to-end wall win.
+
+**Artifacts:** `$REEL_TESTING_DIR/metric-research-20260710/` and
+`perf-runs/20260710-*-tq-ssimu2-*`.
+
+### Per-title SSIMULACRA2 calibration - KEEP
+
+**Why:** A fixed global SSIMULACRA2 target over-encoded grain badly: the pilot
+made `bts` 32% larger, while title offsets at equal CVVDP quality ranged by
+several SSIMULACRA2 points. Ten samples were noisy enough to make `air` 17%
+larger; the bounded 20-sample median avoided that failure. Independent
+reassessment reduced five-title mapping bias from 0.075 to 0.016 JOD. On the
+one held-out title, a known-offset A/B attributed 13% size to the missing
+correction, while pure global versus the end-to-end calibrated path was 27%
+larger.
+
+This validates calibration as a fast surrogate for Reel's existing CVVDP
+policy. It does not establish CVVDP as subjective ground truth. Deleting only
+the warmup while retaining the corpus-derived target would still be a quality
+policy change, not cleanup. Slope fitting and periodic recalibration had no
+supporting need.
+
+Closing the CVVDP scorer pool after calibration was kept: an `im-20m` trace fell
+from a 3.3 GiB warmup peak to 182 MiB steady-state with unchanged output and
+wall, enabling the pairing retest described above.
+
+**Retest only if:** the display/metric policy changes, broader content exposes a
+repeatable calibration miss, or subjective testing chooses native
+SSIMULACRA2 behavior over CVVDP matching.
+
+**Artifacts:** `$REEL_TESTING_DIR/calibration-evaluation-20260711/` and
+`perf-runs/20260711-120257-*`, `20260711-121152-*`,
+`20260711-124042-*`.
+
+## Metric pipeline
+
+### Metric workers - KEEP current four-worker policy
+
+**Why:** In the full-scan CVVDP matrix, four below-UHD workers slightly beat six
+(683s versus 691s pooled) while using roughly 1-2 GiB less VRAM; eight regressed
+to 709s and used substantially more VRAM. UHD was already encoder/memory
+bandwidth bound. After the SDR SSIMULACRA2 switch, four workers no longer put
+metric decode/scoring on the 1080p critical path, so changing the worker count
+still does not improve wall.
+
+**Retest only if:** hardware or libvship changes, pairing changes the critical
+path, or `perf.json` shows metric workers saturated while encode slots wait.
+
+**Artifacts:** `perf-runs/20260630-215633-mw4-hd`,
+`20260630-220757-mw8-hd`, and the 2026-07-11 hardware-decode A/Bs.
+
+### CVVDP source decoder threads - KEEP two
+
+**Why:** One source-decoder thread starved 4K CVVDP (HEVC10 around 23 fps versus
+a roughly 50 fps GPU ceiling). Two threads reduced 4K metric time 12-18% and
+wall up to 8.8%, while remaining neutral at 1080p. Encode lanes absorbed the
+freed CPU, so escalating further was not justified; the faster AV1 probe decoder
+was not the producer bottleneck.
+
+**Retest only if:** CPU allocation or the number of concurrent metric workers
+changes enough to alter producer starvation.
+
+**Artifacts:** `perf-runs/20260701-222552-metric-decode-threads`.
+
+### NVDEC metric decoding - REJECTED
+
+**Why:** The implementation proved hardware decode bit-exact for the supported
+H.264/HEVC/VC-1 corpus and improved SSIMULACRA2 probe throughput 11-15%, but
+end-to-end 1080p wall was neutral/slightly worse because metric work was not the
+critical path. CVVDP probes became 5-8% slower and 4K VRAM rose about 1.6 GiB due
+to GPU/download contention. A second decode path is not worth carrying without
+a wall benefit.
+
+**Retest only if:** metric workers become the measured wall-time bottleneck.
+Start from the preserved patch and keep MPEG-2 software-only.
+
+**Artifacts:** `perf-runs/20260711-*hwdec-*` and
+`perf-runs/20260711-hwdec-implementation.patch` (applies to `faefa07`).
+
+### CVVDP setup hoist and deeper ring - REJECTED
+
+**Why:** Moving demux/seek/ring setup before scorer checkout and increasing ring
+depth from two to three improved pooled wall by at most about 0.5% after probe
+noise was removed. GPU utilization did not improve; CRF-search serialization,
+not setup, caused the remaining idle.
+
+**Retest only if:** profiling shows setup on the critical path after a major
+pipeline change.
+
+**Artifacts:** `perf-runs/20260702-032557-cvvdp-setup-hoist`.
+
+### Mid-pass CVVDP early abort - REJECTED
+
+**Why:** Across 1305 probes, a running score at 50% differed from the final by as
+much as 0.469 JOD, wider than the complete target band. A zero-false-abort guard
+caught too few doomed probes to save more than about 1-2% of metric work.
+
+**Retest only if:** there is a fundamentally better final-score predictor, not
+just another threshold over the same running score.
+
+**Artifacts:** milestone data in
+`perf-runs/20260702-013705-feature-validation`.
+
+## Search, scheduling, and chunking
+
+### Search slope - KEEP the shared initial slope
+
+**Why:** The older SDR slope under-stepped clean, high-CRF content. The current
+initial slope cut `air` wall 18.5%. Grainy low-CRF content can spend roughly
+4-8 extra probes before the first measured slope arrives, but that is a fixed
+per-title startup cost; the learned median then takes over. Returning to the old
+SDR value would impose a title-long regression to avoid a bounded early cost.
+
+**Retest only if:** feature logs show the early grain window growing with title
+length. The next idea would be earlier measured-slope seeding, not restoring the
+old tier split.
+
+**Artifacts:** `perf-runs/20260701-234200-sdr-slope-025` and
+`$REEL_TESTING_DIR/seedsim-20260701/`.
+
+### Bracketed linear interpolation - KEEP; PCHIP REJECTED
+
+**Why:** A leave-one-out test evaluated monotone cubic/PCHIP interpolation on
+the multi-probe tail. Although PCHIP fit the forward CRF-to-score curve slightly
+better, Reel needs the steep inverse score-to-CRF prediction: linear error was
+0.357 CRF versus 1.221 for PCHIP, and linear won 46/51 paired chunks. The extra
+curve shape would add probes, not remove them.
+
+**Retest only if:** search changes direction to model CRF-to-score directly or a
+new interpolation method wins the inverse prediction on held-out points. More
+complexity applied to the same inverse data is closed.
+
+**Provenance:** 2026-06-28 decision in git history (`82a31ec`); the throwaway
+analysis scripts were not retained.
+
+### Dispatch order and CRF priors - KEEP
+
+**Why:** Timeline blocks with largest-first ordering balance neighboring CRF
+priors against tail latency. On the complete Sully feature, 510/670 chunks used
+a neighbor seed and 467 converged in one probe. Even a perfect order could save
+only about 2.5% of probes (roughly 1% wall). Reducing block size previously
+raised probes by weakening early priors.
+
+Nearby alternatives were also rejected:
+
+- nearest-completed fallback was flat on `sullyhv` and worsened `ko` probes
+  46 -> 50 because a distant single chunk was noisier than the title median;
+- staggered prime seeds and a default-CRF sweep only traded wins between the
+  corpus's low- and high-CRF modes;
+- raising UHD prime concurrency to the slot target added 4-5% probes/chunk and
+  1-3% size without a wall win.
+
+**Retest only if:** a content class shows a collapsed neighbor hit rate in
+`target-quality.json`, or a scheduler change materially changes completion
+order.
+
+**Artifacts:** `perf-runs/20260702-013705-feature-validation`,
+`20260702-001943-nearest-seed`, `20260701-230633-prime-slot-target`, and
+`$REEL_TESTING_DIR/seedsim-20260701/`.
+
+### Cheap luma content prior - REJECTED
+
+**Why:** Brightness, spatial texture, and temporal activity from six clips/279
+chunks achieved only 0.25-0.44 in-sample per-clip R-squared. Leave-one-clip-out
+MAE was about 11 CRF versus 4.8 for the neighbor prior, and the features
+explained none of the neighbor prior's residual error.
+
+**Retest only if:** a concretely different feature family beats the neighbor
+prior in a leave-one-content-out test before any encode A/B. More combinations
+of the same cheap luma statistics are closed.
+
+**Provenance:** 2026-06-28 decision in git history (`09ed548`); old raw
+`crfcorr` artifacts were pruned.
+
+### Chunk duration - KEEP as a balanced weak lever
+
+**Why:** A whole-scan sweep from 8s to 24s found wall effectively flat at both
+1080p and 4K: metric work follows total frames times probes/chunk, not chunk
+size. Size and accuracy moved slightly by content with no consistent optimum.
+The existing cap is a practical balance for parallelism, resume granularity,
+and per-probe latency, not a tuned throughput peak.
+
+**Retest only if:** the scoring model stops processing every frame or resume/
+parallelism requirements change.
+
+**Artifacts:** `$REEL_TESTING_DIR/band-investigation-20260630/`.
+
+### Boundary placement as a TQ quality lever - REJECTED
+
+**Why:** On the Sully feature, 190/669 joins were synthetic mid-shot splits.
+Their median/p95/max quality step was 0.073/0.248/0.303 JOD, below the target
+band's constructive 0.40 bound and smaller than natural-cut steps. CRF could
+move by 22.5 while quality remained stable because each chunk independently
+searched into the band. Missed cuts may cost bits, but whole-chunk scoring still
+protects quality.
+
+**Retest only if:** a viewing complaint identifies quality pumping at a
+synthetic join. The relevant fixes would be narrowing the band or tying split
+siblings, not making shot detection more elaborate.
+
+**Artifacts:** `boundary-kinds.tsv` in
+`perf-runs/20260702-013705-feature-validation`.
+
+### Feature-length probe tail - CLOSED
+
+**Why:** A complete 95m50s 4K HDR feature completed at 1.39 probes/chunk, 100%
+convergence, zero max-probe chunks, and all final scores in band. Wall was
+6232s (1.08x video runtime), host CPU p90 was 77%, and the GPU remained 53-56 C
+over four hours. Feature length did not expose probe-tail, thermal, host-memory,
+or scheduler-scaling failures.
+
+**Retest only if:** logs from current code show the tail or resource behavior has
+returned. Do not run another 4K feature solely to reconfirm title length.
+
+**Artifacts:** `perf-runs/20260702-013705-feature-validation`.
+
+## Encoder and concurrency
+
+### SVT-AV1 preset - KEEP the measured wall/size knee
+
+**Why:** The historical preset 4-8 sweep found faster presets bought too little
+wall for permanent size cost, while slower presets cost substantial wall for
+small size savings. A later current-matrix preset-7 A/B was only 1.1% faster
+pooled for 10.3% more data; `sullyhv` was both 2.6% slower and 57% larger.
+Preset 8 had already crossed the size budget in the broader sweep.
+
+**Retest only if:** a material SVT-AV1 version change alters preset behavior.
+Do not add a resolution split: 1080p bound-ness varied by content/bitrate, not
+resolution alone.
+
+**Artifacts:** `perf-runs/20260630-231627-preset7`; older preset 4-8 artifacts
+were pruned after being recorded in git history.
+
+### 4K encode concurrency and SVT level_of_parallelism - KEEP auto policy
+
+**Why:** 4K was limited by memory bandwidth, not free RAM. Raising active
+encodes near nine increased per-probe encode time roughly 27s -> 37s and
+worsened wall despite tens of GiB remaining. On the fixed allocator build,
+encoder-only throughput improved through cap eight, but target-quality wall was
+flat at cap six and slower at cap eight/ten. The existing bandwidth-aware
+ceiling was the measured TQ optimum on this machine.
+
+SVT `level_of_parallelism` is bitstream-neutral in Reel's tests. Deriving it
+from the resolution-aware worker ceiling lets a few concurrent encoders use
+otherwise idle cores. Explicit lp2/lp4 A/Bs were mixed by content and did not
+beat auto consistently.
+
+**Retest only if:** CPU/memory topology or SVT changes materially. The
+concurrency divisor is a hardware throughput optimum, not a safety limit.
+
+**Artifacts:** historical `perf-ab/cap-lp-retest` data (raw directory pruned),
+plus `perf-runs/20260630-222228-lp2-uhd`,
+`20260630-223634-lp4-uhd`, and `20260630-225431-lp4-sullyhv`.
+
+### Dev-box power, PCIe, and storage explanations - CLOSED
+
+**Why:** During the metric-bound phase the GPU trained at its full Gen5 x8 link
+and drew only 111-126 W of a 180 W limit while SM utilization reached 96%; it
+was not power-capped, so raising the power limit was not a throughput lever.
+Production and benchmark workdirs were already on local NVMe.
+
+**Retest only if:** the hardware, negotiated link, driver, power state, or
+workdir placement changes. Do not use these as generic explanations for a
+current-code regression without checking the recorded environment first.
+
+**Provenance:** environment capture in
+`perf-runs/20260701-222552-metric-decode-threads`.
+
+### Shot-detection workers - KEEP logical/2; further oversubscription REJECTED
+
+**Why:** Moving from physical/2 to logical/2 used otherwise idle SMT capacity
+and reduced Sully feature detection about 575s -> 415s with identical boundary
+hashes. A 16/20/24/32-worker sweep produced 414/393/388/394s. The best extra
+oversubscription saved only 26s on a 96-minute feature (about 0.4% total wall)
+and was hardware-sensitive. Five-minute clips cannot measure this because the
+1500-frames-per-worker floor caps them near four workers.
+
+**Retest only if:** decoder behavior or CPU topology changes. Always gate on an
+identical `scripts/chunkbench` boundary hash.
+
+**Artifacts:** `$REEL_TESTING_DIR/shotdet-workers-20260702/` and
+`perf-runs/20260702-110142-shotdet-logical-workers`.
+
+### Concurrent VSHIP handlers - KEEP only with the allocator mitigation
+
+**Why:** Default libvship `cudaMallocAsync` allocation intermittently corrupted
+scores across concurrent handlers and could cascade into multi-gigabyte output
+swings. Building with `MITIGATE_MALLOC_ASYNC` made repeated concurrent results
+match serial truth and restored roughly 1.5x throughput over the temporary
+serialized workaround.
+
+**Retest only if:** libvship, GPU, or driver changes. Run `scripts/handlertest`
+before trusting concurrent scores; a couple of clean repetitions did not bound
+the historical intermittent failure.
+
+**Provenance:** `docs/VSHIP_CONCURRENCY_BUG.md`, commit `ec7faf7`, and the old
+`vship-concurrency` artifacts (since pruned).
+
+## Low-value pipeline work
+
+Existing `perf.json` measurements put media-property probes, validation opens,
+stream-byte scans, merge, and mux in the sub-1% tail on local storage. Duplicate
+first-frame video and audio probes were removed; the remaining validation opens
+were about milliseconds. Pooling `video.Source` objects around metric passes was
+also rejected: gross open cost was mostly hidden by the encode/score overlap,
+leaving roughly 0.3% of 4K feature wall on the critical path while adding
+thread-safety complexity.
+
+Do not optimize this tail from code inspection alone. Reopen an item only when a
+representative `perf.json` on large or network media shows that phase has become
+material. This rule does not cover shot detection, which remains a measured
+serial phase and has its own open item above.

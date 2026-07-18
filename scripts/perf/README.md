@@ -1,78 +1,120 @@
 # Reel performance suite
 
-A reproducible harness for running reel over the standard clip matrix and
-comparing runs. The repo holds this harness and the contiguous-cut manifest
-(`clips.tsv`); the clip bytes and run outputs live under `$REEL_TESTING_DIR`
-(default `~/testing`). The `sullyhv` stress clip is a derived local asset rather
-than a single-row manifest cut. See `docs/PERFORMANCE_TESTING.md` for the corpus,
-artifact boundary, and current tuning guidance.
+This directory contains the reproducible performance harness and clip manifest.
+For prior results and reasons not to repeat an experiment, read
+`docs/PERFORMANCE_TESTING.md` first.
+
+The repository stores recipes and tools. Clip bytes and run outputs live under
+`$REEL_TESTING_DIR` (default `~/testing`) so personal media, workdirs, and large
+traces are not committed.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `clips.tsv` | The clip matrix manifest (recipe): abbr, length, resolution, dynamic range, cut timecodes, source. |
-| `run-suite.sh` | Run reel over a set of clips (strict sequential), capturing env metadata, wall, size, GPU util/VRAM, and the per-encode `perf.json` / `target-quality.json`. |
-| `analyze.py` | Summarize a run directory: phase timing, worker history, probe histogram, stop reasons, JOD, encode-vs-metric seconds. Writes `summary.json`. |
-| `compare-runs.py` | Run-level A/B between two run directories (wall, size, probes, JOD). |
+| `clips.tsv` | Contiguous-cut recipes: abbreviation, length, resolution, dynamic range, timecodes, output name, and source. |
+| `run-suite.sh` | Runs Reel sequentially and captures build/environment metadata, wall, size, GPU/VRAM, host telemetry, `perf.json`, and target-quality logs. |
+| `analyze.py` | Summarizes phase timing, worker history, probe counts, stop reasons, quality, and encode-versus-metric work into `summary.json`. |
+| `compare-runs.py` | Compares wall, size, probes, and quality between two run directories. |
+
+Related tools:
+
+- `scripts/compare-tq.py`: per-chunk target-quality comparison.
+- `scripts/fullvalidate`: whole-chunk CVVDP validation of a kept workdir.
+- `scripts/chunkbench`: shot-detection and chunk-planning benchmark.
+- `scripts/handlertest`: concurrent VSHIP-handler correctness check.
 
 ## Usage
 
 ```bash
-# Build the binary first; the suite uses ./reel by default.
+# Build the exact binary that will be measured.
 go build -trimpath -o reel ./cmd/reel
 
-# Target-quality run over the standard matrix (default clips):
+# Historical default matrix shape.
 scripts/perf/run-suite.sh --label baseline
 
-# Wider corpus coverage when changing target-quality behavior:
+# Broad target-quality behavior coverage.
 scripts/perf/run-suite.sh --matrix coverage --label tq-coverage
 
-# Encoder-side A/B on the clips that stress 4K encode throughput:
+# 4K encoder and memory-bandwidth work.
 scripts/perf/run-suite.sh --matrix encoder --label encoder-ab
 
-# Longer clips for serial-phase or baseline-refresh checks:
+# Longer clips for startup/serial phases and steady-state SDR SSIMU2.
 scripts/perf/run-suite.sh --matrix long --label long-baseline
 
-# Fixed-CRF run over specific clips:
+# Fixed CRF or a custom Reel option.
 scripts/perf/run-suite.sh --mode crf --crf 30 --label crf30 sully-5m kbv1-5m
-
-# Pass extra flags through to `reel encode` after --:
 scripts/perf/run-suite.sh --label mw4 sully-5m -- --metric-workers 4
 
-# Summarize and compare:
+# Summarize and compare.
 scripts/perf/analyze.py "$REEL_TESTING_DIR/perf-runs/<timestamp>-baseline"
 scripts/perf/compare-runs.py <run_A> <run_B>
 ```
 
-By default the bulky `.reel-*` workdir is deleted after the small JSON artifacts
-are harvested; pass `--keep-workdirs` to retain it (for example to run
-`scripts/fullvalidate` afterward for full-chunk CVVDP ground truth).
+By default the suite deletes bulky `.reel-*` workdirs after harvesting the
+small artifacts. Pass `--keep-workdirs` when the experiment needs independent
+validation or probe-IVF inspection.
 
 ## Matrices
 
 | Matrix | Clips | Use |
 |--------|-------|-----|
-| `default` | `air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m` | Historical A/B anchor; keep using this for continuity unless a change needs more coverage. |
-| `coverage` | `air-5m bts-5m im-5m soms-5m io-5m sully-5m kbv1-5m ko-5m sullyhv-15m` | Broad TQ behavior coverage across clean/grainy SDR, clean/grainy 4K, CG, and the stress clip. |
-| `encoder` | `sully-5m kbv1-5m ko-5m sullyhv-15m` | Encoder-side A/Bs where 4K encode/memory-bandwidth behavior matters most. |
-| `long` | `air-20m bts-20m sully-20m ko-20m` | Baseline refreshes and serial-phase work where 5m clips understate startup/planning cost. |
+| `default` | `air-5m im-5m bts-5m sully-5m kbv1-5m sullyhv-15m` | Historical A/B shape. Preserve it for continuity, but do not assume an old run is a valid baseline for current code. |
+| `coverage` | `air-5m bts-5m im-5m soms-5m io-5m sully-5m kbv1-5m ko-5m sullyhv-15m` | Broad TQ coverage across clean/grainy SDR, clean/grainy 4K, CG, and hard content. |
+| `encoder` | `sully-5m kbv1-5m ko-5m sullyhv-15m` | Encoder-side changes where 4K encode and memory-bandwidth behavior matter. |
+| `long` | `air-20m bts-20m sully-20m ko-20m` | Serial/startup phases and SDR steady state that five-minute warmup-dominated clips cannot show. |
 
-## Related tools
+Corpus roles:
 
-- `scripts/compare-tq.py` -- per-chunk diff of two target-quality runs.
-- `scripts/fullvalidate` -- full-chunk CVVDP ground truth on a kept workdir.
-- `scripts/chunkbench` -- shot-detection / chunk-planning benchmark.
+- `air`: clean/light 1080p SDR.
+- `im`: moderate 1080p SDR.
+- `bts`: grainy, low-CRF 1080p SDR.
+- `soms`: light-grain 1080p SDR.
+- `io`: clean CG 4K HDR.
+- `sully`: normal clean 4K HDR.
+- `kbv1`: grain-heavy 4K HDR.
+- `ko`: grain-emulation 4K encode/memory-bandwidth stress.
+- `sullyhv`: derived hard-content stress asset, not one contiguous manifest cut.
 
-## Caveats
+## A/B validity
 
-- Runs are strictly sequential by design: the single GPU and its CVVDP allocator
-  must never host two reel processes at once.
-- GPU util/VRAM capture needs `nvidia-smi`; without it those columns are `na`.
-- `run-meta.json` records the libvship `.so` path but cannot auto-detect whether
-  it was built with `MITIGATE_MALLOC_ASYNC`; ensure the correct build (see
-  `docs/VSHIP_CONCURRENCY_BUG.md`) before trusting concurrent CVVDP scores.
-- `target-quality.json` scores are the search's whole-chunk probe scores, which
-  the converged probe reuses as final output; they match ground truth by
-  construction but a separate `scripts/fullvalidate` pass re-scores the muxed
-  result for an independent check.
+- Run variants sequentially on the single GPU. Concurrent workloads make wall,
+  utilization, thermals, and VRAM incomparable even when scoring remains
+  correct.
+- Use a separate fresh run directory for every variant. The harness clears each
+  clip's workdir because Reel resume can otherwise reuse chunks from a previous
+  configuration.
+- `run-meta.json` records the binary hash, git state, hardware, driver, and
+  linked-library paths. It cannot detect whether libvship was built with
+  `MITIGATE_MALLOC_ASYNC`; verify that separately with `scripts/handlertest`
+  after libvship/GPU/driver changes.
+- Target-quality output SHA-256 is not expected to match across runs. Completion
+  order changes prior availability and can legitimately alter probe paths. Gate
+  score-path correctness on shared `(chunk, CRF)` probe scores, then compare
+  probes/chunk, stop reasons, size, and delivered quality.
+- For changes that can affect quality, keep the workdir and run
+  `scripts/fullvalidate`. Do not modify or replace the source between encode and
+  validation.
+- Recorded scores are exact whole-chunk scores in the metric used for that
+  probe, and the chosen IVF is reused as the final chunk. On automatic SDR
+  <=1080p runs, warmup chunks are CVVDP and later chunks are SSIMULACRA2;
+  `fullvalidate` supplies a separate all-CVVDP policy check rather than an
+  identity check against the SSIMULACRA2 values.
+- Worker history in artifacts before 2026-07-01 was completion-sampled and can
+  under-report active/in-flight peaks. Current artifacts use timer sampling.
+
+## Artifact layout
+
+Each run directory contains:
+
+- `run-meta.json`: matrix, clip tokens, exact binary/source state, and machine.
+- `results.tsv`: return code, wall, output size/hash, and GPU summary per clip.
+- `summary.json`: analyzer output after `analyze.py` is run.
+- `<clip>/<clip>.log`, `.gpu`, `.host`: Reel output and sampled telemetry.
+- `<clip>/perf.json`: harvested pipeline phases and worker history.
+- `<clip>/target-quality.json`: harvested aggregate search decisions.
+- `<clip>/.reel-*/tq/*.json`: per-chunk search decisions when
+  `--keep-workdirs` is used.
+
+Keep only distilled decisions in `docs/PERFORMANCE_TESTING.md`; leave large raw
+artifacts here under `$REEL_TESTING_DIR`.

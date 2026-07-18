@@ -314,7 +314,7 @@ func shotDetectWorkers(frames, requested int) int {
 	// boundary hashes; on non-SMT boxes logical/2 == the physical/2 default
 	// this replaces. Earlier history (2026-06-27): physical/2 beat physical/4
 	// by 2-21%; 6 workers is a trap (16/6 floors to 2 threads/worker = 12
-	// total, fewer than cap4's 16). See docs/PERFORMANCE_TESTING_LOG.md.
+	// total, fewer than cap4's 16). See docs/PERFORMANCE_TESTING.md.
 	workers := max(util.LogicalCores(), 1) / 2
 	return max(1, min(workers, maxByFrames))
 }

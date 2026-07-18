@@ -16,10 +16,11 @@ const (
 	StopNoCandidates  StopReason = "no_candidates"
 )
 
-// Probe records one target-quality probe encode and its whole-chunk CVVDP
+// Probe records one target-quality probe encode and its whole-chunk metric
 // result. Every probe encodes and scores the entire chunk, so Score is exact
-// (no sampled-window approximation) and the probe IVF can be reused verbatim as
-// the final chunk.
+// for the selected metric and the probe IVF can be reused verbatim as the final
+// chunk. The old sampled worst-window proxy was removed because it was
+// systematically pessimistic and over-encoded; see docs/PERFORMANCE_TESTING.md.
 type Probe struct {
 	CRF           float32 `json:"crf"`
 	Score         float32 `json:"score"`

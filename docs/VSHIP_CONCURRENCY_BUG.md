@@ -81,8 +81,9 @@ Controlled A/B of libvship builds that differ only in the allocator, scoring the
 
 Reproduced at both 4 handlers (4K) and 8 handlers (1080p, milder but present). A standalone
 reproducer lives in the reel repo: `scripts/handlertest` (scores a kept workdir's chunks with one
-handler serially vs N distinct handlers concurrently and reports any divergence). Full
-experiment log: reel `docs/PERFORMANCE_TESTING_LOG.md`, "2026-06-19 Metric concurrency RESTORED".
+handler serially vs N distinct handlers concurrently and reports any divergence). The distilled
+Reel decision is in `docs/PERFORMANCE_TESTING.md` under "Concurrent VSHIP handlers"; the
+restoring implementation is commit `ec7faf7`.
 
 ## Workaround (what reel does today)
 

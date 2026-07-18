@@ -145,7 +145,8 @@ func EncodeTargetQuality(
 	// and rejected (2026-07-01): once the metric decoder stopped starving the
 	// GPU the prime-phase idle it targeted mostly disappeared, so it bought no
 	// wall beyond noise and cost extra cold-seeded probes (+4-5% probes/chunk)
-	// and +1-3% size on two of three 4K clips. See PERFORMANCE_TESTING_LOG.md.
+	// and +1-3% size on two of three 4K clips. See
+	// docs/PERFORMANCE_TESTING.md.
 	primeConcurrency := resolutionWorkerFloor(maxWorkers, width, height)
 	rampCeiling := resolutionRampCeiling(maxWorkers, width, height)
 	limiter := newAdaptiveLimiter(maxWorkers, initialWorkers, rampCeiling, totalFrames, cfg.StatusCallback, cfg.WarningCallback)
@@ -765,7 +766,7 @@ const (
 	// used until measured slopes accumulate. Observed slopes across the 1080p
 	// and 4K test corpus cluster at 0.02-0.03; the former SDR-only 0.04 halved
 	// the cold second-probe step and cost extra probes on high-CRF SDR content
-	// (2026-07-01 replay simulation + A/B, see PERFORMANCE_TESTING_LOG.md), so
+	// (2026-07-01 replay simulation + A/B; see docs/PERFORMANCE_TESTING.md), so
 	// one slope now serves every tier.
 	targetQualityDefaultJODPerCRF   = 0.025
 	targetQualityPriorMaxAdjustment = 3.0
@@ -939,7 +940,7 @@ func (p *targetQualityPrior) InitialCRF(chunkIdx int) (float32, string) {
 		// Seeding from the nearest completed chunk instead of the median was
 		// tested and rejected (2026-07-02): flat on sullyhv, worse on ko.
 		// Beyond the neighbor cap a single distant chunk is a noisier
-		// estimator than the median. See PERFORMANCE_TESTING_LOG.md.
+		// estimator than the median. See docs/PERFORMANCE_TESTING.md.
 		return medianCRF(values, p.minCRF, p.maxCRF), "median"
 	}
 }

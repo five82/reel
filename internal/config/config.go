@@ -27,9 +27,10 @@ const (
 	// half-width 0.20). The band width is a speed lever, not just an accuracy
 	// setting: probe measurement noise is ~0.075 JOD, so a half-width below
 	// ~2x that wastes probes landing just outside the band and marching the
-	// search to extra probes. At +-0.20 chunks converge in 1-2 probes with no
-	// streaming-visible quality loss. See docs/PERFORMANCE_TESTING.md
-	// ("Target band and CVVDP display model") before changing this.
+	// search to extra probes. At +-0.20 the validated feature converged in
+	// roughly 1-2 probes/chunk while staying inside the metric band. Subjective
+	// invisibility was not tested. See docs/PERFORMANCE_TESTING.md before
+	// changing this quality/speed policy.
 	DefaultTargetQuality = "9.15-9.55"
 
 	// DefaultCRFSearchRange is the default target-quality CRF search range.

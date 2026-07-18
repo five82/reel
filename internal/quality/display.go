@@ -62,6 +62,11 @@ func validateDisplayModel(path string) error {
 	return nil
 }
 
+// defaultDisplayModel is deliberately more demanding than typical living-room
+// geometry: 55 inches at 1.3 m is about 77 px/degree, leaving viewing-distance
+// margin for Reel's streaming use case. The target band, probe-noise estimate,
+// and SSIMU2 mapping were calibrated against this model, so changing these
+// literals is a quality-policy change that invalidates prior baselines.
 func defaultDisplayModel(inf *video.Info) displayModel {
 	model := displayModel{
 		Name:                  "Reel default normal-viewing SDR display",

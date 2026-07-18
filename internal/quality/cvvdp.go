@@ -43,7 +43,7 @@ const metricSourceDecoderThreads = 2
 // A split Open-before-pool-checkout / Compute-after variant (setup hoist,
 // ring depth 3) was tested and rejected 2026-07-02: wall gain was within
 // run-to-run noise, so the simpler single-function pass stays. See
-// PERFORMANCE_TESTING_LOG.md.
+// docs/PERFORMANCE_TESTING.md.
 func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, error) {
 	if opts.Processor == nil {
 		return CVVDPResult{}, fmt.Errorf("nil VSHIP processor")
