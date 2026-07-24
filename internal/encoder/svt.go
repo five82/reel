@@ -56,8 +56,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/video"
 )
 
 // SVTVersion returns the version string reported by the linked SVT-AV1 library.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"codeberg.org/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/chunk"
 )
 
 func chunkDistributionSummary(chunks []chunk.Chunk, fps float64) string {

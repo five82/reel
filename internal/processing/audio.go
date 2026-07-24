@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"codeberg.org/five82/reel/internal/audio"
-	"codeberg.org/five82/reel/internal/media"
+	"github.com/five82/reel/internal/audio"
+	"github.com/five82/reel/internal/media"
 )
 
 // audioChannelsFromStreams derives per-stream channel counts from already-probed

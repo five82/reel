@@ -16,9 +16,9 @@ import (
 	"strconv"
 	"time"
 
-	"codeberg.org/five82/reel/internal/chunkplan"
-	"codeberg.org/five82/reel/internal/config"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/chunkplan"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/video"
 )
 
 func main() {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/five82/reel/internal/util"
+	"github.com/five82/reel/internal/util"
 )
 
 func TestInitialAdaptiveWorkers(t *testing.T) {

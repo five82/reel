@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 func TestMergeOutputConcatenatesIVFAndRewritesFrameCount(t *testing.T) {

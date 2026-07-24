@@ -1,4 +1,4 @@
-module codeberg.org/five82/reel
+module github.com/five82/reel
 
 go 1.26.0
 

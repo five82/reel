@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codeberg.org/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/quality"
 )
 
 func TestSSIMU2CalibrationLocksAtMedianOffset(t *testing.T) {

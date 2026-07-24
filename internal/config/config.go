@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"codeberg.org/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/quality"
 )
 
 // Default constants

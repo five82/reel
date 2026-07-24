@@ -3,7 +3,7 @@ package processing
 import (
 	"testing"
 
-	"codeberg.org/five82/reel/internal/config"
+	"github.com/five82/reel/internal/config"
 )
 
 func TestLogSuggestionIncludesLogFile(t *testing.T) {

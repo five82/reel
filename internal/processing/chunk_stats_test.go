@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/chunk"
 )
 
 func TestChunkDistributionSummary(t *testing.T) {

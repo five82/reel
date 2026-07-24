@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 const DisplayModelKey = "reel"

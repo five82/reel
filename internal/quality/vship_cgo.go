@@ -48,7 +48,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 var vshipDeviceOnce struct {

@@ -3,7 +3,7 @@ package quality
 import (
 	"testing"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 func trc(v int32) *int32 { return &v }

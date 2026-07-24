@@ -3,7 +3,7 @@ package chunk
 import (
 	"testing"
 
-	"codeberg.org/five82/reel/internal/media"
+	"github.com/five82/reel/internal/media"
 )
 
 func TestAudioDispositionBitmask(t *testing.T) {

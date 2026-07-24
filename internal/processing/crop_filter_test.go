@@ -3,8 +3,8 @@ package processing
 import (
 	"testing"
 
-	"codeberg.org/five82/reel/internal/media"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/media"
+	"github.com/five82/reel/internal/video"
 )
 
 func TestParseCropFilterExactRectangle(t *testing.T) {

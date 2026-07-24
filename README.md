@@ -49,14 +49,14 @@ ldconfig -p | grep SvtAv1Enc
 ## Install
 
 ```bash
-go install -trimpath codeberg.org/five82/reel/cmd/reel@latest                # default VSHIP/CUDA target-quality build
-go install -trimpath -tags no_vship codeberg.org/five82/reel/cmd/reel@latest # fixed-CRF-only build without VSHIP
+go install -trimpath github.com/five82/reel/cmd/reel@latest                # default VSHIP/CUDA target-quality build
+go install -trimpath -tags no_vship github.com/five82/reel/cmd/reel@latest # fixed-CRF-only build without VSHIP
 ```
 
 Or build from source:
 
 ```bash
-git clone https://codeberg.org/five82/reel
+git clone https://github.com/five82/reel
 cd reel
 go build -trimpath -o reel ./cmd/reel                 # default VSHIP/CUDA target-quality build
 go build -trimpath -tags no_vship -o reel ./cmd/reel  # fixed-CRF-only build without VSHIP
@@ -80,7 +80,7 @@ Run `reel encode --help` for the full flag list, or see [docs/USAGE.md](docs/USA
 reel can be used as a Go library:
 
 ```go
-import "codeberg.org/five82/reel"
+import "github.com/five82/reel"
 
 encoder, err := reel.New(
     reel.WithCRF(26.25), // fixed-CRF mode; default is target-quality mode

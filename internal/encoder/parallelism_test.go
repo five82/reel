@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 // TestLevelOfParallelismBitstreamIdentical verifies that SVT-AV1 produces a

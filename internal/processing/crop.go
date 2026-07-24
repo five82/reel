@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"codeberg.org/five82/reel/internal/util"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/video"
 )
 
 const (

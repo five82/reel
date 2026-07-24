@@ -181,8 +181,8 @@ import (
 	"sync"
 	"unsafe"
 
-	nativeaudio "codeberg.org/five82/reel/internal/audio"
-	"codeberg.org/five82/reel/internal/media"
+	nativeaudio "github.com/five82/reel/internal/audio"
+	"github.com/five82/reel/internal/media"
 )
 
 const (

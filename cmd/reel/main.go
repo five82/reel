@@ -11,13 +11,13 @@ import (
 	"strings"
 	"syscall"
 
-	"codeberg.org/five82/reel/internal/config"
-	"codeberg.org/five82/reel/internal/discovery"
-	"codeberg.org/five82/reel/internal/logging"
-	"codeberg.org/five82/reel/internal/processing"
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/reporter"
-	"codeberg.org/five82/reel/internal/util"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/discovery"
+	"github.com/five82/reel/internal/logging"
+	"github.com/five82/reel/internal/processing"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/util"
 	"github.com/fatih/color"
 )
 

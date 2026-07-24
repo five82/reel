@@ -27,10 +27,10 @@ import (
 	"strconv"
 	"sync"
 
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/config"
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/video"
 )
 
 // EPS separates benign float noise from a real cascade. Correct concurrent

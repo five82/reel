@@ -5,7 +5,7 @@ package quality
 import (
 	"fmt"
 
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/video"
 )
 
 // VshipProcessor is a CVVDP scorer backed by VSHIP. This stub is used for

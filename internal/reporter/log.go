@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"codeberg.org/five82/reel/internal/util"
+	"github.com/five82/reel/internal/util"
 )
 
 // LogReporter writes encoding events to a log file.

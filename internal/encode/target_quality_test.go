@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/quality"
 )
 
 func TestFormatMultiProbeChunksShowsFirstAndLastProbe(t *testing.T) {

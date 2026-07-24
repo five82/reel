@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/video"
 )
 
 type FramePlanes struct {

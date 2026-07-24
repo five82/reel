@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"time"
 
-	"codeberg.org/five82/reel/internal/config"
-	encodepipe "codeberg.org/five82/reel/internal/encode"
-	"codeberg.org/five82/reel/internal/encoder"
-	"codeberg.org/five82/reel/internal/media"
-	"codeberg.org/five82/reel/internal/perf"
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/reporter"
-	"codeberg.org/five82/reel/internal/util"
-	"codeberg.org/five82/reel/internal/validation"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/config"
+	encodepipe "github.com/five82/reel/internal/encode"
+	"github.com/five82/reel/internal/encoder"
+	"github.com/five82/reel/internal/media"
+	"github.com/five82/reel/internal/perf"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/validation"
+	"github.com/five82/reel/internal/video"
 )
 
 // EncodeResult contains the result of a single file encode.

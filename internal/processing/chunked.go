@@ -11,17 +11,17 @@ import (
 	"sync"
 	"time"
 
-	nativeaudio "codeberg.org/five82/reel/internal/audio"
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/chunkplan"
-	"codeberg.org/five82/reel/internal/config"
-	"codeberg.org/five82/reel/internal/encode"
-	"codeberg.org/five82/reel/internal/media"
-	"codeberg.org/five82/reel/internal/perf"
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/reporter"
-	"codeberg.org/five82/reel/internal/video"
-	"codeberg.org/five82/reel/internal/worker"
+	nativeaudio "github.com/five82/reel/internal/audio"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/chunkplan"
+	"github.com/five82/reel/internal/config"
+	"github.com/five82/reel/internal/encode"
+	"github.com/five82/reel/internal/media"
+	"github.com/five82/reel/internal/perf"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/reporter"
+	"github.com/five82/reel/internal/video"
+	"github.com/five82/reel/internal/worker"
 )
 
 // ProcessChunked runs the chunked encoding pipeline for a single file.

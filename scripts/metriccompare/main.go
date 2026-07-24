@@ -25,9 +25,9 @@ import (
 	"strings"
 	"time"
 
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/quality"
-	"codeberg.org/five82/reel/internal/video"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/quality"
+	"github.com/five82/reel/internal/video"
 )
 
 type jobSpec struct {

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"codeberg.org/five82/reel/internal/util"
+	"github.com/five82/reel/internal/util"
 )
 
 // FindVideoFiles finds video files in the given directory.

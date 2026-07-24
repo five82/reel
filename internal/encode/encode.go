@@ -9,11 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"codeberg.org/five82/reel/internal/chunk"
-	"codeberg.org/five82/reel/internal/encoder"
-	"codeberg.org/five82/reel/internal/util"
-	"codeberg.org/five82/reel/internal/video"
-	"codeberg.org/five82/reel/internal/worker"
+	"github.com/five82/reel/internal/chunk"
+	"github.com/five82/reel/internal/encoder"
+	"github.com/five82/reel/internal/util"
+	"github.com/five82/reel/internal/video"
+	"github.com/five82/reel/internal/worker"
 )
 
 // availableMemoryBytes returns currently available RAM in bytes, or 0 if it
