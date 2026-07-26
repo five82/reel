@@ -115,20 +115,25 @@ type Info struct {
 
 // Source is an owned video decoder. It is not safe for concurrent use.
 type Source struct {
-	fmtCtx    *C.AVFormatContext
-	codecCtx  *C.AVCodecContext
-	pkt       *C.AVPacket
-	frame     *C.AVFrame
-	convFrame *C.AVFrame
-	swsCtx    *C.struct_SwsContext
-	swsFormat int
+	fmtCtx       *C.AVFormatContext
+	codecCtx     *C.AVCodecContext
+	pkt          *C.AVPacket
+	frame        *C.AVFrame
+	lastFrame    *C.AVFrame
+	pendingFrame *C.AVFrame
+	convFrame    *C.AVFrame
+	swsCtx       *C.struct_SwsContext
+	swsFormat    int
 
-	streamIdx int
-	nextFrame int
-	eof       bool
-	startTime int64
-	tsMul     int64
-	tsDiv     int64
+	streamIdx  int
+	nextFrame  int
+	eof        bool
+	hasLast    bool
+	hasPending bool
+	pendingIdx int
+	startTime  int64
+	tsMul      int64
+	tsDiv      int64
 }
 
 // CropRect describes the exact source rectangle to encode.
@@ -262,12 +267,20 @@ func Open(path string, threads int) (*Source, error) {
 
 	pkt := C.av_packet_alloc()
 	frame := C.av_frame_alloc()
-	if pkt == nil || frame == nil {
+	lastFrame := C.av_frame_alloc()
+	pendingFrame := C.av_frame_alloc()
+	if pkt == nil || frame == nil || lastFrame == nil || pendingFrame == nil {
 		if pkt != nil {
 			C.av_packet_free(&pkt)
 		}
 		if frame != nil {
 			C.av_frame_free(&frame)
+		}
+		if lastFrame != nil {
+			C.av_frame_free(&lastFrame)
+		}
+		if pendingFrame != nil {
+			C.av_frame_free(&pendingFrame)
 		}
 		C.avcodec_free_context(&codecCtx)
 		C.avformat_close_input(&fmtCtx)
@@ -288,14 +301,16 @@ func Open(path string, threads int) (*Source, error) {
 	}
 
 	src := &Source{
-		fmtCtx:    fmtCtx,
-		codecCtx:  codecCtx,
-		pkt:       pkt,
-		frame:     frame,
-		streamIdx: int(streamIdx),
-		startTime: startTime,
-		tsMul:     tsMul,
-		tsDiv:     tsDiv,
+		fmtCtx:       fmtCtx,
+		codecCtx:     codecCtx,
+		pkt:          pkt,
+		frame:        frame,
+		lastFrame:    lastFrame,
+		pendingFrame: pendingFrame,
+		streamIdx:    int(streamIdx),
+		startTime:    startTime,
+		tsMul:        tsMul,
+		tsDiv:        tsDiv,
 	}
 	if err := src.anchorFrameOrigin(); err != nil {
 		src.Close()
@@ -318,6 +333,12 @@ func (s *Source) Close() {
 	}
 	if s.frame != nil {
 		C.av_frame_free(&s.frame)
+	}
+	if s.lastFrame != nil {
+		C.av_frame_free(&s.lastFrame)
+	}
+	if s.pendingFrame != nil {
+		C.av_frame_free(&s.pendingFrame)
 	}
 	if s.pkt != nil {
 		C.av_packet_free(&s.pkt)
@@ -437,25 +458,79 @@ func (s *Source) readRawFrame(frameIdx int) (*C.AVFrame, error) {
 	if frameIdx < 0 {
 		return nil, fmt.Errorf("negative frame index %d", frameIdx)
 	}
-	if frameIdx < s.nextFrame || frameIdx-s.nextFrame > 150 {
+	pendingCoversRequest := s.hasPending && frameIdx <= s.pendingIdx
+	if (frameIdx < s.nextFrame && !pendingCoversRequest) || frameIdx-s.nextFrame > 150 {
 		if err := s.seekNear(frameIdx); err != nil {
 			return nil, err
 		}
 	}
 
 	for {
+		if s.hasPending {
+			switch {
+			case s.pendingIdx < frameIdx:
+				if err := s.replaceLastFrame(s.pendingFrame); err != nil {
+					return nil, err
+				}
+				s.hasPending = false
+				C.av_frame_unref(s.pendingFrame)
+				continue
+			case s.pendingIdx == frameIdx:
+				if err := s.replaceLastFrame(s.pendingFrame); err != nil {
+					return nil, err
+				}
+				s.hasPending = false
+				C.av_frame_unref(s.pendingFrame)
+				return s.lastFrame, nil
+			default:
+				if s.hasLast {
+					return s.lastFrame, nil
+				}
+				return s.pendingFrame, nil
+			}
+		}
+
 		frame, decodedIdx, err := s.decodeOne()
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode frame %d: %w", frameIdx, err)
 		}
 		if decodedIdx < frameIdx {
+			if err := s.replaceLastFrame(frame); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		if decodedIdx > frameIdx {
-			return nil, fmt.Errorf("decoder skipped requested frame %d, got %d", frameIdx, decodedIdx)
+		if decodedIdx == frameIdx {
+			if err := s.replaceLastFrame(frame); err != nil {
+				return nil, err
+			}
+			return s.lastFrame, nil
 		}
-		return frame, nil
+
+		// Soft-telecined and other variable-cadence sources can leave holes in
+		// the nominal CFR timeline. Repeat the prior frame until this frame's
+		// timestamp slot instead of rejecting valid input or shortening it.
+		C.av_frame_unref(s.pendingFrame)
+		if ret := C.av_frame_ref(s.pendingFrame, frame); ret < 0 {
+			return nil, fmt.Errorf("buffer future frame %d: %s", decodedIdx, avError(ret))
+		}
+		s.hasPending = true
+		s.pendingIdx = decodedIdx
+		if s.hasLast {
+			return s.lastFrame, nil
+		}
+		return s.pendingFrame, nil
 	}
+}
+
+func (s *Source) replaceLastFrame(frame *C.AVFrame) error {
+	C.av_frame_unref(s.lastFrame)
+	if ret := C.av_frame_ref(s.lastFrame, frame); ret < 0 {
+		s.hasLast = false
+		return fmt.Errorf("buffer decoded frame: %s", avError(ret))
+	}
+	s.hasLast = true
+	return nil
 }
 
 func (s *Source) readFrameNear(frameIdx int, maxDecode int) (*C.AVFrame, bool, error) {
@@ -524,7 +599,11 @@ func (s *Source) seekNear(frameIdx int) error {
 		return fmt.Errorf("seek to frame %d failed: %s", frameIdx, avError(ret))
 	}
 	C.avcodec_flush_buffers(s.codecCtx)
+	C.av_frame_unref(s.lastFrame)
+	C.av_frame_unref(s.pendingFrame)
 	s.eof = false
+	s.hasLast = false
+	s.hasPending = false
 	s.nextFrame = seekFrame
 	return nil
 }
