@@ -6,10 +6,9 @@ AV1 encoding tool using the SVT-AV1 encoder library and FFmpeg/libav for paralle
 
 This repository is shared as is. reel is a personal encoding tool I built for my own workflow, hardware, and preferences. I've open sourced it because I believe in sharing but I'm not an active maintainer.
 
-- Experimental: This is an early stage project that is purely experimental at this point. I would recommend looking at [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav) for parallel chunked encoding.
+- Experimental: This is an early stage project. I would recommend looking at [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav) for parallel chunked encoding.
 - Personal-first: Things will change and break as I iterate.
 - Best-effort only: This is a part-time hobby project and I work on it when I'm able to. I may be slow to respond to questions or may not respond at all.
-- “Vibe coded”: I’m not a Go developer and this project started as (and remains) a vibe-coding experiment. Expect rough edges.
 
 ## Features
 
