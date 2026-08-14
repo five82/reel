@@ -28,7 +28,7 @@ This is a deliberately different point on the speed/quality/size curve from typi
 
 ## Requirements
 
-- Go 1.26+
+- Go 1.26.6+
 - libSvtAv1Enc (SVT-AV1 encoder shared library)
 - libopusenc shared library (for Opus audio encoding)
 - FFmpeg/libav development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
