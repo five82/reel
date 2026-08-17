@@ -45,7 +45,7 @@ func TestSSIMU2CalibrationLocksAtMedianOffset(t *testing.T) {
 		t.Fatalf("resumed calibration = (%g, %v), want (~-4.8, true)", offset, locked)
 	}
 	// Further samples must not move a locked offset.
-	if got, justLocked := c2.AddSample(9.35, quality.SSIMU2FromJOD(9.35)+20); justLocked || got != offset {
+	if got, justLocked := c2.AddSample(quality.JODAnchorTarget, quality.SSIMU2FromJOD(quality.JODAnchorTarget)+20); justLocked || got != offset {
 		t.Fatalf("locked offset moved: (%g, %v)", got, justLocked)
 	}
 }

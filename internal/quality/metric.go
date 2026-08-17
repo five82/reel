@@ -16,17 +16,15 @@ const (
 	MetricSSIMU2 MetricKind = "ssimulacra2"
 )
 
-// SSIMU2 target band, calibrated 2026-07-10 against the shipped CVVDP band
-// (9.15-9.55 JOD) on the 1080p SDR test corpus: the measured exchange rate is
-// ~36 SSIMU2 points per JOD (stable 33-43 across clean-digital through grainy
-// content), so 60.8 +/- 7.2 reproduces the CVVDP band to ~sd 0.10 JOD with
-// misses biased to over-encode. See docs/PERFORMANCE_TESTING.md. These are
-// mean-pooled per-frame scores (mean is the
-// tightest pooling at constant CVVDP; percentiles amplify content-dependent
-// worst-frame variance).
+// SSIMU2 target band, calibrated against the shipped CVVDP band on the 1080p
+// SDR test corpus. At the 9.55 JOD center, the measured corpus median is 67.4
+// SSIMU2 with a 37.5 points/JOD local exchange rate, so 67.4 +/- 7.5 preserves
+// the 0.20 JOD half-width. See docs/PERFORMANCE_TESTING.md. These are
+// mean-pooled per-frame scores (mean is the tightest pooling at constant
+// CVVDP; percentiles amplify content-dependent worst-frame variance).
 const (
-	SSIMU2Target    float32 = 60.8
-	SSIMU2Tolerance float32 = 7.2
+	SSIMU2Target    float32 = 67.4
+	SSIMU2Tolerance float32 = 7.5
 )
 
 // ProbeMetricForSource picks the probe metric for a source. SDR at or below
@@ -54,7 +52,7 @@ func ProbeMetricForSource(inf *video.Info) MetricKind {
 // higher -- per-title sd ~0.13 JOD, which a global target cannot absorb:
 // the 2026-07-10 pilot A/B over-encoded a grainy clip +32% in size).
 const (
-	JODAnchorTarget    float32 = 9.35
+	JODAnchorTarget    float32 = 9.55
 	JODAnchorTolerance float32 = 0.20
 )
 
@@ -64,19 +62,19 @@ func SSIMU2FromJOD(jod float32) float32 {
 }
 
 // ScoreScale converts the calibrated CVVDP/JOD search constants into the
-// metric's units: 1 for CVVDP, ~36 for SSIMU2 (the measured pts/JOD exchange
+// metric's units: 1 for CVVDP, 37.5 for SSIMU2 (the measured pts/JOD exchange
 // rate). Every score-denominated search constant multiplies by this so the
 // search behaves identically in perceptual terms regardless of probe metric.
 func (k MetricKind) ScoreScale() float32 {
 	if k == MetricSSIMU2 {
-		return 36
+		return 37.5
 	}
 	return 1
 }
 
 // DefaultSlopePerCRF is the no-information score-per-CRF slope used until
 // measured slopes accumulate: the long-standing calibrated 0.025 JOD/CRF
-// (see target_quality.go) in the metric's units. For SSIMU2 that is 0.9
+// (see target_quality.go) in the metric's units. For SSIMU2 that is 0.9375
 // pts/CRF, matching the measured clean-content SSIMU2 slope (~0.9-1.0).
 func (k MetricKind) DefaultSlopePerCRF() float32 {
 	return 0.025 * k.ScoreScale()

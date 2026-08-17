@@ -93,11 +93,12 @@ invariants.
 ### Low - broaden or replace the SDR calibration policy
 
 Current evidence covers a small live-action corpus and only one truly held-out
-title. Add animation/CG, 720p, restored/denoised material, or a blinded grain
-A/B only if deciding whether native SSIMULACRA2 preference should replace
-CVVDP-denominated policy. If title-size centering becomes a real problem, first
-test whether the largest-first warmup sample is biased before adding estimator
-complexity.
+title; the 2026-08-17 recalibration confirmed the raised 9.55 JOD operating
+point on that same corpus but did not broaden it. Add animation/CG, 720p,
+restored/denoised material, or a blinded grain A/B only if deciding whether
+native SSIMULACRA2 preference should replace CVVDP-denominated policy. If
+title-size centering becomes a real problem, first test whether the
+largest-first warmup sample is biased before adding estimator complexity.
 
 ## Quality policy and probe metrics
 
@@ -111,12 +112,14 @@ floor of one probe. Further widening lowers the quality floor and increases the
 maximum same-shot join step, while offering only a thin probe reduction.
 
 The target center and display geometry are quality/size policy, not throughput
-knobs. The 55-inch 4K display at 1.3 m is deliberately near-critical viewing
-(about 77 px/degree), providing margin relative to a typical living room.
-Changing it invalidates all calibrated JOD and SSIMULACRA2 constants. A 1000
-versus 1500 nit HDR test found no quality deficit that the higher peak fixed;
-the original alarming result was the old VSHIP scoring cascade and disappeared
-on a fixed-ruler rescore.
+knobs. On 2026-08-17 the user deliberately raised the center from 9.35 to 9.55
+JOD while retaining the measured 0.20 half-width, making the default band
+9.35-9.75. The 55-inch 4K display at 1.3 m is deliberately near-critical
+viewing (about 77 px/degree), providing margin relative to a typical living
+room. Changing it invalidates all calibrated JOD and SSIMULACRA2 constants. A
+1000 versus 1500 nit HDR test found no quality deficit that the higher peak
+fixed; the original alarming result was the old VSHIP scoring cascade and
+disappeared on a fixed-ruler rescore.
 
 The CRF search bounds were not an active limit either: the feature's selected
 CRFs spanned 15.25-63.75, and its one ceiling chunk still converged in band.
@@ -126,8 +129,11 @@ The unused low bound is harmless.
 bounds/max-probe stops, or the user chooses a different quality/display policy.
 Subjective invisibility was not established by these metric results.
 
-**Provenance:** commit `714ac5f`; 2026-07-02 Sully feature artifact
-`perf-runs/20260702-013705-feature-validation`; older HDR display artifacts were
+**Provenance:** half-width and feature behavior: commit `714ac5f` and
+`perf-runs/20260702-013705-feature-validation`; raised-center policy and SDR
+mapping: source state `f1a802b` plus the working recalibration change, Ryzen 9
+7950X / RTX 5060 Ti, artifact
+`$REEL_TESTING_DIR/tq-recalibration-20260817/`. Older HDR display artifacts were
 pruned after their decisive result was recorded in git history.
 
 ### Whole-chunk scoring - KEEP; sampled windows REJECTED
@@ -155,8 +161,27 @@ roughly 620-line sampling path was removed.
 **Why:** CVVDP resizes 1080p input to the 4K display raster and was the dominant
 SDR cost. SSIMULACRA2 measured about 8.5x faster per isolated handler and cut an
 `im-20m` run from 769s to 406-408s. Full-output CVVDP validation remained near
-the existing policy (mean about 9.39, rare per-chunk outliers down to about
+the then-current policy (mean about 9.39, rare per-chunk outliers down to about
 9.07), with title size changes from roughly -2% to +12%.
+
+The 2026-08-17 raised-center recalibration extended the four-title ladder from
+CRF 20 down to 14 so all 24 sampled chunks crossed 9.55 JOD. Both metrics were
+monotone over all 144 adjacent steps. At 9.55 JOD, the pooled SSIMULACRA2
+median was 67.392 and the median local exchange rate was 37.47 points/JOD; the
+held-out `bb` ladder independently measured 37.87 points/JOD. Per-title target
+simulation delivered mean 9.555 JOD, SD 0.041, and range 9.473-9.650. Reel
+therefore uses a rounded 67.4 target, 37.5 points/JOD scale, and +/-7.5
+SSIMULACRA2 tolerance for the unchanged +/-0.20 JOD half-width.
+
+End-to-end checks used fresh workdirs and the recalibrated binary. `im-20m`
+completed in 316s at 1.24 probes/chunk; independent all-CVVDP validation of
+its 135 final chunks measured mean 9.562 JOD (frame-weighted 9.566), SD 0.103,
+range 9.255-9.752, with 3 below-band and 1 above-band chunks. The 115 chunks
+searched by SSIMULACRA2 alone centered at 9.550 JOD; all 20 CVVDP warmup chunks
+were in band. A direct-CVVDP `sully-5m` check measured mean 9.593, range
+9.449-9.729, 1.15 probes/chunk, and no misses across 33 chunks. These confirm
+centering, not subjective invisibility; the rare SDR mapping outliers remain
+the accepted proxy tradeoff.
 
 VMAF was rejected: all tested models saturated near the operating point,
 produced 0.19-0.24 JOD delivered spread and real misses down to 8.78-8.91, and
@@ -168,7 +193,8 @@ points/JOD.
 policy stops being CVVDP-denominated, or a new metric demonstrates both
 non-saturating quality consistency and an end-to-end wall win.
 
-**Artifacts:** `$REEL_TESTING_DIR/metric-research-20260710/` and
+**Artifacts:** `$REEL_TESTING_DIR/metric-research-20260710/`,
+`$REEL_TESTING_DIR/tq-recalibration-20260817/`, and
 `perf-runs/20260710-*-tq-ssimu2-*`.
 
 ### Per-title SSIMULACRA2 calibration - KEEP

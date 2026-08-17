@@ -38,22 +38,28 @@ func TestMetricScaledConstants(t *testing.T) {
 	if got := MetricCVVDP.DefaultSlopePerCRF(); !approx(got, 0.025) {
 		t.Errorf("CVVDP DefaultSlopePerCRF = %g, want 0.025", got)
 	}
-	if got := MetricSSIMU2.DefaultSlopePerCRF(); !approx(got, 0.9) {
-		t.Errorf("SSIMU2 DefaultSlopePerCRF = %g, want 0.9", got)
+	if got := MetricSSIMU2.DefaultSlopePerCRF(); !approx(got, 0.9375) {
+		t.Errorf("SSIMU2 DefaultSlopePerCRF = %g, want 0.9375", got)
 	}
 	if lo, hi := MetricCVVDP.SlopeClamp(); !approx(lo, 0.005) || !approx(hi, 0.2) {
 		t.Errorf("CVVDP SlopeClamp = %g..%g, want 0.005..0.2", lo, hi)
 	}
-	if lo, hi := MetricSSIMU2.SlopeClamp(); !approx(lo, 0.18) || !approx(hi, 7.2) {
-		t.Errorf("SSIMU2 SlopeClamp = %g..%g, want 0.18..7.2", lo, hi)
+	if lo, hi := MetricSSIMU2.SlopeClamp(); !approx(lo, 0.1875) || !approx(hi, 7.5) {
+		t.Errorf("SSIMU2 SlopeClamp = %g..%g, want 0.1875..7.5", lo, hi)
 	}
 	// Zero value must behave as CVVDP so existing callers are unchanged.
 	if got := MetricKind("").ScoreScale(); got != 1 {
 		t.Errorf("zero MetricKind ScoreScale = %g, want 1", got)
 	}
+	if got := SSIMU2FromJOD(JODAnchorTarget); !approx(got, SSIMU2Target) {
+		t.Errorf("SSIMU2FromJOD(anchor) = %g, want %g", got, SSIMU2Target)
+	}
+	if got := JODAnchorTolerance * MetricSSIMU2.ScoreScale(); !approx(got, SSIMU2Tolerance) {
+		t.Errorf("scaled JOD tolerance = %g, want %g", got, SSIMU2Tolerance)
+	}
 }
 
-// The second-probe step logic must scale with the metric: a -10.8 point
+// The second-probe step logic must scale with the metric: an -11.25 point
 // SSIMU2 miss is the same perceptual miss as -0.30 JOD and must produce the
 // same CRF step through the scaled slope.
 func TestSearchSecondProbeStepSSIMU2Scale(t *testing.T) {
@@ -68,12 +74,12 @@ func TestSearchSecondProbeStepSSIMU2Scale(t *testing.T) {
 		JODPerCRF:  MetricSSIMU2.DefaultSlopePerCRF(),
 	}
 	state := NewSearchState(ctx)
-	state.AddProbe(ctx, Probe{CRF: 26, Score: SSIMU2Target - 10.8})
+	state.AddProbe(ctx, Probe{CRF: 26, Score: SSIMU2Target - 11.25})
 	crf, ok := state.NextCRF(ctx)
 	if !ok {
 		t.Fatal("no second CRF")
 	}
-	// step = 10.8 / 0.9 = 12, under the 20-CRF cap for a >=0.25-JOD-equivalent miss.
+	// step = 11.25 / 0.9375 = 12, under the 20-CRF cap for a >=0.25-JOD-equivalent miss.
 	if crf != 14 {
 		t.Fatalf("second CRF = %g, want 14", crf)
 	}
