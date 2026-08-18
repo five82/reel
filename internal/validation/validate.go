@@ -94,22 +94,26 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 	}
 
 	// Validate audio
-	audioStreams, err := media.GetAudioStreamInfo(outputPath)
-	if err != nil {
+	outputAudioStreams, outputAudioErr := media.GetAudioStreamInfo(outputPath)
+	if outputAudioErr != nil {
 		result.AudioMessage = "Failed to get audio info"
 	} else {
 		result.IsAudioOpus, result.IsAudioTrackCountCorrect, result.AudioCodecs, result.AudioMessage = validateAudio(
-			audioStreams, opts.ExpectedAudioTracks,
+			outputAudioStreams, opts.ExpectedAudioTracks,
 		)
 	}
 
-	// Validate A/V sync
-	if opts.ExpectedDuration != nil {
-		result.IsSyncPreserved, result.SyncDriftMs, result.SyncMessage = validateSync(
-			outputProps.DurationSecs, *opts.ExpectedDuration,
-		)
-	} else {
-		result.SyncMessage = "Sync validation skipped"
+	// Validate A/V sync using each audio track's start relative to video.
+	inputAudioStreams, inputAudioErr := media.GetAudioStreamInfo(inputPath)
+	switch {
+	case inputAudioErr != nil:
+		result.IsSyncPreserved = false
+		result.SyncMessage = "Failed to get input audio timing"
+	case outputAudioErr != nil:
+		result.IsSyncPreserved = false
+		result.SyncMessage = "Failed to get output audio timing"
+	default:
+		result.IsSyncPreserved, result.SyncDriftMs, result.SyncMessage = validateSync(inputAudioStreams, outputAudioStreams)
 	}
 
 	return result, nil
@@ -239,16 +243,30 @@ func validateAudio(streams []media.AudioStreamInfo, expectedTracks *int) (bool, 
 	return isOpus, trackCountCorrect, codecs, message
 }
 
-// validateSync checks audio/video sync drift.
-func validateSync(outputDuration, inputDuration float64) (bool, *float64, string) {
-	// Calculate drift in milliseconds
-	driftMs := math.Abs(outputDuration-inputDuration) * 1000
-	preserved := driftMs <= maxSyncDriftMs
-
-	message := fmt.Sprintf("Audio/video sync preserved (drift: %.1fms)", driftMs)
-	if !preserved {
-		message = fmt.Sprintf("Audio/video sync drift too large: %.1fms (max: %.1fms)", driftMs, maxSyncDriftMs)
+// validateSync compares each audio track's start offset relative to video.
+func validateSync(inputStreams, outputStreams []media.AudioStreamInfo) (bool, *float64, string) {
+	trackCount := min(len(inputStreams), len(outputStreams))
+	maxDriftMs := 0.0
+	maxTrack := 0
+	for i := 0; i < trackCount; i++ {
+		driftMs := math.Abs(inputStreams[i].StartOffsetSecs-outputStreams[i].StartOffsetSecs) * 1000
+		if driftMs > maxDriftMs {
+			maxDriftMs = driftMs
+			maxTrack = inputStreams[i].Index + 1
+		}
 	}
 
-	return preserved, &driftMs, message
+	if len(inputStreams) != len(outputStreams) {
+		return false, &maxDriftMs, fmt.Sprintf(
+			"Audio/video sync track count mismatch: input has %d tracks, output has %d (maximum compared drift: %.1fms)",
+			len(inputStreams), len(outputStreams), maxDriftMs,
+		)
+	}
+	if maxDriftMs > maxSyncDriftMs {
+		return false, &maxDriftMs, fmt.Sprintf(
+			"Audio/video sync drift too large for track %d: %.1fms (max: %.1fms; maximum drift: %.1fms)",
+			maxTrack, maxDriftMs, maxSyncDriftMs, maxDriftMs,
+		)
+	}
+	return true, &maxDriftMs, fmt.Sprintf("Audio/video sync preserved (maximum drift: %.1fms)", maxDriftMs)
 }

@@ -165,6 +165,19 @@ static void reel_mux_packet_set_stream_index(AVPacket *pkt, int stream_idx) {
 	pkt->stream_index = stream_idx;
 }
 
+static void reel_mux_packet_shift_ts(AVPacket *pkt, int64_t offset_us, AVRational time_base) {
+	if (offset_us == 0) {
+		return;
+	}
+	int64_t offset = av_rescale_q(offset_us, (AVRational){1, 1000000}, time_base);
+	if (pkt->pts != AV_NOPTS_VALUE) {
+		pkt->pts += offset;
+	}
+	if (pkt->dts != AV_NOPTS_VALUE) {
+		pkt->dts += offset;
+	}
+}
+
 static char* reel_mux_error_string(int errnum) {
 	char buf[AV_ERROR_MAX_STRING_SIZE];
 	av_strerror(errnum, buf, sizeof(buf));
@@ -175,6 +188,7 @@ import "C"
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -262,6 +276,7 @@ type muxFeed struct {
 	inputIndex  C.int
 	outputIndex C.int
 	timeBase    C.AVRational
+	offsetUS    int64
 	hasPacket   bool
 	done        bool
 	timeUS      int64
@@ -306,7 +321,7 @@ func (m *nativeMuxer) addVideo(path, displayAspect string) error {
 		C.reel_mux_set_display_aspect(m.out, outIndex, C.int(darNum), C.int(darDen))
 	}
 
-	feed, err := newMuxFeed(ctx, streamPos, outIndex)
+	feed, err := newMuxFeed(ctx, streamPos, outIndex, 0)
 	if err != nil {
 		return err
 	}
@@ -327,7 +342,7 @@ func (m *nativeMuxer) addAudio(stream nativeaudio.EncodedStream) error {
 	}
 	setAudioMetadata(m.out, outIndex, stream.Info)
 	C.reel_mux_set_disposition(m.out, outIndex, C.int(audioDisposition(stream.Info.Disposition)))
-	feed, err := newMuxFeed(ctx, streamPos, outIndex)
+	feed, err := newMuxFeed(ctx, streamPos, outIndex, offsetMicroseconds(stream.Info.StartOffsetSecs))
 	if err != nil {
 		return err
 	}
@@ -416,7 +431,7 @@ func (m *nativeMuxer) close() {
 	}
 }
 
-func newMuxFeed(ctx *C.AVFormatContext, streamPos C.int, outputIndex C.int) (*muxFeed, error) {
+func newMuxFeed(ctx *C.AVFormatContext, streamPos C.int, outputIndex C.int, offsetUS int64) (*muxFeed, error) {
 	packet := C.av_packet_alloc()
 	if packet == nil {
 		return nil, fmt.Errorf("allocate mux packet: out of memory")
@@ -428,6 +443,7 @@ func newMuxFeed(ctx *C.AVFormatContext, streamPos C.int, outputIndex C.int) (*mu
 		inputIndex:  C.reel_mux_stream_index(ctx, streamPos),
 		outputIndex: outputIndex,
 		timeBase:    stream.time_base,
+		offsetUS:    offsetUS,
 	}, nil
 }
 
@@ -442,10 +458,15 @@ func (f *muxFeed) fill() error {
 			C.av_packet_unref(f.packet)
 			continue
 		}
+		C.reel_mux_packet_shift_ts(f.packet, C.int64_t(f.offsetUS), f.timeBase)
 		f.timeUS = int64(C.reel_mux_packet_time_us(f.packet, f.timeBase))
 		f.hasPacket = true
 		return nil
 	}
+}
+
+func offsetMicroseconds(seconds float64) int64 {
+	return int64(math.Round(seconds * 1_000_000))
 }
 
 func (f *muxFeed) write(out *C.AVFormatContext) error {

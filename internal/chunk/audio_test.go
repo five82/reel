@@ -16,6 +16,22 @@ func TestAudioDispositionBitmask(t *testing.T) {
 	}
 }
 
+func TestOffsetMicroseconds(t *testing.T) {
+	tests := []struct {
+		seconds float64
+		want    int64
+	}{
+		{seconds: 0.501, want: 501000},
+		{seconds: -0.0065, want: -6500},
+		{seconds: 0.0000005, want: 1},
+	}
+	for _, tt := range tests {
+		if got := offsetMicroseconds(tt.seconds); got != tt.want {
+			t.Errorf("offsetMicroseconds(%g) = %d, want %d", tt.seconds, got, tt.want)
+		}
+	}
+}
+
 func TestParseDisplayAspect(t *testing.T) {
 	num, den, err := parseDisplayAspect("16:9")
 	if err != nil {

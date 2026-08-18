@@ -9,6 +9,7 @@ package media
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/log.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <stdlib.h>
@@ -79,6 +80,14 @@ static void reel_probe_strerror(int errnum, char *buf, size_t buflen) {
 static int reel_probe_averror_eof(void) {
 	return AVERROR_EOF;
 }
+
+static int reel_probe_stream_start_us(AVStream *stream, int64_t *start_us) {
+	if (stream == NULL || stream->start_time == AV_NOPTS_VALUE) {
+		return 0;
+	}
+	*start_us = av_rescale_q(stream->start_time, stream->time_base, AV_TIME_BASE_Q);
+	return 1;
+}
 */
 import "C"
 
@@ -121,15 +130,16 @@ type HDRInfo struct {
 
 // AudioStreamInfo contains information about an audio stream.
 type AudioStreamInfo struct {
-	Channels    uint32
-	CodecName   string
-	Profile     string
-	Index       int // zero-based audio stream ordinal
-	StreamIndex int // actual container stream index
-	Language    string
-	Title       string
-	IsSpatial   bool // Always false (spatial support removed)
-	Disposition StreamDisposition
+	Channels        uint32
+	CodecName       string
+	Profile         string
+	Index           int // zero-based audio stream ordinal
+	StreamIndex     int // actual container stream index
+	Language        string
+	Title           string
+	IsSpatial       bool    // Always false (spatial support removed)
+	StartOffsetSecs float64 // Relative to the best video stream
+	Disposition     StreamDisposition
 }
 
 // StreamDisposition contains stream disposition flags.
@@ -198,6 +208,13 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 	}
 	defer C.avformat_close_input(&fmtCtx)
 
+	videoStartUS := int64(0)
+	if videoStream, err := bestStream(fmtCtx, C.AVMEDIA_TYPE_VIDEO); err == nil {
+		if startUS, ok := streamStartUS(videoStream); ok {
+			videoStartUS = startUS
+		}
+	}
+
 	streams := make([]AudioStreamInfo, 0)
 	for i := 0; i < int(fmtCtx.nb_streams); i++ {
 		stream := C.reel_probe_stream_at(fmtCtx, C.int(i))
@@ -211,16 +228,22 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 			continue
 		}
 
+		startOffsetSecs := 0.0
+		if startUS, ok := streamStartUS(stream); ok {
+			startOffsetSecs = float64(startUS-videoStartUS) / avTimeBase
+		}
+
 		streams = append(streams, AudioStreamInfo{
-			Channels:    uint32(channels),
-			CodecName:   cString(C.reel_probe_codec_name(par)),
-			Profile:     cString(C.reel_probe_profile_name(par)),
-			Index:       len(streams),
-			StreamIndex: int(stream.index),
-			Language:    metadata(stream, "language"),
-			Title:       metadata(stream, "title"),
-			IsSpatial:   false,
-			Disposition: streamDisposition(int(stream.disposition)),
+			Channels:        uint32(channels),
+			CodecName:       cString(C.reel_probe_codec_name(par)),
+			Profile:         cString(C.reel_probe_profile_name(par)),
+			Index:           len(streams),
+			StreamIndex:     int(stream.index),
+			Language:        metadata(stream, "language"),
+			Title:           metadata(stream, "title"),
+			IsSpatial:       false,
+			StartOffsetSecs: startOffsetSecs,
+			Disposition:     streamDisposition(int(stream.disposition)),
 		})
 	}
 
@@ -312,6 +335,14 @@ func mediaTypeName(mediaType C.enum_AVMediaType) string {
 		return "audio"
 	}
 	return "requested"
+}
+
+func streamStartUS(stream *C.AVStream) (int64, bool) {
+	var startUS C.int64_t
+	if C.reel_probe_stream_start_us(stream, &startUS) == 0 {
+		return 0, false
+	}
+	return int64(startUS), true
 }
 
 func durationSecs(fmtCtx *C.AVFormatContext, stream *C.AVStream) float64 {
