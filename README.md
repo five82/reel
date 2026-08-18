@@ -61,6 +61,16 @@ go build -trimpath -o reel ./cmd/reel                 # default VSHIP/CUDA targe
 go build -trimpath -tags no_vship -o reel ./cmd/reel  # fixed-CRF-only build without VSHIP
 ```
 
+To deploy a source checkout over the `reel` on `PATH`:
+
+```bash
+./check-ci.sh
+./deploy.sh
+```
+
+The deploy script builds with CGO and VSHIP support, keeps the previous binary
+beside the installed one, and verifies the installed copy.
+
 ## Usage
 
 ```bash
