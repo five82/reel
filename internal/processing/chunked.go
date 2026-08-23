@@ -63,6 +63,11 @@ func ProcessChunked(
 		}
 	}()
 
+	// One phase is open at a time; the deferred end closes whichever phase an
+	// early return leaves open.
+	phases := newPhaseTracker(perfc, rep)
+	defer phases.end()
+
 	// ========================================================================
 	// PHASE 1: Run luma-based crop detection
 	//
@@ -78,9 +83,9 @@ func ProcessChunked(
 		cfg = &fileCfg
 	}
 
-	finishStep := startPhase(perfc, rep, "Crop detection")
+	phases.start("Crop detection")
 	cropResult := DetectCrop(inputPath, vidInf, cfg.CropMode == "none")
-	finishStep()
+	phases.end()
 
 	// Report crop detection result
 	rep.CropResult(reporter.CropSummary{
@@ -124,7 +129,7 @@ func ProcessChunked(
 	chunkPlanMetadataFile := filepath.Join(workDir, "chunk-plan.json")
 	lastPlanProgress := time.Now().Add(-10 * time.Second)
 	lastPlanPercent := -1
-	finishStep = startPhase(perfc, rep, "Shot cut detection")
+	phases.start("Shot cut detection")
 	planResult, err := chunkplan.PlanToFileIfNeeded(ctx, inputPath, chunkPlanFile, chunkPlanMetadataFile, vidInf, chunkplan.Options{
 		MaxFrames:    maxChunkFrames,
 		MinFrames:    minChunkFrames,
@@ -143,7 +148,7 @@ func ProcessChunked(
 			}
 		},
 	})
-	finishStep()
+	phases.end()
 	if err != nil {
 		return CropResult{}, fmt.Errorf("shot cut detection failed: %w", err)
 	}
@@ -165,10 +170,9 @@ func ProcessChunked(
 	rep.Verbose(fmt.Sprintf("Chunk boundaries: %d natural shot cuts, %d duration splits", retainedNaturalCuts, planResult.SyntheticSplits))
 
 	// Load planned chunk boundaries
-	finishStep = startPhase(perfc, rep, "Chunk planning")
+	phases.start("Chunk planning")
 	segments, err := chunk.LoadSegments(chunkPlanFile, vidInf.Frames)
 	if err != nil {
-		finishStep()
 		return CropResult{}, fmt.Errorf("failed to load chunk boundaries: %w", err)
 	}
 	rep.Verbose(fmt.Sprintf("Created %d content-aware chunks", len(segments)))
@@ -186,7 +190,7 @@ func ProcessChunked(
 	avgChunkDuration := avgChunkFrames / fps
 	rep.Verbose(fmt.Sprintf("Average chunk duration: %.1fs (%d frames)", avgChunkDuration, int(avgChunkFrames)))
 	rep.Verbose(chunkDistributionSummary(chunks, fps))
-	finishStep()
+	phases.end()
 
 	// Setup encode config
 	encCfg := &encode.EncodeConfig{
@@ -211,22 +215,19 @@ func ProcessChunked(
 		rep.Warning(message)
 	}
 
-	finishStep = startPhase(perfc, rep, "Resume setup")
+	phases.start("Resume setup")
 	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting)
 	if err != nil {
-		finishStep()
 		return CropResult{}, err
 	}
 	if err := chunk.EnsureResumeManifest(workDir, manifest); err != nil {
-		finishStep()
 		return CropResult{}, err
 	}
 	resumeInfo, err := chunk.GetResume(workDir)
 	if err != nil {
-		finishStep()
 		return CropResult{}, fmt.Errorf("failed to load resume info: %w", err)
 	}
-	finishStep()
+	phases.end()
 	resumedFrames := resumeInfo.Validate(workDir, chunks).TotalEncodedFrames()
 
 	// Adaptive encoding starts conservatively, tests higher worker counts by
@@ -332,35 +333,16 @@ func ProcessChunked(
 	encodeCtx, cancelEncode := context.WithCancel(ctx)
 	defer cancelEncode()
 
-	var audioErr error
-	var encodedAudio []nativeaudio.EncodedStream
-	audioDone := make(chan struct{})
-
-	finishAudioStep := func() {}
-
-	// Start audio encoding in background (only reads source file). The verbose
-	// start/stop lines stay on this goroutine and bracket the join, but the perf
-	// phase is recorded from inside the goroutine when extraction actually
-	// finishes -- otherwise its duration would span the whole concurrent video
-	// encode/merge window (the orchestration goroutine only joins after merge),
-	// massively over-reporting audio cost in perf.json.
-	if len(audioStreams) > 0 {
-		finishAudioStep = startVerboseStep(rep, "Audio extraction")
-		audioPhaseStart := time.Now()
-		go func() {
-			defer close(audioDone)
-			encodedAudio, audioErr = chunk.ExtractAudio(encodeCtx, inputPath, workDir, audioStreams)
-			perfc.RecordPhase("Audio extraction", audioPhaseStart, time.Now())
-			if audioErr != nil {
-				cancelEncode()
-			}
-		}()
-	} else {
-		close(audioDone)
-	}
+	audio := startAudioJob(encodeCtx, cancelEncode, inputPath, workDir, audioStreams, rep, perfc)
+	// Every return path must stop audio and join its goroutine; canceling
+	// first keeps the join prompt on error returns.
+	defer func() {
+		cancelEncode()
+		_, _ = audio.join()
+	}()
 
 	// Run parallel video encode
-	finishStep = startPhase(perfc, rep, "Video encoding")
+	phases.start("Video encoding")
 	var encodeErr error
 	if cfg.QualityMode == config.QualityModeTarget {
 		metric := probeMetricFor(cfg, vidInf)
@@ -369,10 +351,6 @@ func ProcessChunked(
 		// CVVDP probes to calibrate its SSIMU2 offset (see encode/tq_calibration.go).
 		displayPath, err := quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
 		if err != nil {
-			finishStep()
-			cancelEncode()
-			<-audioDone
-			finishAudioStep()
 			return CropResult{}, err
 		}
 		if metric == quality.MetricCVVDP {
@@ -419,32 +397,27 @@ func ProcessChunked(
 		)
 	}
 
-	finishStep()
+	phases.end()
 
 	if encodeErr != nil {
 		// Stop audio when video fails so cancellation/memory pressure returns promptly.
 		cancelEncode()
-		<-audioDone
-		finishAudioStep()
+		_, audioErr := audio.join()
 		return CropResult{}, encodePipelineError(ctx.Err(), encodeErr, audioErr)
 	}
 
 	// Merge IVF files
 	rep.StageProgress(reporter.StageProgress{Stage: "Merging", Message: "Merging encoded chunks"})
-	finishStep = startPhase(perfc, rep, "Video merge")
+	phases.start("Video merge")
 	if err := chunk.MergeOutput(workDir, vidInf, len(chunks)); err != nil {
-		finishStep()
-		<-audioDone
-		finishAudioStep()
 		return CropResult{}, fmt.Errorf("video merge failed: %w", err)
 	}
-	finishStep()
+	phases.end()
 
 	displayAspect := displayAspectAfterCrop(videoProps, vidInf, cropRect)
 
 	// Wait for audio encoding to complete
-	<-audioDone
-	finishAudioStep()
+	encodedAudio, audioErr := audio.join()
 	if audioErr != nil {
 		// If the context was canceled, report cancellation instead of audio error
 		if ctx.Err() != nil {
@@ -455,14 +428,62 @@ func ProcessChunked(
 
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
-	finishStep = startPhase(perfc, rep, "Final mux")
+	phases.start("Final mux")
 	if err := chunk.MuxFinal(inputPath, workDir, outputPath, encodedAudio, displayAspect); err != nil {
-		finishStep()
 		return CropResult{}, fmt.Errorf("final mux failed: %w", err)
 	}
-	finishStep()
+	phases.end()
 
 	return cropResult, nil
+}
+
+// audioJob tracks the background audio extraction that runs concurrently with
+// the video encode. join is idempotent, so the happy path joins where the
+// results are needed while one deferred cancel+join covers every error return.
+type audioJob struct {
+	done       chan struct{}
+	finishStep func()
+	streams    []nativeaudio.EncodedStream
+	err        error
+	joined     bool
+}
+
+// startAudioJob begins audio extraction in the background (it only reads the
+// source file). The verbose start/stop lines stay on the orchestration
+// goroutine and bracket the join, but the perf phase is recorded from inside
+// the goroutine when extraction actually finishes -- otherwise its duration
+// would span the whole concurrent video encode/merge window (the orchestration
+// goroutine only joins after merge), massively over-reporting audio cost in
+// perf.json. An extraction error cancels the shared encode context so the
+// video encode stops promptly.
+func startAudioJob(ctx context.Context, cancel context.CancelFunc, inputPath, workDir string, streams []media.AudioStreamInfo, rep reporter.Reporter, perfc *perf.Collector) *audioJob {
+	job := &audioJob{done: make(chan struct{}), finishStep: func() {}}
+	if len(streams) == 0 {
+		close(job.done)
+		return job
+	}
+	job.finishStep = startVerboseStep(rep, "Audio extraction")
+	phaseStart := time.Now()
+	go func() {
+		defer close(job.done)
+		job.streams, job.err = chunk.ExtractAudio(ctx, inputPath, workDir, streams)
+		perfc.RecordPhase("Audio extraction", phaseStart, time.Now())
+		if job.err != nil {
+			cancel()
+		}
+	}()
+	return job
+}
+
+// join waits for extraction to finish and closes its verbose step. Safe to
+// call repeatedly, but only from the orchestration goroutine.
+func (a *audioJob) join() ([]nativeaudio.EncodedStream, error) {
+	if !a.joined {
+		<-a.done
+		a.finishStep()
+		a.joined = true
+	}
+	return a.streams, a.err
 }
 
 func cvvdpDisplaySummary(cfg *config.Config, inf *video.Info) string {
