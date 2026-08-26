@@ -5,6 +5,7 @@ This file provides guidance when working with code in this repository.
 ## TL;DR
 
 - Do not create git branches unless explicitly instructed.
+- Use `./deploy.sh` for deployments; do not reproduce its steps manually.
 - Run `./check-ci.sh` before handing work back.
 
 ## Project
