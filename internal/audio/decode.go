@@ -21,6 +21,7 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"unsafe"
 )
@@ -121,9 +122,30 @@ func openDecoder(inputPath string, streamIndex int) (*decoder, error) {
 	}, nil
 }
 
-func (d *decoder) decodeTo(ctx context.Context, cb func([]float32) error) error {
+var errDecodeLimitReached = errors.New("audio decode limit reached")
+
+func (d *decoder) decodeTo(ctx context.Context, maxSamples int64, cb func([]float32) error) error {
+	if maxSamples <= 0 {
+		return nil
+	}
 	const maxOutSamples = 96000
 	out := make([]float32, maxOutSamples*d.channels)
+	written := int64(0)
+	emit := func(pcm []float32) error {
+		remaining := maxSamples - written
+		if remaining <= 0 {
+			return errDecodeLimitReached
+		}
+		samples := min(int64(len(pcm)/d.channels), remaining)
+		if err := cb(pcm[:int(samples)*d.channels]); err != nil {
+			return err
+		}
+		written += samples
+		if written == maxSamples {
+			return errDecodeLimitReached
+		}
+		return nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -142,8 +164,11 @@ func (d *decoder) decodeTo(ctx context.Context, cb func([]float32) error) error 
 
 		sendRet := C.avcodec_send_packet(d.codecCtx, d.pkt)
 		for sendRet == C.reel_audio_averror_eagain() {
-			if err := d.drainFrames(out, cb); err != nil {
+			if err := d.drainFrames(out, emit); err != nil {
 				C.av_packet_unref(d.pkt)
+				if errors.Is(err, errDecodeLimitReached) {
+					return nil
+				}
 				return err
 			}
 			sendRet = C.avcodec_send_packet(d.codecCtx, d.pkt)
@@ -154,7 +179,10 @@ func (d *decoder) decodeTo(ctx context.Context, cb func([]float32) error) error 
 		}
 		C.av_packet_unref(d.pkt)
 
-		if err := d.drainFrames(out, cb); err != nil {
+		if err := d.drainFrames(out, emit); err != nil {
+			if errors.Is(err, errDecodeLimitReached) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -162,7 +190,10 @@ func (d *decoder) decodeTo(ctx context.Context, cb func([]float32) error) error 
 	if ret := C.avcodec_send_packet(d.codecCtx, nil); ret < 0 && ret != C.reel_audio_averror_eof() {
 		return fmt.Errorf("audio decoder: flush failed: %s", avError(ret))
 	}
-	if err := d.drainFrames(out, cb); err != nil {
+	if err := d.drainFrames(out, emit); err != nil {
+		if errors.Is(err, errDecodeLimitReached) {
+			return nil
+		}
 		return err
 	}
 
@@ -174,7 +205,10 @@ func (d *decoder) decodeTo(ctx context.Context, cb func([]float32) error) error 
 		if n == 0 {
 			return nil
 		}
-		if err := cb(out[:int(n)*d.channels]); err != nil {
+		if err := emit(out[:int(n)*d.channels]); err != nil {
+			if errors.Is(err, errDecodeLimitReached) {
+				return nil
+			}
 			return err
 		}
 	}

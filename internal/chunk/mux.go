@@ -92,7 +92,17 @@ static void reel_mux_copy_global_metadata(AVFormatContext *out, AVFormatContext 
 	av_dict_copy(&out->metadata, src->metadata, 0);
 }
 
-static int reel_mux_copy_chapters(AVFormatContext *out, AVFormatContext *src) {
+static int reel_mux_clamp_chapter(int64_t start, int64_t *chapter_end, int64_t video_end) {
+	if (start >= video_end) {
+		return 0;
+	}
+	if (*chapter_end > video_end) {
+		*chapter_end = video_end;
+	}
+	return 1;
+}
+
+static int reel_mux_copy_chapters(AVFormatContext *out, AVFormatContext *src, int64_t video_end_us) {
 	if (src->nb_chapters == 0) {
 		return 0;
 	}
@@ -100,26 +110,36 @@ static int reel_mux_copy_chapters(AVFormatContext *out, AVFormatContext *src) {
 	if (chapters == NULL) {
 		return AVERROR(ENOMEM);
 	}
+	unsigned int copied = 0;
 	for (unsigned int i = 0; i < src->nb_chapters; i++) {
+		AVChapter *in = src->chapters[i];
+		int64_t end = av_rescale_q_rnd(video_end_us, (AVRational){1, 1000000}, in->time_base, AV_ROUND_DOWN);
+		int64_t chapter_end = in->end;
+		if (!reel_mux_clamp_chapter(in->start, &chapter_end, end)) {
+			continue;
+		}
 		AVChapter *chapter = av_mallocz(sizeof(*chapter));
 		if (chapter == NULL) {
-			for (unsigned int j = 0; j < i; j++) {
+			for (unsigned int j = 0; j < copied; j++) {
 				av_dict_free(&chapters[j]->metadata);
 				av_free(chapters[j]);
 			}
 			av_free(chapters);
 			return AVERROR(ENOMEM);
 		}
-		AVChapter *in = src->chapters[i];
 		chapter->id = in->id;
 		chapter->time_base = in->time_base;
 		chapter->start = in->start;
-		chapter->end = in->end;
+		chapter->end = chapter_end;
 		av_dict_copy(&chapter->metadata, in->metadata, 0);
-		chapters[i] = chapter;
+		chapters[copied++] = chapter;
+	}
+	if (copied == 0) {
+		av_free(chapters);
+		return 0;
 	}
 	out->chapters = chapters;
-	out->nb_chapters = src->nb_chapters;
+	out->nb_chapters = copied;
 	return 0;
 }
 
@@ -223,7 +243,7 @@ func initMuxLibav() {
 }
 
 // MuxFinal combines the encoded video with audio, chapters, and metadata using libavformat.
-func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.EncodedStream, displayAspect string) error {
+func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.EncodedStream, displayAspect string, videoDurationSecs float64) error {
 	initMuxLibav()
 
 	videoPath := GetVideoPath(workDir)
@@ -253,7 +273,7 @@ func MuxFinal(inputPath, workDir, outputPath string, audioStreams []nativeaudio.
 			return err
 		}
 	}
-	if err := muxer.copySourceMetadata(); err != nil {
+	if err := muxer.copySourceMetadata(offsetMicroseconds(videoDurationSecs)); err != nil {
 		return err
 	}
 	if err := muxer.write(outputPath); err != nil {
@@ -350,12 +370,12 @@ func (m *nativeMuxer) addAudio(stream nativeaudio.EncodedStream) error {
 	return nil
 }
 
-func (m *nativeMuxer) copySourceMetadata() error {
+func (m *nativeMuxer) copySourceMetadata(videoEndUS int64) error {
 	if m.source == nil {
 		return nil
 	}
 	C.reel_mux_copy_global_metadata(m.out, m.source)
-	if ret := C.reel_mux_copy_chapters(m.out, m.source); ret < 0 {
+	if ret := C.reel_mux_copy_chapters(m.out, m.source, C.int64_t(videoEndUS)); ret < 0 {
 		return fmt.Errorf("copy chapters: %s", avError(ret))
 	}
 	return nil
@@ -467,6 +487,12 @@ func (f *muxFeed) fill() error {
 
 func offsetMicroseconds(seconds float64) int64 {
 	return int64(math.Round(seconds * 1_000_000))
+}
+
+func clampChapter(start, end, videoEnd int64) (int64, bool) {
+	cEnd := C.int64_t(end)
+	keep := C.reel_mux_clamp_chapter(C.int64_t(start), &cEnd, C.int64_t(videoEnd)) != 0
+	return int64(cEnd), keep
 }
 
 func (f *muxFeed) write(out *C.AVFormatContext) error {

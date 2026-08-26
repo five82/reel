@@ -113,7 +113,24 @@ func ValidateOutputVideo(inputPath, outputPath string, opts Options) (*Result, e
 		result.IsSyncPreserved = false
 		result.SyncMessage = "Failed to get output audio timing"
 	default:
-		result.IsSyncPreserved, result.SyncDriftMs, result.SyncMessage = validateSync(inputAudioStreams, outputAudioStreams)
+		result.IsSyncPreserved, result.SyncDriftMs, result.SyncMessage = validateSync(inputAudioStreams, outputAudioStreams, outputProps.DurationSecs)
+	}
+
+	sourceVideoDuration := outputProps.DurationSecs
+	if opts.ExpectedDuration != nil {
+		sourceVideoDuration = *opts.ExpectedDuration
+	}
+	if count, maxOverrun := audioOverruns(inputAudioStreams, sourceVideoDuration); count > 0 {
+		remaining, _ := audioOverruns(outputAudioStreams, outputProps.DurationSecs)
+		result.SourceTimelineNormalized = outputAudioErr == nil && remaining == 0
+		outcome := "output bounded to the video endpoint"
+		if !result.SourceTimelineNormalized {
+			outcome = "output was not bounded to the video endpoint"
+		}
+		result.SourceTimelineMessage = fmt.Sprintf(
+			"%d source audio track(s) ended up to %.3fs past video; %s",
+			count, maxOverrun, outcome,
+		)
 	}
 
 	return result, nil
@@ -243,8 +260,22 @@ func validateAudio(streams []media.AudioStreamInfo, expectedTracks *int) (bool, 
 	return isOpus, trackCountCorrect, codecs, message
 }
 
-// validateSync compares each audio track's start offset relative to video.
-func validateSync(inputStreams, outputStreams []media.AudioStreamInfo) (bool, *float64, string) {
+func audioOverruns(streams []media.AudioStreamInfo, videoDurationSecs float64) (int, float64) {
+	count := 0
+	maxOverrun := 0.0
+	for _, stream := range streams {
+		overrun := stream.StartOffsetSecs + stream.DurationSecs - videoDurationSecs
+		if overrun <= durationToleranceSecs {
+			continue
+		}
+		count++
+		maxOverrun = max(maxOverrun, overrun)
+	}
+	return count, maxOverrun
+}
+
+// validateSync compares each audio track's timing relative to the video stream.
+func validateSync(inputStreams, outputStreams []media.AudioStreamInfo, videoDurationSecs float64) (bool, *float64, string) {
 	trackCount := min(len(inputStreams), len(outputStreams))
 	maxDriftMs := 0.0
 	maxTrack := 0
@@ -267,6 +298,15 @@ func validateSync(inputStreams, outputStreams []media.AudioStreamInfo) (bool, *f
 			"Audio/video sync drift too large for track %d: %.1fms (max: %.1fms; maximum drift: %.1fms)",
 			maxTrack, maxDriftMs, maxSyncDriftMs, maxDriftMs,
 		)
+	}
+	for i, stream := range outputStreams {
+		end := stream.StartOffsetSecs + stream.DurationSecs
+		if end > videoDurationSecs+durationToleranceSecs {
+			return false, &maxDriftMs, fmt.Sprintf(
+				"Audio/video sync track %d ends %.1fs after video (video: %.1fs)",
+				i+1, end-videoDurationSecs, videoDurationSecs,
+			)
+		}
 	}
 	return true, &maxDriftMs, fmt.Sprintf("Audio/video sync preserved (maximum drift: %.1fms)", maxDriftMs)
 }

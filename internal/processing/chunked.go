@@ -333,7 +333,7 @@ func ProcessChunked(
 	encodeCtx, cancelEncode := context.WithCancel(ctx)
 	defer cancelEncode()
 
-	audio := startAudioJob(encodeCtx, cancelEncode, inputPath, workDir, audioStreams, rep, perfc)
+	audio := startAudioJob(encodeCtx, cancelEncode, inputPath, workDir, audioStreams, videoProps.DurationSecs, rep, perfc)
 	// Every return path must stop audio and join its goroutine; canceling
 	// first keeps the join prompt on error returns.
 	defer func() {
@@ -429,7 +429,7 @@ func ProcessChunked(
 	// Final mux
 	rep.StageProgress(reporter.StageProgress{Stage: "Muxing", Message: "Creating final output"})
 	phases.start("Final mux")
-	if err := chunk.MuxFinal(inputPath, workDir, outputPath, encodedAudio, displayAspect); err != nil {
+	if err := chunk.MuxFinal(inputPath, workDir, outputPath, encodedAudio, displayAspect, videoProps.DurationSecs); err != nil {
 		return CropResult{}, fmt.Errorf("final mux failed: %w", err)
 	}
 	phases.end()
@@ -456,7 +456,7 @@ type audioJob struct {
 // goroutine only joins after merge), massively over-reporting audio cost in
 // perf.json. An extraction error cancels the shared encode context so the
 // video encode stops promptly.
-func startAudioJob(ctx context.Context, cancel context.CancelFunc, inputPath, workDir string, streams []media.AudioStreamInfo, rep reporter.Reporter, perfc *perf.Collector) *audioJob {
+func startAudioJob(ctx context.Context, cancel context.CancelFunc, inputPath, workDir string, streams []media.AudioStreamInfo, videoDurationSecs float64, rep reporter.Reporter, perfc *perf.Collector) *audioJob {
 	job := &audioJob{done: make(chan struct{}), finishStep: func() {}}
 	if len(streams) == 0 {
 		close(job.done)
@@ -466,7 +466,7 @@ func startAudioJob(ctx context.Context, cancel context.CancelFunc, inputPath, wo
 	phaseStart := time.Now()
 	go func() {
 		defer close(job.done)
-		job.streams, job.err = chunk.ExtractAudio(ctx, inputPath, workDir, streams)
+		job.streams, job.err = chunk.ExtractAudio(ctx, inputPath, workDir, streams, videoDurationSecs)
 		perfc.RecordPhase("Audio extraction", phaseStart, time.Now())
 		if job.err != nil {
 			cancel()

@@ -17,6 +17,16 @@ func TestReorderSurroundPreservesChannelCount(t *testing.T) {
 	}
 }
 
+func TestAudioSampleLimitAccountsForStartOffset(t *testing.T) {
+	const videoDuration = 60.0
+	if got, want := audioSampleLimit(videoDuration, 0), int64(60*outputSampleRate); got != want {
+		t.Fatalf("audioSampleLimit() = %d, want %d", got, want)
+	}
+	if got, want := audioSampleLimit(videoDuration, 0.5), int64(59.5*outputSampleRate); got != want {
+		t.Fatalf("audioSampleLimit() with start offset = %d, want %d", got, want)
+	}
+}
+
 func TestAudioPath(t *testing.T) {
 	if got, want := AudioPath("/tmp/reel", 3), "/tmp/reel/audio_03.opus"; got != want {
 		t.Fatalf("AudioPath() = %q, want %q", got, want)

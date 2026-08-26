@@ -215,7 +215,7 @@ type EncodedStream struct {
 }
 
 // EncodeStreams encodes all given streams to Opus in parallel.
-func EncodeStreams(ctx context.Context, inputPath, workDir string, streams []media.AudioStreamInfo) ([]EncodedStream, error) {
+func EncodeStreams(ctx context.Context, inputPath, workDir string, streams []media.AudioStreamInfo, videoDurationSecs float64) ([]EncodedStream, error) {
 	if len(streams) == 0 {
 		return nil, nil
 	}
@@ -233,7 +233,7 @@ func EncodeStreams(ctx context.Context, inputPath, workDir string, streams []med
 		go func() {
 			defer wg.Done()
 			path := AudioPath(workDir, i)
-			if err := encodeOne(ctx, inputPath, path, stream); err != nil {
+			if err := encodeOne(ctx, inputPath, path, stream, videoDurationSecs); err != nil {
 				cancel()
 				errCh <- fmt.Errorf("stream %d: %w", stream.StreamIndex, err)
 				return
@@ -255,7 +255,7 @@ func AudioPath(workDir string, outputIndex int) string {
 	return filepath.Join(workDir, fmt.Sprintf("audio_%02d.opus", outputIndex))
 }
 
-func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.AudioStreamInfo) error {
+func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.AudioStreamInfo, videoDurationSecs float64) error {
 	if stream.Channels == 0 {
 		return fmt.Errorf("audio stream has no channels")
 	}
@@ -275,7 +275,7 @@ func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.A
 	}
 
 	channels := int(stream.Channels)
-	if err := dec.decodeTo(ctx, func(pcm []float32) error {
+	if err := dec.decodeTo(ctx, audioSampleLimit(videoDurationSecs, stream.StartOffsetSecs), func(pcm []float32) error {
 		if channels > 2 {
 			reorderSurround(pcm, channels)
 		}
@@ -285,6 +285,12 @@ func encodeOne(ctx context.Context, inputPath, outputPath string, stream media.A
 		return err
 	}
 	return enc.close()
+}
+
+// audioSampleLimit bounds PCM to the video timeline; a later-starting track
+// has correspondingly less room before the final video frame.
+func audioSampleLimit(videoDurationSecs, startOffsetSecs float64) int64 {
+	return int64(math.Max(0, math.Round((videoDurationSecs-startOffsetSecs)*outputSampleRate)))
 }
 
 func reorderSurround(buf []float32, channels int) {

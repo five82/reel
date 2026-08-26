@@ -12,8 +12,8 @@ import (
 )
 
 // ExtractAudio encodes source audio streams to Opus using native libav/libopusenc.
-func ExtractAudio(ctx context.Context, inputPath, workDir string, audioStreams []media.AudioStreamInfo) ([]nativeaudio.EncodedStream, error) {
-	return nativeaudio.EncodeStreams(ctx, inputPath, workDir, audioStreams)
+func ExtractAudio(ctx context.Context, inputPath, workDir string, audioStreams []media.AudioStreamInfo, videoDurationSecs float64) ([]nativeaudio.EncodedStream, error) {
+	return nativeaudio.EncodeStreams(ctx, inputPath, workDir, audioStreams, videoDurationSecs)
 }
 
 // CleanupWorkDir removes the work directory and all its contents.

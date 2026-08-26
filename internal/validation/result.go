@@ -14,25 +14,27 @@ type Result struct {
 	IsAspectCorrect          bool
 
 	// Details
-	CodecName             string
-	PixelFormat           string
-	BitDepth              *uint8
-	ActualDimensions      *[2]uint32
-	ExpectedDimensions    *[2]uint32
-	CropMessage           string
-	ActualDuration        *float64
-	ExpectedDuration      *float64
-	DurationMessage       string
-	ExpectedHDR           *bool
-	ActualHDR             *bool
-	HDRMessage            string
-	AudioCodecs           []string
-	AudioMessage          string
-	SyncDriftMs           *float64
-	SyncMessage           string
-	ActualDisplayAspect   *[2]uint32
-	ExpectedDisplayAspect *[2]uint32
-	AspectMessage         string
+	CodecName                string
+	PixelFormat              string
+	BitDepth                 *uint8
+	ActualDimensions         *[2]uint32
+	ExpectedDimensions       *[2]uint32
+	CropMessage              string
+	ActualDuration           *float64
+	ExpectedDuration         *float64
+	DurationMessage          string
+	ExpectedHDR              *bool
+	ActualHDR                *bool
+	HDRMessage               string
+	AudioCodecs              []string
+	AudioMessage             string
+	SyncDriftMs              *float64
+	SyncMessage              string
+	SourceTimelineNormalized bool
+	SourceTimelineMessage    string
+	ActualDisplayAspect      *[2]uint32
+	ExpectedDisplayAspect    *[2]uint32
+	AspectMessage            string
 }
 
 // ValidationStep represents a single validation check.
@@ -103,6 +105,13 @@ func (r *Result) GetValidationSteps() []ValidationStep {
 			Details: r.SyncMessage,
 		},
 	)
+	if r.SourceTimelineMessage != "" {
+		steps = append(steps, ValidationStep{
+			Name:    "Source timeline normalization",
+			Passed:  r.SourceTimelineNormalized,
+			Details: r.SourceTimelineMessage,
+		})
+	}
 	return steps
 }
 

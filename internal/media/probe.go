@@ -139,6 +139,7 @@ type AudioStreamInfo struct {
 	Title           string
 	IsSpatial       bool    // Always false (spatial support removed)
 	StartOffsetSecs float64 // Relative to the best video stream
+	DurationSecs    float64
 	Disposition     StreamDisposition
 }
 
@@ -243,6 +244,7 @@ func GetAudioStreamInfo(inputPath string) ([]AudioStreamInfo, error) {
 			Title:           metadata(stream, "title"),
 			IsSpatial:       false,
 			StartOffsetSecs: startOffsetSecs,
+			DurationSecs:    durationSecs(fmtCtx, stream),
 			Disposition:     streamDisposition(int(stream.disposition)),
 		})
 	}

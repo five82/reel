@@ -16,6 +16,18 @@ func TestAudioDispositionBitmask(t *testing.T) {
 	}
 }
 
+func TestClampChapterToVideoEnd(t *testing.T) {
+	end, keep := clampChapter(55, 95, 60)
+	if !keep || end != 60 {
+		t.Fatalf("clampChapter() = (%d, %t), want (60, true)", end, keep)
+	}
+
+	_, keep = clampChapter(60, 95, 60)
+	if keep {
+		t.Fatal("clampChapter() retained a chapter beginning at the video end")
+	}
+}
+
 func TestOffsetMicroseconds(t *testing.T) {
 	tests := []struct {
 		seconds float64

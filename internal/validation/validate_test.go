@@ -37,11 +37,11 @@ func TestValidateSyncComparesEachTrackOffset(t *testing.T) {
 		{Index: 1, StartOffsetSecs: 0},
 	}
 	output := []media.AudioStreamInfo{
-		{Index: 0, StartOffsetSecs: 0.5005},
-		{Index: 1, StartOffsetSecs: 0.0001},
+		{Index: 0, StartOffsetSecs: 0.5005, DurationSecs: 9.4995},
+		{Index: 1, StartOffsetSecs: 0.0001, DurationSecs: 9.9999},
 	}
 
-	ok, drift, message := validateSync(input, output)
+	ok, drift, message := validateSync(input, output, 10)
 	if !ok {
 		t.Fatalf("validateSync() passed offsets = false, want true: %s", message)
 	}
@@ -59,11 +59,11 @@ func TestValidateSyncIdentifiesDriftedTrack(t *testing.T) {
 		{Index: 1, StartOffsetSecs: 0},
 	}
 	output := []media.AudioStreamInfo{
-		{Index: 0, StartOffsetSecs: 0},
-		{Index: 1, StartOffsetSecs: 0},
+		{Index: 0, StartOffsetSecs: 0, DurationSecs: 10},
+		{Index: 1, StartOffsetSecs: 0, DurationSecs: 10},
 	}
 
-	ok, drift, message := validateSync(input, output)
+	ok, drift, message := validateSync(input, output, 10)
 	if ok {
 		t.Fatal("validateSync() = true, want false")
 	}
@@ -72,6 +72,53 @@ func TestValidateSyncIdentifiesDriftedTrack(t *testing.T) {
 	}
 	if !strings.Contains(message, "track 1") || !strings.Contains(message, "maximum drift: 501.0ms") {
 		t.Fatalf("validateSync() message = %q, want track and maximum drift", message)
+	}
+}
+
+func TestAudioOverrunsReportsSourceTimelineAnomaly(t *testing.T) {
+	streams := []media.AudioStreamInfo{
+		{DurationSecs: 95},
+		{StartOffsetSecs: 0.5, DurationSecs: 94.5},
+		{DurationSecs: 60.5},
+	}
+
+	count, maxOverrun := audioOverruns(streams, 60)
+	if count != 2 || maxOverrun != 35 {
+		t.Fatalf("audioOverruns() = (%d, %.1f), want (2, 35.0)", count, maxOverrun)
+	}
+}
+
+func TestValidateSyncRejectsAudioPastVideoEnd(t *testing.T) {
+	streams := []media.AudioStreamInfo{{Index: 0, DurationSecs: 95}}
+
+	ok, _, message := validateSync(streams, streams, 60)
+	if ok {
+		t.Fatal("validateSync() passed audio ending 35 seconds after video")
+	}
+	if !strings.Contains(message, "35.0s after video") {
+		t.Fatalf("validateSync() message = %q, want overlong endpoint", message)
+	}
+}
+
+func TestValidateSyncAllowsAudioEndingBeforeVideo(t *testing.T) {
+	streams := []media.AudioStreamInfo{{Index: 0, DurationSecs: 30}}
+
+	ok, _, message := validateSync(streams, streams, 60)
+	if !ok {
+		t.Fatalf("validateSync() rejected shorter audio: %s", message)
+	}
+}
+
+func TestValidationStepsIncludeSourceTimelineNormalization(t *testing.T) {
+	result := Result{
+		SourceTimelineNormalized: true,
+		SourceTimelineMessage:    "1 source audio track ended 35s past video; output bounded",
+	}
+
+	steps := result.GetValidationSteps()
+	got := steps[len(steps)-1]
+	if got.Name != "Source timeline normalization" || !got.Passed || got.Details != result.SourceTimelineMessage {
+		t.Fatalf("normalization step = %+v", got)
 	}
 }
 
