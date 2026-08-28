@@ -240,10 +240,11 @@ func (e *svtEncoder) close() {
 // (4096x2176@60) covers every disc source Reel encodes and is the baseline
 // capability of AV1 hardware decoders. The cap engages SVT's capped-CRF mode.
 //
-// On chunks where the cap binds hard, lowering CRF degrades CVVDP (the rate
-// regulator thrashes), so the target-quality search's monotonicity guard
-// fires and the chunk falls back to its initial CRF with the cap holding the
-// rate. That fallback is the intended behavior, not a search failure.
+// On chunks where the cap binds hard (heavy grain at 4K), the target-quality
+// search rejects probes whose worst second exceeds the cap and lowering CRF
+// no longer raises CVVDP (the rate regulator holds the rate and thrashes).
+// The search then stops with quality.StopRateCapped at the lowest rate-legal
+// CRF, below the band. That is the intended behavior, not a search failure.
 
 // signaledLevel is EbSvtAv1EncConfiguration.level's encoding of AV1
 // level 5.1 (major*10 + minor).

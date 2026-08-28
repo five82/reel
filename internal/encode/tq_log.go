@@ -148,7 +148,7 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	probeCounts := make(map[int]int)
 	stopCounts := make(map[quality.StopReason]int)
 	sourceCounts := make(map[string]int)
-	var maxProbeChunks []int
+	var maxProbeChunks, rateCappedChunks []int
 	var multiProbeLogs []chunkTargetLog
 	for i, log := range logs {
 		if i == 0 || log.FinalScore < minScore {
@@ -171,8 +171,11 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 			sourceCounts[log.InitialCRFSource]++
 		}
 		crfCounts[log.FinalCRF]++
-		if log.StopReason == quality.StopMaxProbes {
+		switch log.StopReason {
+		case quality.StopMaxProbes:
 			maxProbeChunks = append(maxProbeChunks, log.ChunkIdx)
+		case quality.StopRateCapped:
+			rateCappedChunks = append(rateCappedChunks, log.ChunkIdx)
 		}
 		if probeCount >= 3 {
 			multiProbeLogs = append(multiProbeLogs, log)
@@ -195,6 +198,9 @@ func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {
 	}
 	if len(maxProbeChunks) > 0 {
 		verbose(fmt.Sprintf("TQ max-probe chunks: %s", formatChunkList(maxProbeChunks, 12)))
+	}
+	if len(rateCappedChunks) > 0 {
+		verbose(fmt.Sprintf("TQ rate-capped chunks (bitstream cap bound the search; intended, not a search failure): %s", formatChunkList(rateCappedChunks, 12)))
 	}
 }
 

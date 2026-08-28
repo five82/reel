@@ -14,7 +14,20 @@ const (
 	StopMonotonicity  StopReason = "monotonicity_guard"
 	StopMaxProbes     StopReason = "max_probes"
 	StopNoCandidates  StopReason = "no_candidates"
+	// StopRateCapped: the bitstream cap bounded the search from below and no
+	// rate-legal probe reached the band. Intended behavior on chunks where
+	// the cap binds (heavy grain), not a search failure; see capFrontierCRF.
+	StopRateCapped StopReason = "rate_capped"
 )
+
+// capFrontierCRF is how finely the search resolves the rate-cap frontier: the
+// boundary between over-rate and rate-legal CRFs. On a cap-bound chunk the
+// regulator holds the rate whatever the CRF, so scores are flat across the
+// frontier and resolving it below ~2 CRF (about 0.08 JOD at a typical
+// 0.04 JOD/CRF slope, under half the band width) buys nothing. Item-15
+// Groundhog Day measurements: 32 of 36 misses burned all six probes here,
+// including a wasted midpoint probe near CRF 43 scoring 8.0-8.7.
+const capFrontierCRF = 2
 
 // Probe records one target-quality probe encode and its whole-chunk metric
 // result. Every probe encodes and scores the entire chunk, so Score is exact
@@ -48,7 +61,7 @@ type SearchContext struct {
 	FPS        float64 // frames per second, used to compute probe bitrate
 }
 
-// overRate reports whether a probe's bitrate exceeds the cap, on chunk
+// OverRate reports whether a probe's bitrate exceeds the cap, on chunk
 // average or on its worst one-second window. Encodes run with the cap active,
 // so an over-rate probe means the rate regulator failed to hold at that CRF:
 // the probe is unusable regardless of score, and its score is distorted by
@@ -58,7 +71,7 @@ type SearchContext struct {
 // slack keeps legitimately regulated probes that land at the cap from being
 // rejected as noise, with the peak gate slightly looser for single-second
 // granularity.
-func overRate(ctx SearchContext, p Probe) bool {
+func OverRate(ctx SearchContext, p Probe) bool {
 	if ctx.MaxRateBps <= 0 {
 		return false
 	}
@@ -79,6 +92,7 @@ type SearchState struct {
 	Round      int        `json:"round"`
 	StopReason StopReason `json:"stop_reason,omitempty"`
 	tried      map[int]bool
+	capCRF     float32 // highest over-rate CRF seen; 0 until the cap has rejected a probe
 }
 
 func NewSearchState(ctx SearchContext) *SearchState {
@@ -94,19 +108,25 @@ func (s *SearchState) NextCRF(ctx SearchContext) (float32, bool) {
 		return 0, false
 	}
 	if ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes {
-		s.StopReason = StopMaxProbes
+		s.halt(StopMaxProbes)
 		return 0, false
 	}
 	if s.SearchMin > s.SearchMax {
-		s.StopReason = StopBoundsCrossed
+		s.halt(StopBoundsCrossed)
 		return 0, false
 	}
 
 	var candidate float32
-	switch len(s.Probes) {
-	case 0:
+	switch {
+	case len(s.Probes) == 0:
 		candidate = initialSearchCRF(ctx)
-	case 1:
+	case s.capCRF > 0 && len(usableProbes(ctx, s.Probes)) == 0:
+		// Every probe so far blew the cap, so no score can steer. Step just
+		// past the frontier instead of bisecting toward CRFMax: the frontier
+		// sits a few CRF above the rejected probe, and a midpoint probe near
+		// CRF 43 only ever scored far below the band.
+		candidate = s.capCRF + capFrontierCRF
+	case len(s.Probes) == 1:
 		candidate = secondSearchCRF(ctx, s.Probes[0])
 	default:
 		candidate = nextCRFWithHistory(ctx, s)
@@ -114,7 +134,7 @@ func (s *SearchState) NextCRF(ctx SearchContext) (float32, bool) {
 
 	candidate, ok := s.firstUntriedInBounds(candidate)
 	if !ok {
-		s.StopReason = StopNoCandidates
+		s.halt(StopNoCandidates)
 		return 0, false
 	}
 	s.Round++
@@ -129,29 +149,33 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 		}
 	}
 
-	if overRate(ctx, probe) {
+	if OverRate(ctx, probe) {
 		// The only usable lesson from a cap-violating probe is "search
 		// higher CRFs"; its score must not converge the search or feed the
 		// monotonicity guard.
 		s.Probes = append(s.Probes, probe)
 		s.tried[crfKey(probe.CRF)] = true
-		s.SearchMin = RoundCRFToQuarter(probe.CRF + 0.25)
-		if s.SearchMin > s.SearchMax {
-			s.StopReason = StopBoundsCrossed
-		} else if ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes {
-			s.StopReason = StopMaxProbes
+		s.capCRF = max(s.capCRF, probe.CRF)
+		s.SearchMin = max(s.SearchMin, RoundCRFToQuarter(probe.CRF+0.25))
+		switch {
+		case s.capBound(ctx):
+			s.StopReason = StopRateCapped
+		case s.SearchMin > s.SearchMax:
+			s.halt(StopBoundsCrossed)
+		case ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes:
+			s.halt(StopMaxProbes)
 		}
 		return
 	}
 
 	for _, old := range s.Probes {
-		if overRate(ctx, old) {
+		if OverRate(ctx, old) {
 			continue
 		}
 		if (old.CRF-probe.CRF)*(old.Score-probe.Score) >= 0 {
 			s.Probes = append(s.Probes, probe)
 			s.tried[crfKey(probe.CRF)] = true
-			s.StopReason = StopMonotonicity
+			s.halt(StopMonotonicity)
 			return
 		}
 	}
@@ -170,13 +194,56 @@ func (s *SearchState) AddProbe(ctx SearchContext, probe Probe) {
 		// Quality higher than needed: raise CRF.
 		s.SearchMin = RoundCRFToQuarter(probe.CRF + 0.25)
 	}
-	if s.SearchMin > s.SearchMax {
-		s.StopReason = StopBoundsCrossed
-		return
+	switch {
+	case s.capBound(ctx):
+		s.StopReason = StopRateCapped
+	case s.SearchMin > s.SearchMax:
+		s.halt(StopBoundsCrossed)
+	case ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes:
+		s.halt(StopMaxProbes)
 	}
-	if ctx.MaxProbes > 0 && len(s.Probes) >= ctx.MaxProbes {
-		s.StopReason = StopMaxProbes
+}
+
+// halt records a non-converged stop. Once the cap has rejected a probe the
+// search was bounded from below by the cap, so the honest reason for any
+// later miss is the cap, not the probe budget or the guard.
+func (s *SearchState) halt(reason StopReason) {
+	if s.capCRF > 0 {
+		reason = StopRateCapped
 	}
+	s.StopReason = reason
+}
+
+// capBound reports whether the cap frontier is resolved: the lowest
+// rate-legal probe still scores below the band and sits within
+// capFrontierCRF above the highest over-rate probe, so no untried CRF can
+// gain enough to reach the band.
+func (s *SearchState) capBound(ctx SearchContext) bool {
+	if s.capCRF == 0 {
+		return false
+	}
+	legal := float32(0)
+	found := false
+	for _, p := range usableProbes(ctx, s.Probes) {
+		if p.Score < ctx.Target-ctx.Tolerance && (!found || p.CRF < legal) {
+			legal = p.CRF
+			found = true
+		}
+	}
+	return found && legal > s.capCRF && legal-s.capCRF <= capFrontierCRF
+}
+
+// usableProbes drops over-rate probes: their scores are regulator-distorted
+// and must not steer score-based decisions. (Their CRFs still shaped the
+// search bounds when they were added.)
+func usableProbes(ctx SearchContext, probes []Probe) []Probe {
+	usable := make([]Probe, 0, len(probes))
+	for _, probe := range probes {
+		if !OverRate(ctx, probe) {
+			usable = append(usable, probe)
+		}
+	}
+	return usable
 }
 
 func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
@@ -184,13 +251,13 @@ func (s *SearchState) BestProbe(ctx SearchContext) (Probe, bool) {
 		return Probe{}, false
 	}
 	best, found := bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
-		return !overRate(ctx, probe) && probe.Score >= ctx.Target-ctx.Tolerance
+		return !OverRate(ctx, probe) && probe.Score >= ctx.Target-ctx.Tolerance
 	})
 	if found {
 		return best, true
 	}
 	if best, found = bestProbeMatching(ctx, s.Probes, func(probe Probe) bool {
-		return !overRate(ctx, probe)
+		return !OverRate(ctx, probe)
 	}); found {
 		return best, true
 	}
@@ -235,15 +302,7 @@ func initialSearchCRF(ctx SearchContext) float32 {
 }
 
 func nextCRFWithHistory(ctx SearchContext, state *SearchState) float32 {
-	// Over-rate probes carry regulator-distorted scores; only rate-legal
-	// probes may steer score-based interpolation. (Their CRFs still shaped
-	// the search bounds when they were added.)
-	usable := make([]Probe, 0, len(state.Probes))
-	for _, probe := range state.Probes {
-		if !overRate(ctx, probe) {
-			usable = append(usable, probe)
-		}
-	}
+	usable := usableProbes(ctx, state.Probes)
 	if probesBracketTarget(ctx, usable) {
 		candidate := InterpolateCRF(usable, ctx.Target)
 		if candidate >= state.SearchMin && candidate <= state.SearchMax {

@@ -345,3 +345,86 @@ func TestSearchPeakRateGatesProbe(t *testing.T) {
 		t.Fatalf("stop reason = %q, want converged for peak-legal probe", state.StopReason)
 	}
 }
+
+func TestSearchAllOverRateStepsPastCapFrontier(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	// Item-15 chunk 0372: first probe blows the peak gate. Its score must not
+	// drive a 0.25 step, and the search must not bisect toward CRFMax (the
+	// old path probed CRF 42.75 and scored 8.11).
+	state.AddProbe(ctx, Probe{CRF: 21.25, Score: 8.7281, Size: 29.5e6, Frames: 233, PeakBps: 50e6})
+	crf, ok := state.NextCRF(ctx)
+	if !ok || crf != 23.25 {
+		t.Fatalf("next CRF = %g ok=%v, want 23.25 (over-rate CRF + cap frontier)", crf, ok)
+	}
+	state.AddProbe(ctx, Probe{CRF: crf, Score: 8.73, Size: 25e6, Frames: 233, PeakBps: 46e6})
+	if crf, ok = state.NextCRF(ctx); !ok || crf != 25.25 {
+		t.Fatalf("next CRF = %g ok=%v, want 25.25 after a second over-rate probe", crf, ok)
+	}
+}
+
+func TestSearchStopsRateCappedAtFrontier(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 27, Score: 8.78, Size: 18e6, Frames: 233, PeakBps: 50e6})
+	// Rate-legal, below the band, within capFrontierCRF of the rejected probe:
+	// nothing untried can reach the band, so stop and keep this probe.
+	state.AddProbe(ctx, Probe{CRF: 29, Score: 8.76, Size: 15e6, Frames: 233, PeakBps: 30e6})
+	if state.StopReason != StopRateCapped {
+		t.Fatalf("stop reason = %q, want rate_capped", state.StopReason)
+	}
+	best, ok := state.BestProbe(ctx)
+	if !ok || best.CRF != 29 {
+		t.Fatalf("best probe CRF = %g ok=%v, want the rate-legal probe at 29", best.CRF, ok)
+	}
+}
+
+func TestSearchBisectsWideCapFrontierThenStops(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	// Item-15 chunk 0181 shape: legal first probe just under the band, then a
+	// score-driven step down lands over-rate 7.5 CRF below. The frontier is
+	// wide, so keep bisecting it until it is resolved within capFrontierCRF.
+	state.AddProbe(ctx, Probe{CRF: 24.5, Score: 9.12, Size: 15e6, Frames: 87, PeakBps: 38e6})
+	state.AddProbe(ctx, Probe{CRF: 17, Score: 8.84, Size: 12.6e6, Frames: 87, PeakBps: 60e6})
+	if state.StopReason != StopNone {
+		t.Fatalf("stop reason = %q, want none while the frontier is wide", state.StopReason)
+	}
+	crf, ok := state.NextCRF(ctx)
+	if !ok || crf != 20.75 {
+		t.Fatalf("next CRF = %g ok=%v, want frontier midpoint 20.75", crf, ok)
+	}
+	state.AddProbe(ctx, Probe{CRF: crf, Score: 9.0, Size: 15.8e6, Frames: 87, PeakBps: 55e6})
+	crf, ok = state.NextCRF(ctx)
+	if !ok || crf != 22.75 {
+		t.Fatalf("next CRF = %g ok=%v, want 22.75", crf, ok)
+	}
+	state.AddProbe(ctx, Probe{CRF: crf, Score: 9.1, Size: 16.5e6, Frames: 87, PeakBps: 50e6})
+	if state.StopReason != StopRateCapped {
+		t.Fatalf("stop reason = %q, want rate_capped once the frontier is within %g CRF", state.StopReason, float32(capFrontierCRF))
+	}
+	if best, ok := state.BestProbe(ctx); !ok || best.CRF != 24.5 {
+		t.Fatalf("best probe CRF = %g ok=%v, want 24.5", best.CRF, ok)
+	}
+}
+
+func TestSearchCapHistoryRelabelsBudgetStops(t *testing.T) {
+	ctx := rateCtx()
+	ctx.MaxProbes = 2
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.0, Size: 30e6, Frames: 240, PeakBps: 50e6})
+	state.AddProbe(ctx, Probe{CRF: 30, Score: 8.9, Size: 20e6, Frames: 240, PeakBps: 30e6})
+	if state.StopReason != StopRateCapped {
+		t.Fatalf("stop reason = %q, want rate_capped: the cap bounded a search that ran out of probes", state.StopReason)
+	}
+}
+
+func TestSearchConvergesDespiteCapHistory(t *testing.T) {
+	ctx := rateCtx()
+	state := NewSearchState(ctx)
+	state.AddProbe(ctx, Probe{CRF: 20, Score: 9.6, Size: 30e6, Frames: 240, PeakBps: 50e6})
+	state.AddProbe(ctx, Probe{CRF: 22, Score: 9.3, Size: 25e6, Frames: 240, PeakBps: 40e6})
+	if state.StopReason != StopConverged {
+		t.Fatalf("stop reason = %q, want converged", state.StopReason)
+	}
+}

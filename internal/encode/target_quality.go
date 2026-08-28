@@ -720,7 +720,14 @@ func (r *targetQualityRun) encodeChunk(ctx context.Context, ch chunk.Chunk, plan
 			if state.Round == 1 {
 				initial = fmt.Sprintf(" initial_source=%s", initialCRFSource)
 			}
-			r.tq.Verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s%s score=%.4f delta=%+.4f size=%d frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, probe.Frames, probe.EncodeSeconds, probe.MetricSeconds, fps))
+			rate := fmt.Sprintf(" peak_mbps=%.1f", probe.PeakBps/1e6)
+			if quality.OverRate(searchCtx, probe) {
+				// Rejected by the level cap: the score is ignored and the
+				// search moves up. Without this the log shows a search
+				// walking away from a near-target score for no reason.
+				rate += " over_rate=true"
+			}
+			r.tq.Verbose(fmt.Sprintf("TQ probe chunk=%04d round=%d crf=%s%s score=%.4f delta=%+.4f size=%d%s frames=%d encode=%.1fs metric=%.1fs metric_fps=%.1f", ch.Idx, state.Round, quality.FormatCRF(crf), initial, probe.Score, probe.Score-searchCtx.Target, probe.Size, rate, probe.Frames, probe.EncodeSeconds, probe.MetricSeconds, fps))
 		}
 		if state.StopReason != quality.StopNone {
 			break

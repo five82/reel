@@ -128,6 +128,34 @@ The unused low bound is harmless.
 **Retest only if:** a current run shows a material multi-probe tail, repeated
 bounds/max-probe stops, or the user chooses a different quality/display policy.
 Subjective invisibility was not established by these metric results.
+`rate_capped` stops are excluded from that trigger: see the next decision.
+
+### Rate-cap frontier stop - KEEP
+
+**Why:** The level 5.1 bitstream cap (`encoder/svt.go`) rejects probes whose
+worst second exceeds it, and on heavy-grain 4K chunks the cap binds below the
+band: SVT's regulator holds the rate whatever the CRF, so scores are flat
+across the over-rate/rate-legal frontier. Item 15 (Groundhog Day UHD, 609
+chunks) missed the band on 36 chunks; all 36 sat at 12-35 Mbps with larger
+lower-CRF probes rejected, and 32 burned all six probes because the search
+treated the rejections as an ordinary bounds move: an over-rate first probe
+produced a 0.25 step (the distorted score drove `secondSearchCRF`), then a
+midpoint probe toward CRFMax near CRF 43 that scored 8.0-8.7. Scores on the
+worst chunk were 8.72-8.78 from CRF 21 to 32. Those chunks were reported as
+`max_probes`, which the item audit read as a search defect.
+
+The search now steps `capFrontierCRF` above a rejected probe when no legal
+probe exists, stops with `rate_capped` once the lowest legal below-band probe
+is within `capFrontierCRF` of the highest over-rate probe, and relabels any
+budget/guard stop after a cap rejection as `rate_capped`. The final pick is
+unchanged (best rate-legal probe); only probe count and the stop label move.
+Probe lines carry `peak_mbps` and `over_rate=true` so the rejection is visible.
+
+**Retest only if:** the cap policy changes, or a `rate_capped` chunk is shown
+to have had a rate-legal CRF that would have reached the band.
+
+**Provenance:** spindle item 15 log `spindle-20260828T040425.858Z.log`
+(1230 `TQ probe` lines), Ryzen 9 7950X / RTX 5060 Ti.
 
 **Provenance:** half-width and feature behavior: commit `714ac5f` and
 `perf-runs/20260702-013705-feature-validation`; raised-center policy and SDR
