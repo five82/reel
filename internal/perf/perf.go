@@ -67,6 +67,57 @@ type Phase struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 }
 
+// TargetQualityMetricStats aggregates the CRF search outcomes for the chunks
+// scored with one metric. SSIMU2 runs mix scales (warmup chunks carry JOD
+// scores), so a run can produce one entry per metric.
+type TargetQualityMetricStats struct {
+	Metric            string         `json:"metric"`
+	Target            float64        `json:"target"`
+	Tolerance         float64        `json:"tolerance"`
+	Chunks            int            `json:"chunks"`
+	Probes            int            `json:"probes"`
+	ProbesPerChunk    float64        `json:"probes_per_chunk"`
+	ScoreMin          float64        `json:"score_min"`
+	ScoreMean         float64        `json:"score_mean"`
+	ScoreMax          float64        `json:"score_max"`
+	ScoreMeanAbsError float64        `json:"score_mean_abs_error"`
+	FinalCRFMin       float64        `json:"final_crf_min"`
+	FinalCRFMedian    float64        `json:"final_crf_median"`
+	FinalCRFMax       float64        `json:"final_crf_max"`
+	StopReasons       map[string]int `json:"stop_reasons"`
+	InitialCRFSources map[string]int `json:"initial_crf_sources"`
+}
+
+// TargetQualityStats summarizes a target-quality run. The calibration offset
+// is the per-title CVVDP->SSIMU2 shift measured during warmup; grainy or
+// complex titles calibrate low, so it doubles as a content-complexity signal.
+type TargetQualityStats struct {
+	SSIMU2CalibrationOffset *float64                   `json:"ssimu2_calibration_offset,omitempty"`
+	Metrics                 []TargetQualityMetricStats `json:"metrics"`
+}
+
+// WorkerSummary condenses the sampled worker history: a time-weighted mean of
+// active encode workers, the peak, and the cumulative time chunks spent
+// waiting for an encode slot. MeanActive near Meta.MaxAdaptiveWorkers means
+// the host was saturated.
+type WorkerSummary struct {
+	MeanActive            float64 `json:"mean_active"`
+	PeakActive            int     `json:"peak_active"`
+	EncodeSlotWaitSeconds float64 `json:"encode_slot_wait_seconds"`
+}
+
+// Report is the structured performance summary of one encode, returned to
+// library callers and embedded (with the raw worker history) in perf.json.
+type Report struct {
+	Meta
+	TotalSeconds float64       `json:"total_seconds"`
+	Phases       []Phase       `json:"phases"`
+	Workers      WorkerSummary `json:"workers"`
+	// TargetQualityStats is named to avoid colliding with Meta.TargetQuality
+	// (the configured target range string) in the flattened JSON.
+	TargetQualityStats *TargetQualityStats `json:"target_quality_stats,omitempty"`
+}
+
 // WorkerSample is a point-in-time snapshot of the adaptive encode scheduler.
 type WorkerSample struct {
 	TSeconds              float64 `json:"t_seconds"`
@@ -92,6 +143,7 @@ type Collector struct {
 	meta    Meta
 	phases  []Phase
 	samples []WorkerSample
+	tq      *TargetQualityStats
 
 	haveSample bool
 	lastSample WorkerSample
@@ -165,6 +217,73 @@ func (c *Collector) RecordWorkerSample(s WorkerSample) {
 	c.haveSample = true
 }
 
+// SetTargetQuality attaches the target-quality search summary to the report.
+func (c *Collector) SetTargetQuality(s *TargetQualityStats) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.tq = s
+	c.mu.Unlock()
+}
+
+// Report returns the structured summary of the run so far. It is safe to call
+// on a nil collector (returns nil) and does not require a work directory.
+func (c *Collector) Report() *Report {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r := c.report()
+	return &r
+}
+
+// report builds the Report under the collector lock.
+func (c *Collector) report() Report {
+	phases := append([]Phase(nil), c.phases...)
+	sort.SliceStable(phases, func(i, j int) bool {
+		return phases[i].StartSeconds < phases[j].StartSeconds
+	})
+	return Report{
+		Meta:               c.meta,
+		TotalSeconds:       time.Since(c.start).Seconds(),
+		Phases:             phases,
+		Workers:            summarizeWorkers(c.samples),
+		TargetQualityStats: c.tq,
+	}
+}
+
+// summarizeWorkers reduces the sample history to a time-weighted mean and peak
+// of active workers plus the final cumulative encode-slot wait. Each sample's
+// Active is weighted by the interval until the next sample; the last sample
+// gets no weight (its interval is unknown), which matters little because
+// samples are dense during the encode.
+func summarizeWorkers(samples []WorkerSample) WorkerSummary {
+	var s WorkerSummary
+	if len(samples) == 0 {
+		return s
+	}
+	var weighted, span float64
+	for i, sample := range samples {
+		if sample.Active > s.PeakActive {
+			s.PeakActive = sample.Active
+		}
+		if i+1 < len(samples) {
+			dt := samples[i+1].TSeconds - sample.TSeconds
+			weighted += float64(sample.Active) * dt
+			span += dt
+		}
+	}
+	if span > 0 {
+		s.MeanActive = weighted / span
+	} else {
+		s.MeanActive = float64(samples[len(samples)-1].Active)
+	}
+	s.EncodeSlotWaitSeconds = samples[len(samples)-1].EncodeSlotWaitSeconds
+	return s
+}
+
 // Write emits perf.json into the work directory. It is best-effort: if no work
 // directory was set (for example the encode never reached the chunked pipeline)
 // it returns nil without writing.
@@ -178,20 +297,11 @@ func (c *Collector) Write() error {
 		return nil
 	}
 
-	phases := append([]Phase(nil), c.phases...)
-	sort.SliceStable(phases, func(i, j int) bool {
-		return phases[i].StartSeconds < phases[j].StartSeconds
-	})
-
 	out := struct {
-		Meta
-		TotalSeconds  float64        `json:"total_seconds"`
-		Phases        []Phase        `json:"phases"`
+		Report
 		WorkerHistory []WorkerSample `json:"worker_history"`
 	}{
-		Meta:          c.meta,
-		TotalSeconds:  time.Since(c.start).Seconds(),
-		Phases:        phases,
+		Report:        c.report(),
 		WorkerHistory: c.samples,
 	}
 

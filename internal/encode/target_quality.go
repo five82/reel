@@ -14,6 +14,7 @@ import (
 
 	"github.com/five82/reel/internal/chunk"
 	"github.com/five82/reel/internal/encoder"
+	"github.com/five82/reel/internal/perf"
 	"github.com/five82/reel/internal/quality"
 	"github.com/five82/reel/internal/video"
 	"github.com/five82/reel/internal/worker"
@@ -135,7 +136,7 @@ func EncodeTargetQuality(
 	cropRect *video.CropRect,
 	progressCb ProgressCallback,
 	tq TargetQualityConfig,
-) (int, error) {
+) (int, *perf.TargetQualityStats, error) {
 	if tq.MetricWorkers < 1 {
 		tq.MetricWorkers = 1
 	}
@@ -149,18 +150,18 @@ func EncodeTargetQuality(
 		tq.Metric = quality.MetricCVVDP
 	}
 	if err := chunk.EnsureEncodeDir(workDir); err != nil {
-		return 0, fmt.Errorf("failed to create encode directory: %w", err)
+		return 0, nil, fmt.Errorf("failed to create encode directory: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(workDir, "probes"), 0755); err != nil {
-		return 0, fmt.Errorf("failed to create probe directory: %w", err)
+		return 0, nil, fmt.Errorf("failed to create probe directory: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(workDir, "tq"), 0755); err != nil {
-		return 0, fmt.Errorf("failed to create target-quality log directory: %w", err)
+		return 0, nil, fmt.Errorf("failed to create target-quality log directory: %w", err)
 	}
 
 	resume, err := chunk.GetResume(workDir)
 	if err != nil {
-		return 0, fmt.Errorf("failed to load resume info: %w", err)
+		return 0, nil, fmt.Errorf("failed to load resume info: %w", err)
 	}
 	resume = resume.Validate(workDir, chunks)
 	doneSet := resume.DoneSet()
@@ -174,13 +175,13 @@ func EncodeTargetQuality(
 		}
 	}
 	if len(remainingChunks) == 0 {
-		return MaxAdaptiveWorkers(), nil
+		return MaxAdaptiveWorkers(), nil, nil
 	}
 	remainingChunks = orderTargetQualityChunks(remainingChunks, targetQualityScheduleBlockChunks)
 
 	if cropRect != nil {
 		if err := video.ValidateCropRect(inf, *cropRect); err != nil {
-			return 0, fmt.Errorf("invalid crop rectangle: %w", err)
+			return 0, nil, fmt.Errorf("invalid crop rectangle: %w", err)
 		}
 	}
 	width, height := video.OutputDimensions(inf, cropRect)
@@ -200,7 +201,7 @@ func EncodeTargetQuality(
 
 	r := newTargetQualityRun(tq, cfg, inputPath, workDir, inf, cropRect, width, height, limiter, primeConcurrency, progressCb, doneSet)
 	if err := r.openScorerPools(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer r.closeScorerPools()
 
@@ -253,7 +254,7 @@ func EncodeTargetQuality(
 	collectorWg.Wait()
 	writeAggregateTargetLog(workDir, r.logs, tq, r.calibration)
 	logTargetAggregate(r.logs, tq.Verbose)
-	return maxWorkers, r.getError()
+	return maxWorkers, targetQualityStats(r.logs, r.calibration), r.getError()
 }
 
 // newTargetQualityRun builds the run state minus the scorer pools, which cost

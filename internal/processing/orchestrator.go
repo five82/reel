@@ -30,6 +30,7 @@ type EncodeResult struct {
 	EncodingSpeed     float32
 	ValidationPassed  bool
 	ValidationSteps   []validation.ValidationStep
+	Stats             *perf.Report
 }
 
 // ProcessVideos orchestrates encoding for a list of video files.
@@ -312,6 +313,7 @@ func ProcessVideos(
 			EncodingSpeed:     encodingSpeed,
 			ValidationPassed:  validationPassed,
 			ValidationSteps:   validationSteps,
+			Stats:             perfc.Report(),
 		})
 
 		// Emit validation complete

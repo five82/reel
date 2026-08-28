@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/five82/reel/internal/perf"
 	"github.com/five82/reel/internal/quality"
 )
 
@@ -31,6 +32,86 @@ type chunkTargetLog struct {
 	StopReason       quality.StopReason `json:"stop_reason"`
 	StartedAt        time.Time          `json:"started_at"`
 	CompletedAt      time.Time          `json:"completed_at"`
+}
+
+// targetQualityStats builds the structured aggregate returned to library
+// callers. It mirrors logTargetAggregate's per-metric grouping: SSIMU2 runs
+// mix scales (warmup chunks carry JOD scores), so stats are grouped by the
+// metric that scored each chunk.
+func targetQualityStats(logs []chunkTargetLog, calibration *ssimu2Calibration) *perf.TargetQualityStats {
+	if len(logs) == 0 {
+		return nil
+	}
+	byMetric := make(map[string][]chunkTargetLog)
+	for _, log := range logs {
+		name := log.Metric
+		if name == "" {
+			name = string(quality.MetricCVVDP)
+		}
+		byMetric[name] = append(byMetric[name], log)
+	}
+	stats := &perf.TargetQualityStats{}
+	if calibration != nil {
+		if offset, locked := calibration.Offset(); locked {
+			v := float64(offset)
+			stats.SSIMU2CalibrationOffset = &v
+		}
+	}
+	metricNames := make([]string, 0, len(byMetric))
+	for name := range byMetric {
+		metricNames = append(metricNames, name)
+	}
+	sort.Strings(metricNames)
+	for _, name := range metricNames {
+		group := byMetric[name]
+		m := perf.TargetQualityMetricStats{
+			Metric:            name,
+			Target:            float64(group[0].Target),
+			Tolerance:         float64(group[0].Tolerance),
+			Chunks:            len(group),
+			StopReasons:       make(map[string]int),
+			InitialCRFSources: make(map[string]int),
+		}
+		crfs := make([]float64, 0, len(group))
+		var sumScore, sumAbsErr float64
+		for i, log := range group {
+			score := float64(log.FinalScore)
+			if i == 0 || score < m.ScoreMin {
+				m.ScoreMin = score
+			}
+			if i == 0 || score > m.ScoreMax {
+				m.ScoreMax = score
+			}
+			sumScore += score
+			sumAbsErr += absFloat(score - float64(log.Target))
+			m.Probes += len(log.Probes)
+			stop := string(log.StopReason)
+			if stop == "" {
+				stop = "none"
+			}
+			m.StopReasons[stop]++
+			if log.InitialCRFSource != "" {
+				m.InitialCRFSources[log.InitialCRFSource]++
+			}
+			crfs = append(crfs, float64(log.FinalCRF))
+		}
+		sort.Float64s(crfs)
+		m.FinalCRFMin = crfs[0]
+		m.FinalCRFMedian = crfs[len(crfs)/2]
+		m.FinalCRFMax = crfs[len(crfs)-1]
+		m.ScoreMean = sumScore / float64(len(group))
+		m.ScoreMeanAbsError = sumAbsErr / float64(len(group))
+		m.ProbesPerChunk = float64(m.Probes) / float64(len(group))
+		stats.Metrics = append(stats.Metrics, m)
+	}
+	return stats
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func logTargetAggregate(logs []chunkTargetLog, verbose func(string)) {

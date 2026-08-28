@@ -360,7 +360,8 @@ func ProcessChunked(
 			tqTarget, tqTolerance = quality.SSIMU2Target, quality.SSIMU2Tolerance
 			rep.Verbose(fmt.Sprintf("Target-quality SSIMULACRA2 (SDR <=1080p): target %.1f +/- %.1f after per-title CVVDP warmup calibration, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d", tqTarget, tqTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers))
 		}
-		_, encodeErr = encode.EncodeTargetQuality(
+		var tqStats *perf.TargetQualityStats
+		_, tqStats, encodeErr = encode.EncodeTargetQuality(
 			encodeCtx,
 			chunks,
 			inputPath,
@@ -384,6 +385,9 @@ func ProcessChunked(
 				},
 			},
 		)
+		// Recorded even on error so a failed run's perf.json carries the
+		// partial search summary alongside its partial phase timings.
+		perfc.SetTargetQuality(tqStats)
 	} else {
 		_, encodeErr = encode.EncodeAll(
 			encodeCtx,

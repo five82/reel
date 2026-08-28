@@ -109,3 +109,40 @@ func TestWriteWithoutWorkDirSkips(t *testing.T) {
 		t.Fatalf("Write without workdir should be a no-op, got %v", err)
 	}
 }
+
+func TestSummarizeWorkers(t *testing.T) {
+	if s := summarizeWorkers(nil); s.MeanActive != 0 || s.PeakActive != 0 {
+		t.Fatalf("empty history should summarize to zero: %+v", s)
+	}
+	samples := []WorkerSample{
+		{TSeconds: 0, Active: 2, EncodeSlotWaitSeconds: 0},
+		{TSeconds: 10, Active: 4, EncodeSlotWaitSeconds: 5},
+		{TSeconds: 30, Active: 3, EncodeSlotWaitSeconds: 12},
+	}
+	s := summarizeWorkers(samples)
+	// Time-weighted: 2 workers for 10s, 4 workers for 20s over a 30s span.
+	want := (2.0*10 + 4.0*20) / 30
+	if s.MeanActive < want-0.001 || s.MeanActive > want+0.001 {
+		t.Errorf("mean active = %.3f, want %.3f", s.MeanActive, want)
+	}
+	if s.PeakActive != 4 {
+		t.Errorf("peak active = %d, want 4", s.PeakActive)
+	}
+	if s.EncodeSlotWaitSeconds != 12 {
+		t.Errorf("slot wait = %.1f, want 12", s.EncodeSlotWaitSeconds)
+	}
+}
+
+func TestReportCarriesTargetQuality(t *testing.T) {
+	c := New()
+	c.SetTargetQuality(&TargetQualityStats{Metrics: []TargetQualityMetricStats{{Metric: "cvvdp", Chunks: 3}}})
+	r := c.Report()
+	if r == nil || r.TargetQualityStats == nil || r.TargetQualityStats.Metrics[0].Chunks != 3 {
+		t.Fatalf("report missing target-quality stats: %+v", r)
+	}
+	var nilC *Collector
+	if nilC.Report() != nil {
+		t.Error("nil collector Report should return nil")
+	}
+	nilC.SetTargetQuality(nil) // must not panic
+}

@@ -28,6 +28,7 @@ import (
 
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/discovery"
+	"github.com/five82/reel/internal/perf"
 	"github.com/five82/reel/internal/processing"
 	"github.com/five82/reel/internal/reporter"
 	"github.com/five82/reel/internal/util"
@@ -49,7 +50,27 @@ type Result struct {
 	VideoSizeReductionPercent float64
 	ValidationPassed          bool
 	EncodingSpeed             float32
+	Stats                     *EncodeStats
 }
+
+// EncodeStats is the structured performance summary of one encode: source
+// facts (dimensions, HDR, duration, frames, chunks), total and per-phase wall
+// times, a worker-saturation summary, and (in target-quality mode) the
+// aggregate CRF search outcome per metric.
+type EncodeStats = perf.Report
+
+// TargetQualityStats summarizes a target-quality run's CRF search.
+type TargetQualityStats = perf.TargetQualityStats
+
+// TargetQualityMetricStats aggregates the CRF search outcomes for the chunks
+// scored with one metric.
+type TargetQualityMetricStats = perf.TargetQualityMetricStats
+
+// EncodePhase is the wall-clock window of one pipeline phase.
+type EncodePhase = perf.Phase
+
+// WorkerSummary condenses the adaptive encode scheduler's worker history.
+type WorkerSummary = perf.WorkerSummary
 
 // BatchResult contains the result of a batch encode.
 type BatchResult struct {
@@ -74,6 +95,7 @@ func resultFromEncodeResult(outputFile string, r processing.EncodeResult) Result
 		VideoSizeReductionPercent: util.CalculateSizeReduction(r.InputVideoSize, r.OutputVideoSize),
 		ValidationPassed:          r.ValidationPassed,
 		EncodingSpeed:             r.EncodingSpeed,
+		Stats:                     r.Stats,
 	}
 }
 
