@@ -312,24 +312,50 @@ func EnsureEncodeDir(workDir string) error {
 	return os.MkdirAll(encodeDir, 0755)
 }
 
-// EnsureResumeManifest saves or validates the resume manifest for a work directory.
-func EnsureResumeManifest(workDir string, manifest ResumeManifest) error {
+// EnsureResumeManifest saves or validates the resume manifest for a work
+// directory. A mismatched or unreadable manifest means the input or encode
+// settings changed since the interrupted run (a re-ripped source, an
+// upgraded reel): the stale resume state is discarded and the encode starts
+// over instead of refusing until the directory is removed by hand. Returns
+// whether stale state was discarded.
+func EnsureResumeManifest(workDir string, manifest ResumeManifest) (bool, error) {
 	manifest.Version = 1
 	path := filepath.Join(workDir, "resume.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return writeResumeManifest(path, manifest)
+		return false, writeResumeManifest(path, manifest)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to read resume manifest: %w", err)
+		return false, fmt.Errorf("failed to read resume manifest: %w", err)
 	}
 
 	var existing ResumeManifest
-	if err := json.Unmarshal(data, &existing); err != nil {
-		return fmt.Errorf("failed to parse resume manifest: %w", err)
+	if unmarshalErr := json.Unmarshal(data, &existing); unmarshalErr == nil && reflect.DeepEqual(existing, manifest) {
+		return false, nil
 	}
-	if !reflect.DeepEqual(existing, manifest) {
-		return fmt.Errorf("resume metadata does not match current encode settings; remove %s to start over", workDir)
+	if err := resetResumeState(workDir); err != nil {
+		return false, err
+	}
+	return true, writeResumeManifest(path, manifest)
+}
+
+// resetResumeState removes everything in workDir except the chunk plan,
+// which self-validates against the input and chunking options (see
+// chunkplan.PlanToFileIfNeeded) and is therefore already fresh or still
+// correct whenever the resume manifest is not.
+func resetResumeState(workDir string) error {
+	keep := map[string]bool{"chunk-plan.txt": true, "chunk-plan.json": true}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		return fmt.Errorf("failed to reset resume state: %w", err)
+	}
+	for _, entry := range entries {
+		if keep[entry.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(workDir, entry.Name())); err != nil {
+			return fmt.Errorf("failed to reset resume state: %w", err)
+		}
 	}
 	return nil
 }

@@ -220,8 +220,12 @@ func ProcessChunked(
 	if err != nil {
 		return CropResult{}, err
 	}
-	if err := chunk.EnsureResumeManifest(workDir, manifest); err != nil {
+	resumeReset, err := chunk.EnsureResumeManifest(workDir, manifest)
+	if err != nil {
 		return CropResult{}, err
+	}
+	if resumeReset {
+		rep.Warning("Input or encode settings changed since the interrupted encode; discarded stale resume state and starting over")
 	}
 	resumeInfo, err := chunk.GetResume(workDir)
 	if err != nil {

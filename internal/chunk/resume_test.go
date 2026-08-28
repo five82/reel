@@ -64,25 +64,53 @@ func TestResumeValidateRequiresExistingMatchingChunkFile(t *testing.T) {
 	}
 }
 
-func TestEnsureResumeManifestRejectsMismatch(t *testing.T) {
+func TestEnsureResumeManifestResetsOnMismatch(t *testing.T) {
 	workDir := t.TempDir()
 	manifest := ResumeManifest{InputPath: "/media/movie.mkv", Quality: 27}
-	if err := EnsureResumeManifest(workDir, manifest); err != nil {
-		t.Fatal(err)
+	if reset, err := EnsureResumeManifest(workDir, manifest); err != nil || reset {
+		t.Fatalf("initial manifest write: reset=%v err=%v", reset, err)
 	}
 
-	if err := EnsureResumeManifest(workDir, manifest); err != nil {
-		t.Fatalf("matching manifest rejected: %v", err)
+	if reset, err := EnsureResumeManifest(workDir, manifest); err != nil || reset {
+		t.Fatalf("matching manifest: reset=%v err=%v", reset, err)
+	}
+
+	// Stale resume state from the interrupted run: chunk outputs and done.txt
+	// must go, the self-validating chunk plan must survive.
+	if err := EnsureEncodeDir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(IVFPath(workDir, 0), []byte("chunk0"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "done.txt"), []byte("0 10 6\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "chunk-plan.txt"), []byte("10\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
 	mismatch := manifest
 	mismatch.Quality = 28
-	err := EnsureResumeManifest(workDir, mismatch)
-	if err == nil {
-		t.Fatal("mismatched manifest accepted")
+	reset, err := EnsureResumeManifest(workDir, mismatch)
+	if err != nil {
+		t.Fatalf("mismatched manifest: %v", err)
 	}
-	if !strings.Contains(err.Error(), "resume metadata does not match current encode settings") {
-		t.Fatalf("unexpected error: %v", err)
+	if !reset {
+		t.Fatal("mismatched manifest did not reset stale resume state")
+	}
+	for _, gone := range []string{IVFPath(workDir, 0), filepath.Join(workDir, "done.txt")} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("stale resume file survived reset: %s (err=%v)", gone, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "chunk-plan.txt")); err != nil {
+		t.Fatalf("chunk plan did not survive reset: %v", err)
+	}
+
+	// The rewritten manifest matches the new settings.
+	if reset, err := EnsureResumeManifest(workDir, mismatch); err != nil || reset {
+		t.Fatalf("rewritten manifest: reset=%v err=%v", reset, err)
 	}
 }
 
