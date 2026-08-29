@@ -18,11 +18,12 @@ Single-developer hobby project - prefer simple, maintainable solutions over clev
 
 | Repo | Path | Role |
 |------|------|------|
-| reel | `~/projects/reel/` | AV1 encoding tool (this repo) |
-| spindle | `~/projects/spindle/` | Orchestrator that shells out to Reel during ENCODING |
-| flyer | `~/projects/flyer/` | Read-only TUI for Spindle |
+| flyer | `~/projects/flyer/` | Read-only terminal UI for Spindle |
+| reel | `~/projects/reel/` | AV1 encoding library and CLI (this repo) |
+| shuttle | `~/projects/shuttle/` | Read-only native macOS monitor for Spindle |
+| spindle | `~/projects/spindle/` | Orchestrator that embeds Reel during encoding |
 
-GitHub: [flyer](https://github.com/five82/flyer) | [spindle](https://github.com/five82/spindle) | [reel](https://github.com/five82/reel)
+GitHub: [flyer](https://github.com/five82/flyer) | [reel](https://github.com/five82/reel) | [shuttle](https://github.com/five82/shuttle) | [spindle](https://github.com/five82/spindle)
 
 Spindle embeds reel as a library. Local spindle builds use a gitignored `go.work` pointing at `../reel`, so they always pick up the local reel working copy; the commit pin in spindle's `go.mod` exists only so spindle's CI and other machines build against current reel. After pushing reel changes, bump the pin in spindle (`go get github.com/five82/reel@latest && go mod tidy`), run spindle's `./check-ci.sh`, and commit/push spindle. Note the local check-ci run exercises the workspace copy, not the pin — a stale pin only surfaces in spindle's CI.
 
