@@ -229,11 +229,21 @@ func resolveGrainTreatment(ctx context.Context, mode string, cfg *EncodeConfig, 
 	if stats.Treated {
 		treatment.Denoise = stats.Denoise
 		if gate {
-			path, err := writeGrainTable(in.WorkDir, stats.Tier)
-			if err != nil {
-				return GrainTreatment{}, err
+			if !encoder.FGSTableSupported() {
+				// An old SVT-AV1 cannot attach synthesis tables; denoise
+				// without re-adding texture rather than failing the encode,
+				// and record the downgrade in the stats.
+				stats.GrainTable = ""
+				if in.Verbose != nil {
+					in.Verbose("Grain gate: film grain synthesis skipped (linked SVT-AV1 lacks fgs table support)")
+				}
+			} else {
+				path, err := writeGrainTable(in.WorkDir, stats.Tier)
+				if err != nil {
+					return GrainTreatment{}, err
+				}
+				treatment.TablePath = path
 			}
-			treatment.TablePath = path
 		}
 	}
 	return treatment, nil

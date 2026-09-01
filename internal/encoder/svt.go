@@ -51,6 +51,12 @@ static void reel_malloc_trim(void) {
     malloc_trim(0);
 }
 
+// Film grain synthesis tables need SVT-AV1 >= 2.3.0, when AomFilmGrain and
+// EbSvtAv1EncConfiguration.fgs_table are known to be in the public API; older
+// headers (e.g. Ubuntu 24.04's 1.7) cannot compile this block, so it is
+// guarded and probed at runtime via reel_fgs_table_supported.
+#if SVT_AV1_CHECK_VERSION(2, 3, 0)
+
 // reel_read_fgs_table parses a libaom "filmgrn1" film grain table file into a
 // freshly allocated AomFilmGrain (single entry, like SvtAv1EncApp's
 // read_fgs_table). Returns NULL on any parse error. The caller owns the
@@ -174,6 +180,28 @@ static AomFilmGrain* reel_read_fgs_table(const char* path) {
     fg->ignore_ref  = 1;
     return fg;
 }
+
+// reel_attach_fgs_table parses the table, points config->fgs_table at the
+// allocation, and returns it; the caller owns the memory for the encoder's
+// lifetime.
+static void* reel_attach_fgs_table(EbSvtAv1EncConfiguration* config, const char* path) {
+    AomFilmGrain* fg = reel_read_fgs_table(path);
+    if (fg) {
+        config->fgs_table = fg;
+    }
+    return fg;
+}
+
+static int reel_fgs_table_supported(void) { return 1; }
+#else
+static void* reel_attach_fgs_table(EbSvtAv1EncConfiguration* config, const char* path) {
+    (void)config;
+    (void)path;
+    return NULL;
+}
+
+static int reel_fgs_table_supported(void) { return 0; }
+#endif
 */
 import "C"
 
@@ -184,6 +212,13 @@ import (
 	"github.com/five82/reel/internal/quality"
 	"github.com/five82/reel/internal/video"
 )
+
+// FGSTableSupported reports whether the linked SVT-AV1 exposes the film grain
+// synthesis table API (>= 2.3.0). The grain gate skips attaching a table when
+// it is absent instead of failing the encode.
+func FGSTableSupported() bool {
+	return C.reel_fgs_table_supported() != 0
+}
 
 // SVTVersion returns the version string reported by the linked SVT-AV1 library.
 func SVTVersion() string {
@@ -234,15 +269,18 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 		}
 	}
 	if cfg.GrainTable != nil && *cfg.GrainTable != "" {
+		if C.reel_fgs_table_supported() == 0 {
+			C.svt_av1_enc_deinit_handle(handle)
+			return nil, fmt.Errorf("film grain synthesis tables require SVT-AV1 >= 2.3.0 (linked: %s)", SVTVersion())
+		}
 		cPath := C.CString(*cfg.GrainTable)
-		fg := C.reel_read_fgs_table(cPath)
+		fg := C.reel_attach_fgs_table(&config, cPath)
 		C.free(unsafe.Pointer(cPath))
 		if fg == nil {
 			C.svt_av1_enc_deinit_handle(handle)
 			return nil, fmt.Errorf("failed to parse film grain table %q (expected libaom filmgrn1 format)", *cfg.GrainTable)
 		}
-		config.fgs_table = fg
-		fgsTable = unsafe.Pointer(fg)
+		fgsTable = fg
 	}
 
 	ret = C.svt_av1_enc_set_parameter(handle, &config)
