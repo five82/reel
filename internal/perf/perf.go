@@ -100,7 +100,9 @@ type TargetQualityStats struct {
 // GrainTreatmentStats records the grain-treatment gate's verdict for one
 // title: what was measured, which thresholds it was compared against, what
 // treatment (if any) the encode ran with, and how much quality the denoiser
-// itself costs. Target-quality scores are measured against the denoised
+// itself costs. The gate has two stages: a fixed-CRF bits-per-pixel median,
+// and (only when that median is ambiguous) a measurement of what the same
+// samples cost at the quality target. Target-quality scores are measured against the denoised
 // reference, so DenoiseCeilingJODMean/Min are the honest ceiling those scores
 // sit under.
 type GrainTreatmentStats struct {
@@ -125,6 +127,23 @@ type GrainTreatmentStats struct {
 	MedBPPCutoff   float64   `json:"med_bpp_cutoff,omitempty"`
 	GateSeconds    float64   `json:"gate_seconds,omitempty"`
 	CeilingSeconds float64   `json:"ceiling_seconds,omitempty"`
+
+	// GateStage is which stage decided the verdict: "bpp" (the fixed-CRF
+	// median alone) or "tq_probe" (the median landed in the ambiguous band
+	// and the samples were re-measured at the quality target). The ambiguous
+	// band is AmbiguousBPPCutoff (inclusive) to LightBPPCutoff (exclusive).
+	GateStage          string  `json:"gate_stage,omitempty"`
+	AmbiguousBPPCutoff float64 `json:"ambiguous_bpp_cutoff,omitempty"`
+	// Stage2DeliveredBPP is what each sample chunk costs at the quality
+	// target, compared against the same Light/Med cutoffs as the fixed-CRF
+	// median. Stage2Probes counts the probe encodes it took across all
+	// samples; Stage2Error records why a refinement that was due did not
+	// happen (the fixed-CRF verdict then stands).
+	Stage2DeliveredBPP []float64 `json:"stage2_delivered_bpp,omitempty"`
+	Stage2MedianBPP    float64   `json:"stage2_median_bpp,omitempty"`
+	Stage2Probes       int       `json:"stage2_probes,omitempty"`
+	Stage2Seconds      float64   `json:"stage2_seconds,omitempty"`
+	Stage2Error        string    `json:"stage2_error,omitempty"`
 
 	DenoiseCeilingJODMean *float64 `json:"denoise_ceiling_jod_mean,omitempty"`
 	DenoiseCeilingJODMin  *float64 `json:"denoise_ceiling_jod_min,omitempty"`

@@ -229,13 +229,14 @@ func ProcessChunked(
 	// without quality feedback there is nothing to spend the freed bits on.
 	gated := cfg.QualityMode == config.QualityModeTarget
 	gateInput := encode.GrainGateInput{
-		InputPath:  inputPath,
-		WorkDir:    workDir,
-		Info:       vidInf,
-		Chunks:     chunks,
-		CropRect:   cropRect,
-		BandTopJOD: float64(cfg.TargetQualityTarget + cfg.TargetQualityTolerance),
-		Verbose:    rep.Verbose,
+		InputPath:     inputPath,
+		WorkDir:       workDir,
+		Info:          vidInf,
+		Chunks:        chunks,
+		CropRect:      cropRect,
+		BandTopJOD:    float64(cfg.TargetQualityTarget + cfg.TargetQualityTolerance),
+		BandCenterJOD: float64(cfg.TargetQualityTarget),
+		Verbose:       rep.Verbose,
 	}
 
 	phases.start("Resume setup")
