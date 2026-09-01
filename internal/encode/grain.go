@@ -239,7 +239,7 @@ func resolveGrainTreatment(ctx context.Context, mode string, cfg *EncodeConfig, 
 			Stats: &perf.GrainTreatmentStats{
 				Mode:            grainModeOverride,
 				Treated:         cfg.Denoise != "" || table != "",
-				ResolutionClass: resolutionClass(in.codedWidth()),
+				ResolutionClass: resolutionClass(in.Info.Width),
 				Denoise:         cfg.Denoise,
 				GrainTable:      table,
 				Reason:          "explicit --denoise/--fgs-table overrides the grain gate",
@@ -249,7 +249,7 @@ func resolveGrainTreatment(ctx context.Context, mode string, cfg *EncodeConfig, 
 	if mode != config.GrainTreatmentAuto {
 		return GrainTreatment{Stats: &perf.GrainTreatmentStats{
 			Mode:            config.GrainTreatmentOff,
-			ResolutionClass: resolutionClass(in.codedWidth()),
+			ResolutionClass: resolutionClass(in.Info.Width),
 			Reason:          "grain treatment disabled",
 		}}, nil
 	}
@@ -313,18 +313,18 @@ func resolveGrainTreatment(ctx context.Context, mode string, cfg *EncodeConfig, 
 	return treatment, nil
 }
 
-func (in GrainGateInput) codedWidth() uint32 {
-	width, _ := video.OutputDimensions(in.Info, in.CropRect)
-	return width
-}
-
 // runGrainGate probes sample chunks at a fixed CRF and converts the bits they
 // cost into a treatment verdict.
 func runGrainGate(ctx context.Context, cfg *EncodeConfig, in GrainGateInput) (*perf.GrainTreatmentStats, error) {
 	width, height := video.OutputDimensions(in.Info, in.CropRect)
+	// Classify by SOURCE width, not the coded (post-crop) width: a
+	// pillarboxed 1080p film (Mary Poppins crops 1920 -> 1792) is not an SD
+	// source, and quality.ProbeMetricForSource uses the same convention so
+	// the choice stays stable across crop detection. The bpp MEASUREMENT
+	// below still uses coded geometry, so bars cannot deflate it.
 	stats := &perf.GrainTreatmentStats{
 		Mode:            config.GrainTreatmentAuto,
-		ResolutionClass: resolutionClass(width),
+		ResolutionClass: resolutionClass(in.Info.Width),
 		GateCRF:         float64(grainGateCRF),
 	}
 	if stats.ResolutionClass == "sd" {
@@ -333,7 +333,7 @@ func runGrainGate(ctx context.Context, cfg *EncodeConfig, in GrainGateInput) (*p
 		stats.Reason = "SD sources are never treated"
 		return stats, nil
 	}
-	stats.AmbiguousBPPCutoff, stats.LightBPPCutoff, stats.MedBPPCutoff = bppCutoffs(width)
+	stats.AmbiguousBPPCutoff, stats.LightBPPCutoff, stats.MedBPPCutoff = bppCutoffs(in.Info.Width)
 
 	samples := selectGrainSampleChunks(in.Chunks, in.Info.Frames)
 	if len(samples) == 0 {

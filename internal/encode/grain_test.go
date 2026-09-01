@@ -274,6 +274,24 @@ func TestGrainTreatmentModesWithoutGate(t *testing.T) {
 	}
 }
 
+// A pillarboxed 1080p film (Mary Poppins crops 1920 -> 1792) must classify by
+// its SOURCE width: post-crop width fell below the HD threshold and wrongly
+// gated the title as "SD, never treated".
+func TestGrainClassUsesSourceWidthNotCropped(t *testing.T) {
+	in := GrainGateInput{
+		WorkDir:  t.TempDir(),
+		Info:     &video.Info{Width: 1920, Height: 1080, FPSNum: 24000, FPSDen: 1001, Frames: 12000},
+		CropRect: &video.CropRect{X: 64, Y: 0, Width: 1792, Height: 1080},
+	}
+	off, err := ResolveGrainTreatment(context.Background(), config.GrainTreatmentOff, &EncodeConfig{}, in)
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	if off.Stats.ResolutionClass != "hd" {
+		t.Errorf("resolution class = %q, want hd for a pillarboxed 1080p source", off.Stats.ResolutionClass)
+	}
+}
+
 func TestGrainTreatmentSummary(t *testing.T) {
 	if GrainTreatmentSummary(nil) != nil {
 		t.Error("nil stats should produce no summary")
