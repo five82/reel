@@ -22,13 +22,32 @@ type CVVDPOptions struct {
 	CropRect   *video.CropRect
 	Width      uint32
 	Height     uint32
-	Processor  *VshipProcessor
+	Denoise    string // Experimental libavfilter graph applied to reference frames
+	// Reference optionally supplies the chunk's reference frames already
+	// decoded, cropped, and denoise-filtered. When nil the source is decoded
+	// and filtered here. See the target-quality reference cache: re-filtering
+	// the reference for every probe dominated denoised 4K wall time.
+	Reference video.FrameReader
+	Processor *VshipProcessor
 }
 
 type CVVDPResult struct {
 	Score         float32
 	Frames        int
 	MetricSeconds float64
+}
+
+// DenoiseCeilingOptions describes a denoise-ceiling measurement: CVVDP of the
+// denoised source against the unfiltered source, with no encode in between.
+type DenoiseCeilingOptions struct {
+	SourcePath string
+	Info       *video.Info
+	Chunk      chunk.Chunk
+	CropRect   *video.CropRect
+	Width      uint32
+	Height     uint32
+	Denoise    string
+	Processor  *VshipProcessor
 }
 
 // metricSourceDecoderThreads sizes the CVVDP reference decoder. One thread
@@ -55,11 +74,19 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		return CVVDPResult{}, fmt.Errorf("invalid CVVDP dimensions %dx%d", opts.Width, opts.Height)
 	}
 
-	src, err := video.Open(opts.SourcePath, metricSourceDecoderThreads)
-	if err != nil {
-		return CVVDPResult{}, fmt.Errorf("failed to open source for CVVDP: %w", err)
+	ref := opts.Reference
+	if ref == nil {
+		// The reference is read through the same denoise graph the encoder
+		// used, so the score measures the encode against the denoised source.
+		src, err := video.OpenFiltered(opts.SourcePath, metricSourceDecoderThreads, opts.Denoise)
+		if err != nil {
+			return CVVDPResult{}, fmt.Errorf("failed to open source for CVVDP: %w", err)
+		}
+		defer src.Close()
+		// Match the encoder worker, which resets filter state at every chunk start.
+		src.ResetFilter()
+		ref = src.FrameReader(opts.Info, opts.CropRect)
 	}
-	defer src.Close()
 
 	probeInfo, err := video.Probe(opts.ProbePath)
 	if err != nil {
@@ -71,9 +98,74 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 	}
 	defer dist.Close()
 
-	// Decode runs in a producer goroutine so CPU frame decode overlaps the GPU
-	// metric compute; two buffer pairs rotate between the producer and the
-	// consumer. All GPU calls stay on this goroutine.
+	readRef := func(i int, buf []byte) error {
+		if err := ref.ReadFrame(opts.Chunk.Start+i, buf); err != nil {
+			return fmt.Errorf("failed to read source frame %d for CVVDP: %w", opts.Chunk.Start+i, err)
+		}
+		return nil
+	}
+	readDist := func(i int, buf []byte) error {
+		if err := dist.ReadFrame(i, buf, probeInfo, nil); err != nil {
+			return fmt.Errorf("failed to read probe frame %d for CVVDP: %w", i, err)
+		}
+		return nil
+	}
+	return computeCVVDPFrames(ctx, opts.Processor, opts.Width, opts.Height, opts.Chunk.Frames(), readRef, readDist)
+}
+
+// ComputeChunkDenoiseCeiling scores the denoised source against the unfiltered
+// source for one chunk. Target-quality mode scores probes against the denoised
+// reference, so its per-chunk scores overstate delivered quality by whatever
+// the denoiser itself removed; this measures that honestly as the best score
+// any encode of the denoised source could reach.
+func ComputeChunkDenoiseCeiling(ctx context.Context, opts DenoiseCeilingOptions) (CVVDPResult, error) {
+	if opts.Processor == nil {
+		return CVVDPResult{}, fmt.Errorf("nil VSHIP processor")
+	}
+	if opts.Info == nil {
+		return CVVDPResult{}, fmt.Errorf("nil video info")
+	}
+	if opts.Denoise == "" {
+		return CVVDPResult{}, fmt.Errorf("denoise ceiling requires a denoise filter")
+	}
+
+	original, err := video.Open(opts.SourcePath, metricSourceDecoderThreads)
+	if err != nil {
+		return CVVDPResult{}, fmt.Errorf("failed to open source for denoise ceiling: %w", err)
+	}
+	defer original.Close()
+	denoised, err := video.OpenFiltered(opts.SourcePath, metricSourceDecoderThreads, opts.Denoise)
+	if err != nil {
+		return CVVDPResult{}, fmt.Errorf("failed to open denoised source for denoise ceiling: %w", err)
+	}
+	defer denoised.Close()
+	denoised.ResetFilter()
+
+	refReader := original.FrameReader(opts.Info, opts.CropRect)
+	distReader := denoised.FrameReader(opts.Info, opts.CropRect)
+	read := func(r video.FrameReader, what string) func(int, []byte) error {
+		return func(i int, buf []byte) error {
+			if err := r.ReadFrame(opts.Chunk.Start+i, buf); err != nil {
+				return fmt.Errorf("failed to read %s frame %d for denoise ceiling: %w", what, opts.Chunk.Start+i, err)
+			}
+			return nil
+		}
+	}
+	return computeCVVDPFrames(ctx, opts.Processor, opts.Width, opts.Height, opts.Chunk.Frames(),
+		read(refReader, "source"), read(distReader, "denoised"))
+}
+
+// computeCVVDPFrames runs the whole-chunk CVVDP pass. Decode runs in a
+// producer goroutine so CPU frame decode overlaps the GPU metric compute; two
+// buffer pairs rotate between the producer and the consumer. All GPU calls
+// stay on this goroutine.
+func computeCVVDPFrames(
+	ctx context.Context,
+	processor *VshipProcessor,
+	width, height uint32,
+	frames int,
+	readRef, readDist func(i int, buf []byte) error,
+) (CVVDPResult, error) {
 	ctx, cancelDecode := context.WithCancel(ctx)
 	defer cancelDecode()
 
@@ -81,17 +173,18 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		srcBuf, distBuf       []byte
 		srcPlanes, distPlanes FramePlanes
 	}
-	frameSize := yuv420p10Size(opts.Width, opts.Height)
+	frameSize := yuv420p10Size(width, height)
 	freeCh := make(chan *framePair, 2)
 	for i := 0; i < 2; i++ {
 		pair := &framePair{
 			srcBuf:  make([]byte, frameSize),
 			distBuf: make([]byte, frameSize),
 		}
-		if pair.srcPlanes, err = PlanesFromYUV420P10(pair.srcBuf, opts.Width, opts.Height); err != nil {
+		var err error
+		if pair.srcPlanes, err = PlanesFromYUV420P10(pair.srcBuf, width, height); err != nil {
 			return CVVDPResult{}, err
 		}
-		if pair.distPlanes, err = PlanesFromYUV420P10(pair.distBuf, opts.Width, opts.Height); err != nil {
+		if pair.distPlanes, err = PlanesFromYUV420P10(pair.distBuf, width, height); err != nil {
 			return CVVDPResult{}, err
 		}
 		freeCh <- pair
@@ -103,7 +196,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 	}
 	decodedCh := make(chan decodedFrame, 2)
 	// On early return, stop the producer and wait for it to exit before the
-	// deferred decoder Closes run; the producer still holds src/dist.
+	// caller's deferred decoder Closes run; the producer still holds them.
 	defer func() {
 		cancelDecode()
 		for range decodedCh { //nolint:revive // drain until the producer closes the channel
@@ -111,7 +204,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 	}()
 	go func() {
 		defer close(decodedCh)
-		for i := 0; i < opts.Chunk.Frames(); i++ {
+		for i := 0; i < frames; i++ {
 			var pair *framePair
 			select {
 			case pair = <-freeCh:
@@ -119,12 +212,12 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 				decodedCh <- decodedFrame{err: ctx.Err()}
 				return
 			}
-			if err := src.ReadFrame(opts.Chunk.Start+i, pair.srcBuf, opts.Info, opts.CropRect); err != nil {
-				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read source frame %d for CVVDP: %w", opts.Chunk.Start+i, err)}
+			if err := readRef(i, pair.srcBuf); err != nil {
+				decodedCh <- decodedFrame{err: err}
 				return
 			}
-			if err := dist.ReadFrame(i, pair.distBuf, probeInfo, nil); err != nil {
-				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read probe frame %d for CVVDP: %w", i, err)}
+			if err := readDist(i, pair.distBuf); err != nil {
+				decodedCh <- decodedFrame{err: err}
 				return
 			}
 			decodedCh <- decodedFrame{pair: pair}
@@ -137,7 +230,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 	// MITIGATE_MALLOC_ASYNC: the default cudaMallocAsync allocator races across
 	// coexisting handlers and silently corrupts scores. Verify the linked library
 	// with scripts/handlertest; see docs/VSHIP_CONCURRENCY_BUG.md.
-	if err := opts.Processor.ResetCVVDP(); err != nil {
+	if err := processor.ResetCVVDP(); err != nil {
 		return CVVDPResult{}, err
 	}
 
@@ -148,7 +241,8 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		if decoded.err != nil {
 			return CVVDPResult{}, decoded.err
 		}
-		score, err = opts.Processor.ComputeCVVDP(decoded.pair.srcPlanes, decoded.pair.distPlanes)
+		var err error
+		score, err = processor.ComputeCVVDP(decoded.pair.srcPlanes, decoded.pair.distPlanes)
 		if err != nil {
 			return CVVDPResult{}, fmt.Errorf("CVVDP failed on frame %d: %w", computed, err)
 		}
@@ -158,7 +252,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 
 	return CVVDPResult{
 		Score:         score,
-		Frames:        opts.Chunk.Frames(),
+		Frames:        frames,
 		MetricSeconds: time.Since(start).Seconds(),
 	}, nil
 }

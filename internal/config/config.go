@@ -23,6 +23,11 @@ const (
 	QualityModeTarget = "target"
 	QualityModeCRF    = "crf"
 
+	// Grain treatment modes. "auto" lets Reel measure each title and treat
+	// only the grainy ones; "off" encodes every title untreated.
+	GrainTreatmentAuto = "auto"
+	GrainTreatmentOff  = "off"
+
 	// DefaultTargetQuality is the default CVVDP JOD target range (center 9.55,
 	// half-width 0.20). The band width is a speed lever, not just an accuracy
 	// setting: probe measurement noise is ~0.075 JOD, so a half-width below
@@ -145,6 +150,33 @@ type Config struct {
 	CropMode           string // "auto" or "none"
 	EncodeCooldownSecs uint64 // Cooldown between batch encodes
 
+	// GrainTreatment is "auto" or "off". In auto, target-quality encodes
+	// measure each title's bits at a fixed CRF and encode grainy titles from a
+	// denoised source with a film grain table attached, so the decoder
+	// re-synthesizes texture instead of the encoder coding noise. Clean titles
+	// and fixed-CRF encodes are never treated. See internal/encode/grain.go.
+	GrainTreatment string
+
+	// Denoise is an EXPERIMENTAL libavfilter graph string (for example
+	// "hqdn3d=2:1.5:3:2.25") applied to every encoder input frame and to every
+	// quality-metric reference frame, so target-quality mode scores against the
+	// denoised source instead of the original. Empty disables it. Shot-cut and
+	// crop detection stay on the unfiltered source.
+	Denoise string
+
+	// ProbeMetric is an EXPERIMENTAL override of the automatic target-quality
+	// probe metric selection: "" keeps the resolution/HDR-based choice, and
+	// "cvvdp" forces CVVDP even for SDR <=1080p sources (for evaluating
+	// denoised encodes, where the calibrated SSIMU2 mapping is unproven).
+	ProbeMetric string
+
+	// GrainTable is an EXPERIMENTAL path to a libaom "filmgrn1" film grain
+	// table attached to every encoded chunk (film grain synthesis at decode
+	// time). Encoded pixels, rate, and quality scoring are unaffected: the
+	// table only adds frame-header synthesis params, and metric decodes
+	// export rather than apply grain. Empty disables it.
+	GrainTable string
+
 	// Chunk duration settings by resolution (seconds)
 	ChunkDurationSD  float64 // Chunk duration for SD content (<1920 width)
 	ChunkDurationHD  float64 // Chunk duration for HD content (>=1920, <3840 width)
@@ -176,6 +208,7 @@ func NewConfig(inputDir, outputDir, logDir string) *Config {
 		CRFHD:                       DefaultCRFHD,
 		CRFUHD:                      DefaultCRFUHD,
 		CropMode:                    DefaultCropMode,
+		GrainTreatment:              GrainTreatmentAuto,
 		EncodeCooldownSecs:          DefaultEncodeCooldownSecs,
 		ChunkDurationSD:             DefaultChunkDurationSD,
 		ChunkDurationHD:             DefaultChunkDurationHD,
@@ -241,6 +274,14 @@ func (c *Config) Validate() error {
 	}
 	c.CRFSearchMin = searchMin
 	c.CRFSearchMax = searchMax
+
+	switch c.GrainTreatment {
+	case GrainTreatmentAuto, GrainTreatmentOff:
+	case "":
+		c.GrainTreatment = GrainTreatmentAuto
+	default:
+		return fmt.Errorf("grain-treatment must be %q or %q, got %q", GrainTreatmentAuto, GrainTreatmentOff, c.GrainTreatment)
+	}
 
 	if c.MetricWorkers < 0 {
 		return fmt.Errorf("metric-workers must be >= 1 when set, got %d", c.MetricWorkers)

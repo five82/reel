@@ -2,7 +2,7 @@
 package video
 
 /*
-#cgo pkg-config: libavformat libavcodec libavutil libswscale
+#cgo pkg-config: libavformat libavcodec libavutil libavfilter libswscale
 #include <errno.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -12,6 +12,9 @@ package video
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libswscale/swscale.h>
 #include <stdlib.h>
 
@@ -61,6 +64,103 @@ static int reel_pix_fmt_depth(int fmt) {
 static int reel_sws_scale(struct SwsContext *ctx, const AVFrame *src, AVFrame *dst) {
 	return sws_scale(ctx, (const uint8_t * const*)src->data, src->linesize, 0, src->height, dst->data, dst->linesize);
 }
+
+static const char* reel_pix_fmt_name(int fmt) {
+	return av_get_pix_fmt_name((enum AVPixelFormat)fmt);
+}
+
+// reel_filter_init builds "buffer -> desc -> buffersink" for one frame geometry.
+// The graph is pinned to a single thread so a temporal filter sees a
+// deterministic frame history.
+static int reel_filter_init(AVFilterGraph **graph_out, AVFilterContext **src_out, AVFilterContext **sink_out,
+                            const char *desc, int width, int height, int pix_fmt,
+                            int tb_num, int tb_den, int sar_num, int sar_den) {
+	char args[256];
+	AVFilterGraph *graph = NULL;
+	AVFilterContext *src_ctx = NULL;
+	AVFilterContext *sink_ctx = NULL;
+	AVFilterInOut *outputs = NULL;
+	AVFilterInOut *inputs = NULL;
+	const AVFilter *buffersrc = avfilter_get_by_name("buffer");
+	const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+	int ret;
+
+	*graph_out = NULL;
+	*src_out = NULL;
+	*sink_out = NULL;
+	if (buffersrc == NULL || buffersink == NULL) {
+		return AVERROR_FILTER_NOT_FOUND;
+	}
+	graph = avfilter_graph_alloc();
+	outputs = avfilter_inout_alloc();
+	inputs = avfilter_inout_alloc();
+	if (graph == NULL || outputs == NULL || inputs == NULL) {
+		ret = AVERROR(ENOMEM);
+		goto fail;
+	}
+	graph->nb_threads = 1;
+
+	snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+	         width, height, pix_fmt, tb_num, tb_den, sar_num, sar_den);
+	ret = avfilter_graph_create_filter(&src_ctx, buffersrc, "in", args, NULL, graph);
+	if (ret < 0) {
+		goto fail;
+	}
+	ret = avfilter_graph_create_filter(&sink_ctx, buffersink, "out", NULL, NULL, graph);
+	if (ret < 0) {
+		goto fail;
+	}
+
+	outputs->name = av_strdup("in");
+	outputs->filter_ctx = src_ctx;
+	outputs->pad_idx = 0;
+	outputs->next = NULL;
+	inputs->name = av_strdup("out");
+	inputs->filter_ctx = sink_ctx;
+	inputs->pad_idx = 0;
+	inputs->next = NULL;
+	if (outputs->name == NULL || inputs->name == NULL) {
+		ret = AVERROR(ENOMEM);
+		goto fail;
+	}
+
+	ret = avfilter_graph_parse_ptr(graph, desc, &inputs, &outputs, NULL);
+	if (ret < 0) {
+		goto fail;
+	}
+	ret = avfilter_graph_config(graph, NULL);
+	if (ret < 0) {
+		goto fail;
+	}
+
+	avfilter_inout_free(&inputs);
+	avfilter_inout_free(&outputs);
+	*graph_out = graph;
+	*src_out = src_ctx;
+	*sink_out = sink_ctx;
+	return 0;
+
+fail:
+	avfilter_inout_free(&inputs);
+	avfilter_inout_free(&outputs);
+	avfilter_graph_free(&graph);
+	return ret;
+}
+
+static int reel_filter_frame(AVFilterContext *src_ctx, AVFilterContext *sink_ctx, AVFrame *in, AVFrame *out, int64_t pts) {
+	int64_t saved_pts = in->pts;
+	int ret;
+
+	// Frames are pushed with a synthetic frame-index pts so repeated or
+	// timestamp-less decoder frames stay strictly monotonic for buffersrc.
+	in->pts = pts;
+	ret = av_buffersrc_add_frame_flags(src_ctx, in, AV_BUFFERSRC_FLAG_KEEP_REF);
+	in->pts = saved_pts;
+	if (ret < 0) {
+		return ret;
+	}
+	return av_buffersink_get_frame(sink_ctx, out);
+}
 */
 import "C"
 
@@ -83,6 +183,10 @@ const (
 	svtChromaPositionTopLeft = 2
 
 	seekPrerollFrames = 30
+
+	// noFilteredFrame marks "no sequential predecessor" for the denoise filter;
+	// any valid frame index makes the sequential check fail against it.
+	noFilteredFrame = -2
 )
 
 var initOnce sync.Once
@@ -125,6 +229,19 @@ type Source struct {
 	swsCtx       *C.struct_SwsContext
 	swsFormat    int
 
+	// Experimental pre-encode denoise. filterDesc is a libavfilter graph string
+	// applied to every ReadFrame result, so the encoder input and the quality
+	// metric reference are the same filtered pixels.
+	filterDesc      string
+	filterGraph     *C.AVFilterGraph
+	filterSrcCtx    *C.AVFilterContext
+	filterSinkCtx   *C.AVFilterContext
+	filterFrame     *C.AVFrame
+	filterFormat    int
+	filterWidth     C.int
+	filterHeight    C.int
+	lastFilteredIdx int
+
 	streamIdx  int
 	nextFrame  int
 	eof        bool
@@ -134,6 +251,8 @@ type Source struct {
 	startTime  int64
 	tsMul      int64
 	tsDiv      int64
+	fpsNum     int
+	fpsDen     int
 }
 
 // CropRect describes the exact source rectangle to encode.
@@ -214,6 +333,23 @@ func Probe(path string) (*Info, error) {
 
 // Open opens a video decoder for path.
 func Open(path string, threads int) (*Source, error) {
+	return OpenFiltered(path, threads, "")
+}
+
+// OpenFiltered opens a video decoder that pushes every ReadFrame result through
+// filterDesc, a libavfilter graph string such as "hqdn3d=2:1.5:3:2.25". An empty
+// filterDesc disables filtering.
+//
+// Only ReadFrame is filtered: encoder input and quality-metric reference frames
+// both come from ReadFrame, so scoring compares the encode against the same
+// denoised pixels the encoder saw. ReadLumaFrame/ReadLumaFrameNear stay
+// unfiltered on purpose so shot-cut detection and crop detection keep measuring
+// the real source.
+//
+// Temporal filters (hqdn3d, atadenoise) carry state across frames, so the graph
+// is rebuilt whenever a read is non-sequential, and callers must call
+// ResetFilter at every chunk boundary; see ResetFilter.
+func OpenFiltered(path string, threads int, filterDesc string) (*Source, error) {
 	initLibav()
 
 	cPath := C.CString(path)
@@ -259,6 +395,14 @@ func Open(path string, threads int) (*Source, error) {
 		codecCtx.thread_count = C.int(threads)
 	}
 
+	// Decode without applying film grain synthesis (AV1 FGS): quality
+	// metrics must score the grain-free reconstruction, since synthetic
+	// grain is random noise relative to any reference and would read as
+	// error. The encoder's delivered pixels are that same reconstruction;
+	// grain is applied by the playback decoder. No-op for codecs without
+	// film grain metadata.
+	codecCtx.export_side_data |= C.AV_CODEC_EXPORT_DATA_FILM_GRAIN
+
 	if ret := C.avcodec_open2(codecCtx, codec, nil); ret < 0 {
 		C.avcodec_free_context(&codecCtx)
 		C.avformat_close_input(&fmtCtx)
@@ -301,16 +445,20 @@ func Open(path string, threads int) (*Source, error) {
 	}
 
 	src := &Source{
-		fmtCtx:       fmtCtx,
-		codecCtx:     codecCtx,
-		pkt:          pkt,
-		frame:        frame,
-		lastFrame:    lastFrame,
-		pendingFrame: pendingFrame,
-		streamIdx:    int(streamIdx),
-		startTime:    startTime,
-		tsMul:        tsMul,
-		tsDiv:        tsDiv,
+		fmtCtx:          fmtCtx,
+		codecCtx:        codecCtx,
+		pkt:             pkt,
+		frame:           frame,
+		lastFrame:       lastFrame,
+		pendingFrame:    pendingFrame,
+		filterDesc:      filterDesc,
+		lastFilteredIdx: noFilteredFrame,
+		streamIdx:       int(streamIdx),
+		startTime:       startTime,
+		tsMul:           tsMul,
+		tsDiv:           tsDiv,
+		fpsNum:          int(fps.num),
+		fpsDen:          int(fps.den),
 	}
 	if err := src.anchorFrameOrigin(); err != nil {
 		src.Close()
@@ -323,6 +471,10 @@ func Open(path string, threads int) (*Source, error) {
 func (s *Source) Close() {
 	if s == nil {
 		return
+	}
+	s.freeFilter()
+	if s.filterFrame != nil {
+		C.av_frame_free(&s.filterFrame)
 	}
 	if s.swsCtx != nil {
 		C.sws_freeContext(s.swsCtx)
@@ -370,6 +522,30 @@ func (s *Source) ReadFrame(frameIdx int, output []byte, inf *Info, crop *CropRec
 		return err
 	}
 	return copyFrameTo10Bit(output, planes, linesizes, inf, cropCalcForRect(inf, crop), is10Bit)
+}
+
+// FrameReader supplies a chunk's post-crop 10-bit YUV420 frames by absolute
+// source frame index. It exists so the encoder and the quality metric can read
+// the same frames either straight from a decoder or from a materialized cache
+// of already-decoded, already-filtered frames.
+type FrameReader interface {
+	ReadFrame(frameIdx int, output []byte) error
+}
+
+// FrameReader returns a FrameReader that reads this source with a fixed Info
+// and crop rectangle.
+func (s *Source) FrameReader(inf *Info, crop *CropRect) FrameReader {
+	return sourceFrameReader{src: s, inf: inf, crop: crop}
+}
+
+type sourceFrameReader struct {
+	src  *Source
+	inf  *Info
+	crop *CropRect
+}
+
+func (r sourceFrameReader) ReadFrame(frameIdx int, output []byte) error {
+	return r.src.ReadFrame(frameIdx, output, r.inf, r.crop)
 }
 
 // ReadLumaFrame retrieves a borrowed view of a frame's luma plane.
@@ -451,7 +627,115 @@ func (s *Source) readFrame(frameIdx int, _ *Info) (*C.AVFrame, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	return s.normalizeFrame(frame)
+	// Filter the full decoded frame before any crop: the crop copy in
+	// copyFrameTo10Bit stays untouched, and a denoiser sees the same pixels it
+	// would see standing alone in front of the encoder.
+	filtered, err := s.applyFilter(frameIdx, frame)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.normalizeFrame(filtered)
+}
+
+// ResetFilter drops temporal denoise-filter state so the next ReadFrame starts
+// a fresh filter history. The encoder worker keeps one Source across
+// consecutive chunks while the scorers open a fresh Source per chunk, so
+// without an explicit reset the same frame would reach the encoder with a
+// different filter history than the metric reference. Both paths call this at
+// chunk start to keep the two bit-identical. No-op when no filter is set.
+func (s *Source) ResetFilter() {
+	if s == nil {
+		return
+	}
+	s.freeFilter()
+}
+
+// applyFilter runs frame through the denoise graph. The graph is rebuilt on a
+// non-sequential read so filter history always starts at the first frame of a
+// sequential run.
+func (s *Source) applyFilter(frameIdx int, frame *C.AVFrame) (*C.AVFrame, error) {
+	if s.filterDesc == "" {
+		return frame, nil
+	}
+	if s.filterGraph == nil || frameIdx != s.lastFilteredIdx+1 ||
+		s.filterFormat != int(frame.format) || s.filterWidth != frame.width || s.filterHeight != frame.height {
+		if err := s.initFilter(frame); err != nil {
+			return nil, err
+		}
+	}
+
+	C.av_frame_unref(s.filterFrame)
+	ret := C.reel_filter_frame(s.filterSrcCtx, s.filterSinkCtx, frame, s.filterFrame, C.int64_t(frameIdx))
+	if ret == C.reel_averror_eagain() {
+		return nil, fmt.Errorf("denoise filter %q delays output; only filters that emit one frame per input frame are supported", s.filterDesc)
+	}
+	if ret < 0 {
+		return nil, fmt.Errorf("denoise filter failed on frame %d: %s", frameIdx, avError(ret))
+	}
+	if int(s.filterFrame.format) != s.filterFormat {
+		return nil, fmt.Errorf("denoise filter changed pixel format from %d to %d", s.filterFormat, int(s.filterFrame.format))
+	}
+	s.lastFilteredIdx = frameIdx
+	return s.filterFrame, nil
+}
+
+func (s *Source) initFilter(frame *C.AVFrame) error {
+	s.freeFilter()
+	if s.filterFrame == nil {
+		s.filterFrame = C.av_frame_alloc()
+		if s.filterFrame == nil {
+			return fmt.Errorf("denoise: frame allocation failed")
+		}
+	}
+
+	pixName := C.GoString(C.reel_pix_fmt_name(C.int(frame.format)))
+	if pixName == "" {
+		return fmt.Errorf("denoise: unnamed decoder pixel format %d", int(frame.format))
+	}
+	// Pin the graph output to the decoder's own pixel format so no filter in the
+	// chain can quietly insert a conversion; a format change here would alter
+	// both the encoder input and the metric reference.
+	desc := s.filterDesc + ",format=" + pixName
+	cDesc := C.CString(desc)
+	defer C.free(unsafe.Pointer(cDesc))
+
+	// Frames are pushed with pts = frame index, so one tick is one frame.
+	tbNum, tbDen := s.fpsDen, s.fpsNum
+	if tbNum <= 0 || tbDen <= 0 {
+		tbNum, tbDen = 1, 25
+	}
+	sarNum, sarDen := 1, 1
+	if frame.sample_aspect_ratio.num > 0 && frame.sample_aspect_ratio.den > 0 {
+		sarNum = int(frame.sample_aspect_ratio.num)
+		sarDen = int(frame.sample_aspect_ratio.den)
+	}
+
+	ret := C.reel_filter_init(&s.filterGraph, &s.filterSrcCtx, &s.filterSinkCtx, cDesc,
+		frame.width, frame.height, frame.format,
+		C.int(tbNum), C.int(tbDen), C.int(sarNum), C.int(sarDen))
+	if ret < 0 {
+		s.filterGraph = nil
+		s.filterSrcCtx = nil
+		s.filterSinkCtx = nil
+		return fmt.Errorf("failed to build denoise filter %q: %s", desc, avError(ret))
+	}
+	s.filterFormat = int(frame.format)
+	s.filterWidth = frame.width
+	s.filterHeight = frame.height
+	return nil
+}
+
+func (s *Source) freeFilter() {
+	if s.filterGraph != nil {
+		C.avfilter_graph_free(&s.filterGraph)
+	}
+	s.filterGraph = nil
+	s.filterSrcCtx = nil
+	s.filterSinkCtx = nil
+	s.lastFilteredIdx = noFilteredFrame
+	if s.filterFrame != nil {
+		C.av_frame_unref(s.filterFrame)
+	}
 }
 
 func (s *Source) readRawFrame(frameIdx int) (*C.AVFrame, error) {

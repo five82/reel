@@ -53,6 +53,7 @@ type Meta struct {
 	TargetQuality      string  `json:"target_quality,omitempty"`
 	CRF                float32 `json:"crf,omitempty"`
 	Preset             uint8   `json:"preset"`
+	Denoise            string  `json:"denoise,omitempty"`
 	MetricWorkers      int     `json:"metric_workers"`
 	MaxAdaptiveWorkers int     `json:"max_adaptive_workers"`
 	Chunks             int     `json:"chunks"`
@@ -96,6 +97,51 @@ type TargetQualityStats struct {
 	Metrics                 []TargetQualityMetricStats `json:"metrics"`
 }
 
+// GrainTreatmentStats records the grain-treatment gate's verdict for one
+// title: what was measured, which thresholds it was compared against, what
+// treatment (if any) the encode ran with, and how much quality the denoiser
+// itself costs. Target-quality scores are measured against the denoised
+// reference, so DenoiseCeilingJODMean/Min are the honest ceiling those scores
+// sit under.
+type GrainTreatmentStats struct {
+	// Mode is how the treatment was decided: "auto" (the gate ran), "off"
+	// (disabled by the user), or "override" (explicit experimental flags).
+	Mode            string `json:"mode"`
+	Treated         bool   `json:"treated"`
+	Tier            string `json:"tier,omitempty"`
+	ResolutionClass string `json:"resolution_class"`
+	// Denoise and GrainTable are what the encode actually ran with.
+	Denoise    string `json:"denoise,omitempty"`
+	GrainTable string `json:"grain_table,omitempty"`
+	// Reason explains a verdict the numbers alone do not (no eligible sample
+	// chunks, SD source, explicit override).
+	Reason string `json:"reason,omitempty"`
+
+	GateCRF        float64   `json:"gate_crf,omitempty"`
+	SampleChunks   []int     `json:"sample_chunks,omitempty"`
+	SampleBPP      []float64 `json:"sample_bpp,omitempty"`
+	MedianBPP      float64   `json:"median_bpp,omitempty"`
+	LightBPPCutoff float64   `json:"light_bpp_cutoff,omitempty"`
+	MedBPPCutoff   float64   `json:"med_bpp_cutoff,omitempty"`
+	GateSeconds    float64   `json:"gate_seconds,omitempty"`
+	CeilingSeconds float64   `json:"ceiling_seconds,omitempty"`
+
+	DenoiseCeilingJODMean *float64 `json:"denoise_ceiling_jod_mean,omitempty"`
+	DenoiseCeilingJODMin  *float64 `json:"denoise_ceiling_jod_min,omitempty"`
+	// CeilingMeasured distinguishes a measured ceiling from a skipped or
+	// failed best-effort measurement; CeilingError says why it is absent.
+	CeilingMeasured bool   `json:"ceiling_measured,omitempty"`
+	CeilingError    string `json:"ceiling_error,omitempty"`
+	// BandTopJOD is the top of the configured target-quality band, recorded
+	// so consumers can judge the ceiling against the band without
+	// duplicating the constant.
+	BandTopJOD float64 `json:"band_top_jod,omitempty"`
+	// Reused marks a verdict replayed from the work directory on resume:
+	// GateSeconds/CeilingSeconds then describe the run that measured them,
+	// not this one.
+	Reused bool `json:"reused,omitempty"`
+}
+
 // WorkerSummary condenses the sampled worker history: a time-weighted mean of
 // active encode workers, the peak, and the cumulative time chunks spent
 // waiting for an encode slot. MeanActive near Meta.MaxAdaptiveWorkers means
@@ -115,7 +161,8 @@ type Report struct {
 	Workers      WorkerSummary `json:"workers"`
 	// TargetQualityStats is named to avoid colliding with Meta.TargetQuality
 	// (the configured target range string) in the flattened JSON.
-	TargetQualityStats *TargetQualityStats `json:"target_quality_stats,omitempty"`
+	TargetQualityStats *TargetQualityStats  `json:"target_quality_stats,omitempty"`
+	GrainTreatment     *GrainTreatmentStats `json:"grain_treatment,omitempty"`
 }
 
 // WorkerSample is a point-in-time snapshot of the adaptive encode scheduler.
@@ -144,6 +191,7 @@ type Collector struct {
 	phases  []Phase
 	samples []WorkerSample
 	tq      *TargetQualityStats
+	grain   *GrainTreatmentStats
 
 	haveSample bool
 	lastSample WorkerSample
@@ -227,6 +275,16 @@ func (c *Collector) SetTargetQuality(s *TargetQualityStats) {
 	c.mu.Unlock()
 }
 
+// SetGrainTreatment attaches the grain-treatment gate verdict to the report.
+func (c *Collector) SetGrainTreatment(s *GrainTreatmentStats) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.grain = s
+	c.mu.Unlock()
+}
+
 // Report returns the structured summary of the run so far. It is safe to call
 // on a nil collector (returns nil) and does not require a work directory.
 func (c *Collector) Report() *Report {
@@ -251,6 +309,7 @@ func (c *Collector) report() Report {
 		Phases:             phases,
 		Workers:            summarizeWorkers(c.samples),
 		TargetQualityStats: c.tq,
+		GrainTreatment:     c.grain,
 	}
 }
 

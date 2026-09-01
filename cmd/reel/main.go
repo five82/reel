@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/fatih/color"
 	"github.com/five82/reel/internal/config"
 	"github.com/five82/reel/internal/discovery"
 	"github.com/five82/reel/internal/logging"
@@ -18,7 +19,6 @@ import (
 	"github.com/five82/reel/internal/quality"
 	"github.com/five82/reel/internal/reporter"
 	"github.com/five82/reel/internal/util"
-	"github.com/fatih/color"
 )
 
 const (
@@ -101,6 +101,10 @@ type encodeArgs struct {
 	preset          uint
 	parallelism     uint
 	disableAutocrop bool
+	grainTreatment  string
+	denoise         string
+	probeMetric     string
+	fgsTable        string
 	noLog           bool
 	keepWorkDir     bool
 	colorMode       string
@@ -142,6 +146,23 @@ Quality Settings:
 
 Processing Options:
   --disable-autocrop     Disable automatic black bar crop detection
+  --grain-treatment <M>  auto or off. In target-quality mode, auto measures
+                         each title and encodes grainy ones from a denoised
+                         source with a film grain table, so the decoder
+                         re-synthesizes texture instead of the encoder coding
+                         noise. Clean titles are untouched. Default: auto
+  --denoise <FILTER>     EXPERIMENTAL: libavfilter graph applied to every frame
+                         before encoding, e.g. hqdn3d=2:1.5:3:2.25. Quality
+                         metrics score against the denoised source, not the
+                         original. Crop and shot-cut detection stay unfiltered.
+                         Default: off
+  --probe-metric <M>     EXPERIMENTAL: target-quality probe metric: auto or
+                         cvvdp. cvvdp disables the SDR <=1080p SSIMULACRA2
+                         fast path. Default: auto
+  --fgs-table <PATH>     EXPERIMENTAL: libaom "filmgrn1" film grain table to
+                         attach to the bitstream (film grain synthesis at
+                         decode time). Does not change encoded pixels, rate,
+                         or quality scoring. Default: off
 
 Output Options:
   --no-log               Disable Reel log file creation
@@ -180,6 +201,10 @@ Output Options:
 
 	// Processing options
 	fs.BoolVar(&ea.disableAutocrop, "disable-autocrop", false, "Disable automatic crop detection")
+	fs.StringVar(&ea.grainTreatment, "grain-treatment", config.GrainTreatmentAuto, "Automatic denoise plus film grain synthesis for grainy titles: auto or off")
+	fs.StringVar(&ea.denoise, "denoise", "", "EXPERIMENTAL: libavfilter graph applied before encoding and to metric reference frames")
+	fs.StringVar(&ea.probeMetric, "probe-metric", "", "EXPERIMENTAL: target-quality probe metric: auto or cvvdp")
+	fs.StringVar(&ea.fgsTable, "fgs-table", "", "EXPERIMENTAL: libaom filmgrn1 film grain table path")
 	// Output options
 	fs.BoolVar(&ea.noLog, "no-log", false, "Disable log file creation")
 	fs.BoolVar(&ea.keepWorkDir, "keep-workdir", false, "Keep the .reel work directory after successful encodes")
@@ -308,6 +333,17 @@ func executeEncode(ea encodeArgs) error {
 	if ea.disableAutocrop {
 		cfg.CropMode = "none"
 	}
+	cfg.GrainTreatment = strings.ToLower(strings.TrimSpace(ea.grainTreatment))
+	cfg.Denoise = strings.TrimSpace(ea.denoise)
+	switch pm := strings.ToLower(strings.TrimSpace(ea.probeMetric)); pm {
+	case "", "auto":
+		cfg.ProbeMetric = ""
+	case "cvvdp":
+		cfg.ProbeMetric = pm
+	default:
+		return fmt.Errorf("invalid --probe-metric %q: must be auto or cvvdp", ea.probeMetric)
+	}
+	cfg.GrainTable = strings.TrimSpace(ea.fgsTable)
 	// Debug options
 	cfg.Verbose = ea.verbose
 	cfg.KeepWorkDir = ea.keepWorkDir
@@ -328,6 +364,10 @@ func executeEncode(ea encodeArgs) error {
 		}
 		logger.Info("SVT-AV1 preset: %d", cfg.SVTAV1Preset)
 		logger.Info("Crop mode: %s", cfg.CropMode)
+		logger.Info("Grain treatment: %s", cfg.GrainTreatment)
+		if cfg.Denoise != "" {
+			logger.Info("Denoise filter (experimental): %s", cfg.Denoise)
+		}
 		logger.Info("Adaptive encoding enabled")
 	}
 

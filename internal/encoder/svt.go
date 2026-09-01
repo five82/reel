@@ -5,6 +5,7 @@ package encoder
 
 #include <EbSvtAv1Enc.h>
 #include <malloc.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -49,6 +50,130 @@ static void reel_set_level_of_parallelism(EbSvtAv1EncConfiguration* config, uint
 static void reel_malloc_trim(void) {
     malloc_trim(0);
 }
+
+// reel_read_fgs_table parses a libaom "filmgrn1" film grain table file into a
+// freshly allocated AomFilmGrain (single entry, like SvtAv1EncApp's
+// read_fgs_table). Returns NULL on any parse error. The caller owns the
+// allocation and must keep it alive for the encoder's lifetime: SVT copies
+// only the pointer into its static config.
+static AomFilmGrain* reel_read_fgs_table(const char* path) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return NULL;
+    }
+    char magic[9];
+    if (!fread(magic, 9, 1, file) || strncmp(magic, "filmgrn1", 8)) {
+        fclose(file);
+        return NULL;
+    }
+    AomFilmGrain* fg = (AomFilmGrain*)calloc(1, sizeof(AomFilmGrain));
+    if (!fg) {
+        fclose(file);
+        return NULL;
+    }
+    int ok = 0;
+    do {
+        if (fscanf(file, "E %*d %*d %d %hu %d\n", &fg->apply_grain, &fg->random_seed, &fg->update_parameters) != 3) {
+            break;
+        }
+        if (fg->update_parameters) {
+            if (fscanf(file,
+                       "p %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                       &fg->ar_coeff_lag, &fg->ar_coeff_shift, &fg->grain_scale_shift, &fg->scaling_shift,
+                       &fg->chroma_scaling_from_luma, &fg->overlap_flag,
+                       &fg->cb_mult, &fg->cb_luma_mult, &fg->cb_offset,
+                       &fg->cr_mult, &fg->cr_luma_mult, &fg->cr_offset) != 12) {
+                break;
+            }
+            if (fg->ar_coeff_lag < 0 || fg->ar_coeff_lag > 3) {
+                break;
+            }
+            if (!fscanf(file, "\tsY %d ", &fg->num_y_points) || fg->num_y_points < 0 || fg->num_y_points > 14) {
+                break;
+            }
+            int bad = 0;
+            for (int i = 0; i < fg->num_y_points; ++i) {
+                if (fscanf(file, "%d %d", &fg->scaling_points_y[i][0], &fg->scaling_points_y[i][1]) != 2) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+            if (!fscanf(file, "\n\tsCb %d", &fg->num_cb_points) || fg->num_cb_points < 0 || fg->num_cb_points > 10) {
+                break;
+            }
+            for (int i = 0; i < fg->num_cb_points; ++i) {
+                if (fscanf(file, "%d %d", &fg->scaling_points_cb[i][0], &fg->scaling_points_cb[i][1]) != 2) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+            if (!fscanf(file, "\n\tsCr %d", &fg->num_cr_points) || fg->num_cr_points < 0 || fg->num_cr_points > 10) {
+                break;
+            }
+            for (int i = 0; i < fg->num_cr_points; ++i) {
+                if (fscanf(file, "%d %d", &fg->scaling_points_cr[i][0], &fg->scaling_points_cr[i][1]) != 2) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+            if (fscanf(file, "\n\tcY")) {
+                break;
+            }
+            const int n = 2 * fg->ar_coeff_lag * (fg->ar_coeff_lag + 1);
+            for (int i = 0; i < n; ++i) {
+                if (fscanf(file, "%d", &fg->ar_coeffs_y[i]) != 1) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+            if (fscanf(file, "\n\tcCb")) {
+                break;
+            }
+            for (int i = 0; i <= n; ++i) {
+                if (fscanf(file, "%d", &fg->ar_coeffs_cb[i]) != 1) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+            if (fscanf(file, "\n\tcCr")) {
+                break;
+            }
+            for (int i = 0; i <= n; ++i) {
+                if (fscanf(file, "%d", &fg->ar_coeffs_cr[i]) != 1) {
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad) {
+                break;
+            }
+        }
+        ok = 1;
+    } while (0);
+    fclose(file);
+    if (!ok) {
+        free(fg);
+        return NULL;
+    }
+    fg->apply_grain = 1;
+    fg->ignore_ref  = 1;
+    return fg;
+}
 */
 import "C"
 
@@ -74,6 +199,7 @@ type svtEncoder struct {
 	handle   *C.EbComponentType
 	ioFormat unsafe.Pointer
 	inHdr    unsafe.Pointer
+	fgsTable unsafe.Pointer
 	width    uint16
 	height   uint16
 }
@@ -95,20 +221,47 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 		return nil, err
 	}
 
+	// EXPERIMENTAL: attach a prebuilt libaom "filmgrn1" grain table. This
+	// bypasses SVT's expensive in-encoder grain estimation entirely: encoded
+	// pixels and rate are unchanged, only frame headers gain synthesis
+	// params, and the table is intensity-indexed with no spatial anchoring,
+	// so cropping cannot invalidate it. SVT keeps only the pointer, so the
+	// allocation must outlive the encoder; it is freed in close().
+	var fgsTable unsafe.Pointer
+	freeFgs := func() {
+		if fgsTable != nil {
+			C.free(fgsTable)
+		}
+	}
+	if cfg.GrainTable != nil && *cfg.GrainTable != "" {
+		cPath := C.CString(*cfg.GrainTable)
+		fg := C.reel_read_fgs_table(cPath)
+		C.free(unsafe.Pointer(cPath))
+		if fg == nil {
+			C.svt_av1_enc_deinit_handle(handle)
+			return nil, fmt.Errorf("failed to parse film grain table %q (expected libaom filmgrn1 format)", *cfg.GrainTable)
+		}
+		config.fgs_table = fg
+		fgsTable = unsafe.Pointer(fg)
+	}
+
 	ret = C.svt_av1_enc_set_parameter(handle, &config)
 	if ret != C.EB_ErrorNone {
+		freeFgs()
 		C.svt_av1_enc_deinit_handle(handle)
 		return nil, fmt.Errorf("svt_av1_enc_set_parameter failed: %d", int32(ret))
 	}
 
 	ret = C.svt_av1_enc_init(handle)
 	if ret != C.EB_ErrorNone {
+		freeFgs()
 		C.svt_av1_enc_deinit_handle(handle)
 		return nil, fmt.Errorf("svt_av1_enc_init failed: %d", int32(ret))
 	}
 
 	ioFmt := C.malloc(C.sizeof_EbSvtIOFormat)
 	if ioFmt == nil {
+		freeFgs()
 		C.svt_av1_enc_deinit(handle)
 		C.svt_av1_enc_deinit_handle(handle)
 		return nil, fmt.Errorf("failed to allocate SVT-AV1 IO format")
@@ -118,6 +271,7 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 	inHdr := C.malloc(C.sizeof_EbBufferHeaderType)
 	if inHdr == nil {
 		C.free(ioFmt)
+		freeFgs()
 		C.svt_av1_enc_deinit(handle)
 		C.svt_av1_enc_deinit_handle(handle)
 		return nil, fmt.Errorf("failed to allocate SVT-AV1 buffer header")
@@ -134,6 +288,7 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 		handle:   handle,
 		ioFormat: ioFmt,
 		inHdr:    inHdr,
+		fgsTable: fgsTable,
 		width:    uint16(cfg.Width),
 		height:   uint16(cfg.Height),
 	}, nil
@@ -227,18 +382,27 @@ func (e *svtEncoder) close() {
 		C.free(e.inHdr)
 		e.inHdr = nil
 	}
+	if e.fgsTable != nil {
+		C.free(e.fgsTable)
+		e.fgsTable = nil
+	}
 	C.reel_malloc_trim()
 }
 
-// Playback compatibility contract: every encode signals AV1 level 5.1 main
+// Playback compatibility contract: every encode signals AV1 level 5.2 main
 // tier and caps the bitstream at that level's main-tier maximum bitrate.
 // SVT's auto level derives only from resolution/fps, so uncapped CRF encodes
 // of grainy content can burst far past the signaled level's bitrate bound.
 // Hardware decoders provision buffers and throughput from the signaled level
 // and stall on the violation (observed: Pixel 10 Pro stalling on a 56 Mbps
-// burst in a 1080p stream that signaled level 4.0 / 12 Mbps). Level 5.1
-// (4096x2176@60) covers every disc source Reel encodes and is the baseline
-// capability of AV1 hardware decoders. The cap engages SVT's capped-CRF mode.
+// burst in a 1080p stream that signaled level 4.0 / 12 Mbps). The original
+// contract was level 5.1 main tier / 40 Mbps as the universal hardware
+// baseline; it played cleanly (45 Mbps worst second on the previously
+// stalling device) but its cap bound below the quality band on heavy-grain
+// 4K chunks (rate_capped stops delivering 8.9-9.1 JOD). Playback targets
+// only the user's own player apps, so 2026-08-31 raised the contract to
+// level 5.2 main tier / 60 Mbps to free most of those chunks. The cap
+// engages SVT's capped-CRF mode.
 //
 // On chunks where the cap binds hard (heavy grain at 4K), the target-quality
 // search rejects probes whose worst second exceeds the cap and lowering CRF
@@ -247,12 +411,12 @@ func (e *svtEncoder) close() {
 // CRF, below the band. That is the intended behavior, not a search failure.
 
 // signaledLevel is EbSvtAv1EncConfiguration.level's encoding of AV1
-// level 5.1 (major*10 + minor).
-const signaledLevel = 51
+// level 5.2 (major*10 + minor).
+const signaledLevel = 52
 
-// maxBitRateBps is AV1 level 5.1 main tier MaxBitrate in bits/second.
+// maxBitRateBps is AV1 level 5.2 main tier MaxBitrate in bits/second.
 // A var so tests can encode an uncapped baseline; production never mutates it.
-var maxBitRateBps = uint32(40_000_000)
+var maxBitRateBps = uint32(60_000_000)
 
 // MaxBitRateBps returns the bitstream cap applied to every encode, for the
 // target-quality search to reject probes whose encodes escaped it.

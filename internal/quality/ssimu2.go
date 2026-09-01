@@ -18,7 +18,11 @@ type SSIMU2Options struct {
 	CropRect   *video.CropRect
 	Width      uint32
 	Height     uint32
-	Processor  *SSIMU2Processor
+	Denoise    string // Experimental libavfilter graph applied to reference frames
+	// Reference optionally supplies the chunk's reference frames already
+	// decoded, cropped, and denoise-filtered; see CVVDPOptions.Reference.
+	Reference video.FrameReader
+	Processor *SSIMU2Processor
 }
 
 type SSIMU2Result struct {
@@ -49,11 +53,19 @@ func ComputeChunkSSIMU2(ctx context.Context, opts SSIMU2Options) (SSIMU2Result, 
 		return SSIMU2Result{}, fmt.Errorf("invalid SSIMU2 dimensions %dx%d", opts.Width, opts.Height)
 	}
 
-	src, err := video.Open(opts.SourcePath, metricSourceDecoderThreads)
-	if err != nil {
-		return SSIMU2Result{}, fmt.Errorf("failed to open source for SSIMU2: %w", err)
+	ref := opts.Reference
+	if ref == nil {
+		// The reference is read through the same denoise graph the encoder
+		// used, so the score measures the encode against the denoised source.
+		src, err := video.OpenFiltered(opts.SourcePath, metricSourceDecoderThreads, opts.Denoise)
+		if err != nil {
+			return SSIMU2Result{}, fmt.Errorf("failed to open source for SSIMU2: %w", err)
+		}
+		defer src.Close()
+		// Match the encoder worker, which resets filter state at every chunk start.
+		src.ResetFilter()
+		ref = src.FrameReader(opts.Info, opts.CropRect)
 	}
-	defer src.Close()
 
 	probeInfo, err := video.Probe(opts.ProbePath)
 	if err != nil {
@@ -110,7 +122,7 @@ func ComputeChunkSSIMU2(ctx context.Context, opts SSIMU2Options) (SSIMU2Result, 
 				decodedCh <- decodedFrame{err: ctx.Err()}
 				return
 			}
-			if err := src.ReadFrame(opts.Chunk.Start+i, pair.srcBuf, opts.Info, opts.CropRect); err != nil {
+			if err := ref.ReadFrame(opts.Chunk.Start+i, pair.srcBuf); err != nil {
 				decodedCh <- decodedFrame{err: fmt.Errorf("failed to read source frame %d for SSIMU2: %w", opts.Chunk.Start+i, err)}
 				return
 			}

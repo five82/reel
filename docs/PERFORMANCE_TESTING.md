@@ -62,6 +62,43 @@ current baseline; do not call the 2026-07-02 run current.
 
 ## Open work
 
+### High - implement the selected grain strategy: gated 4K fftdnoiz + FGS
+
+Direction selected 2026-08-31 after phases 1-5 of the denoise study (decision
+below) plus initial living-room viewing: grainy titles get **fftdnoiz +
+grain-med FGS table at native resolution**, selected by a bits-at-CRF grain
+gate (probe bits at CRF ~26 separate Fargo, ~30 Mbps, from clean titles,
+1-5 Mbps, by an order of magnitude); clean titles are untouched. The user
+chose native-resolution future-proofing over maximum efficiency (100+ discs,
+10/30 TB used - the same rationale as the raised CVVDP target), so the
+measured-dominant 1440p+fftdnoiz path (8-21% of baseline bytes, half the
+wall) is a documented per-title RESERVE, not a default; resize-without-denoise
+is counterproductive (bigger than 4K at target quality) and must never ship.
+Viewing so far: grain-med FGS beats bare denoise and the strong table (too
+strong); per-tier tables (light/medium) ride the same gate.
+
+Status 2026-08-31: IMPLEMENTED. The gate, fftdnoiz treatment, embedded
+light/med FGS tables, reference caching (wall 1.42x recovered of the ~2x
+tax), honest ceiling recording, and resume pinning shipped in
+`internal/encode/grain.go` + `refcache.go`; Spindle mirrors the verdict into
+EncodeStats/metrics/itemaudit/auditgather. Gate constants were calibrated
+against 15 UHD rips with known TQ outcomes (denoise study RESULTS.md section
+8): treat >= 0.0703 bpp at CRF 22 (12 samples - 5 misclassified two titles
+from sampling noise alone), med tier >= 0.105, HD provisional 0.22/0.33.
+Known signal limitation: the gate measures grain cost at CRF 22, not at the
+JOD target, so dark grainy titles (American Hustle 0.048 bpp yet 18 Mbps
+delivered; Alien-class 4.3x TQ/CRF22 ratio) stay untreated. The user chose
+native 4K over the measured-dominant 1440p path (future-proofing at 10/30 TB
+used); full viewing validation happens on the first real library encodes,
+and thresholds/tiers adjust from those observations.
+
+Remaining: watch the first treated library titles (Fargo, Vacation) on the
+real fleet; adjust tier tables or cutoffs from what is seen; revisit HD
+constants once 1080p titles have real accept/complain verdicts.
+
+The experimental `--denoise` / `--probe-metric` / `--fgs-table` prototype
+lives as uncommitted changes on branch `denoise`.
+
 ### Medium - validate SDR steady state on a full-length title
 
 The measured `im-20m` wall reduction was about 47%; the roughly 50% feature
@@ -150,6 +187,14 @@ is within `capFrontierCRF` of the highest over-rate probe, and relabels any
 budget/guard stop after a cap rejection as `rate_capped`. The final pick is
 unchanged (best rate-legal probe); only probe count and the stop label move.
 Probe lines carry `peak_mbps` and `over_rate=true` so the rejection is visible.
+
+**Update 2026-08-31:** the contract moved from level 5.1 main tier / 40 Mbps
+to level 5.2 main tier / 60 Mbps by user decision: playback targets only the
+user's own player apps, and the 40 Mbps cap was clipping heavy-grain 4K chunks
+to 8.9-9.1 JOD (Fargo: 191/605 chunks). The frontier-stop mechanism is
+unchanged and now engages at the 5.2 cap. Device headroom above 60 Mbps
+(iPad Pro M4, Pixel 10/10 Pro) has not been measured; test before raising
+further.
 
 **Retest only if:** the cap policy changes, or a `rate_capped` chunk is shown
 to have had a rate-legal CRF that would have reached the band.
@@ -517,6 +562,58 @@ the historical intermittent failure.
 
 **Provenance:** `docs/VSHIP_CONCURRENCY_BUG.md`, commit `ec7faf7`, and the old
 `vship-concurrency` artifacts (since pruned).
+
+## Denoise and film grain
+
+### Pre-encode denoising - NOT ADOPTED as a default; fftdnoiz on coarse grain OPEN
+
+**Why:** An in-process `--denoise` prototype (libavfilter graph applied to both
+encoder input and metric reference, filter state reset per chunk in both paths)
+was measured end to end in target-quality mode. At the nominal 9.55 target,
+hqdn3d=2:1.5:3:2.25 cut grainy 4K titles to 0.48-0.72x bytes, but the decisive
+control - re-running the undenoised baseline at the denoised run's honest
+source-referenced JOD - showed most of that is bought by quality, not
+efficiency: hqdn3d lost to plain target-lowering on vac (+21%) and hustle
+(+8%), winning only on fargo (-11%), and its honest quality drop roughly equals
+the denoise-only ceiling loss. fftdnoiz (defaults) passed the same control on
+both coarse-grain titles (fargo -34%, vac -13% at matched honest JOD) but costs
+1.9-2.5x TQ wall (per-probe reference re-filtering, uncached) and has the worse
+p5/min tail at matched mean in 5/5 / 4/5 pairs. Denoise never reduced
+`rate_capped` chunks (that is the signaled-level peak-rate ceiling - 5.1 /
+40 Mbps during this study, raised to 5.2 / 60 Mbps on 2026-08-31 - not
+grain), and
+clean content is only harmed (sully: 3% bytes for 0.13 JOD).
+
+Denoiser field: hqdn3d is ~free (+0.019 CPU-s per 4K frame, strength-
+independent) and fftdnoiz costs +0.316; atadenoise is dominated everywhere and
+inflates clean files; nlmeans_vulkan produces corrupt output on this driver;
+bilateral_cuda is 8-bit-only; dctdnoiz and CPU nlmeans silently round-trip HDR
+through 8 bits; bm3d/vaguedenoiser are far too slow. Strength ceilings (CVVDP
+of denoised vs original, no encode) put hqdn3d=2:1.5:3:2.25 at 9.78-9.95 and
+anything stronger below the 9.75 band top on grainy content; 60s-sample
+ceilings understate full-clip scene tails (vac 9.875 sampled vs 9.780 true).
+
+SVT-internal film grain: `--film-grain N` halves encode speed via grain
+estimation regardless of `--film-grain-denoise`, and its denoiser bought only
+19% - REJECTED. A prebuilt `--fgs-table` is free (29.67 vs 29.61 fps), verified
+present in the bitstream, and intensity-indexed with no spatial anchoring, so
+cropping cannot invalidate it - the viable synthesis route if texture is ever
+wanted.
+
+1080p SDR: with the reference denoised, per-title SSIMU2 calibration re-locks
+correctly (bts offset -8.93 -> -8.18) and delivers within 0.03 JOD of forced
+CVVDP, which costs +50% wall and +10% bytes - forcing CVVDP for denoised SDR is
+REJECTED.
+
+**Retest only if:** the open grain-strategy item chooses denoise (then add
+reference-filter caching first), a driver/filter change alters the
+fftdnoiz/hqdn3d frontier or fixes nlmeans_vulkan, or subjective viewing of the
+matched pairs contradicts the equal-honest-JOD control.
+
+**Artifacts:** `$REEL_TESTING_DIR/denoise-20260830/` (PLAN.md, RESULTS.md
+phases 1-3b, matched viewing pairs under `phase3/runs/`), prototype on branch
+`denoise` (uncommitted); Ryzen 9 7950X / RTX 5060 Ti, SVT-AV1 4.2 `0696282`,
+ffmpeg git-2026-08-28, libvship per `check-deps.sh`.
 
 ## Low-value pipeline work
 

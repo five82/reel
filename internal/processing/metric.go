@@ -13,7 +13,7 @@ import (
 // keeps automatic source selection. See quality.ProbeMetricForSource for the
 // metric rationale.
 func probeMetricFor(cfg *config.Config, inf *video.Info) quality.MetricKind {
-	if cfg.TargetQuality != config.DefaultTargetQuality || cfg.CVVDPDisplay != "" {
+	if cfg.ProbeMetric == "cvvdp" || cfg.TargetQuality != config.DefaultTargetQuality || cfg.CVVDPDisplay != "" {
 		return quality.MetricCVVDP
 	}
 	return quality.ProbeMetricForSource(inf)

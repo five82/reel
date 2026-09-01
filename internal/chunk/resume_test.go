@@ -122,3 +122,65 @@ func TestChunkFingerprintChangesWithBoundaries(t *testing.T) {
 		t.Fatal("ChunkFingerprint did not change when chunk boundaries changed")
 	}
 }
+
+// TestEnsureResumeManifestResetsOnTreatmentChange covers the grain-treatment
+// fields: chunks encoded denoised with a grain table must never be resumed by
+// a run that would encode the rest untreated (or the other way round).
+func TestEnsureResumeManifestResetsOnTreatmentChange(t *testing.T) {
+	workDir := t.TempDir()
+	treated := ResumeManifest{
+		InputPath:      "/media/movie.mkv",
+		GrainTreatment: "auto",
+		Denoise:        "fftdnoiz",
+		GrainTable:     "grain-med",
+	}
+	if reset, err := EnsureResumeManifest(workDir, treated); err != nil || reset {
+		t.Fatalf("initial manifest write: reset=%v err=%v", reset, err)
+	}
+
+	for name, changed := range map[string]func(m *ResumeManifest){
+		"untreated":     func(m *ResumeManifest) { m.Denoise, m.GrainTable = "", "" },
+		"other tier":    func(m *ResumeManifest) { m.GrainTable = "grain-light" },
+		"gate disabled": func(m *ResumeManifest) { m.GrainTreatment = "off" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mismatch := treated
+			changed(&mismatch)
+			reset, err := EnsureResumeManifest(workDir, mismatch)
+			if err != nil {
+				t.Fatalf("EnsureResumeManifest: %v", err)
+			}
+			if !reset {
+				t.Error("changed grain treatment did not discard stale resume state")
+			}
+			// Restore the treated manifest for the next case.
+			if _, err := EnsureResumeManifest(workDir, treated); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+		})
+	}
+}
+
+// TestWriteResumeManifestPinsWithoutComparing covers the grain gate's rewrite:
+// the verdict is only known after the directory has been validated, so the
+// pipeline overwrites the manifest with it before anything is encoded.
+func TestWriteResumeManifestPinsWithoutComparing(t *testing.T) {
+	workDir := t.TempDir()
+	base := ResumeManifest{InputPath: "/media/movie.mkv", GrainTreatment: "auto"}
+	if _, err := EnsureResumeManifest(workDir, base); err != nil {
+		t.Fatalf("EnsureResumeManifest: %v", err)
+	}
+
+	gated := base
+	gated.Denoise = "fftdnoiz"
+	gated.GrainTable = "grain-med"
+	if err := WriteResumeManifest(workDir, gated); err != nil {
+		t.Fatalf("WriteResumeManifest: %v", err)
+	}
+	if reset, err := EnsureResumeManifest(workDir, gated); err != nil || reset {
+		t.Fatalf("pinned manifest should match on the next run: reset=%v err=%v", reset, err)
+	}
+	if reset, err := EnsureResumeManifest(workDir, base); err != nil || !reset {
+		t.Fatalf("a run without the treatment should reset: reset=%v err=%v", reset, err)
+	}
+}

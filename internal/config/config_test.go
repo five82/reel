@@ -260,3 +260,29 @@ func TestTargetQualityChunkDurationForWidthKeepsShorterConfig(t *testing.T) {
 		t.Errorf("TargetQualityChunkDurationForWidth() = %f, want 8.0", got)
 	}
 }
+
+func TestGrainTreatmentValidation(t *testing.T) {
+	if cfg := NewConfig("/in", "/out", "/log"); cfg.GrainTreatment != GrainTreatmentAuto {
+		t.Errorf("default grain treatment = %q, want %q", cfg.GrainTreatment, GrainTreatmentAuto)
+	}
+
+	cfg := NewConfig("/in", "/out", "/log")
+	cfg.QualityMode = QualityModeCRF
+	cfg.GrainTreatment = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty grain treatment should default: %v", err)
+	}
+	if cfg.GrainTreatment != GrainTreatmentAuto {
+		t.Errorf("empty grain treatment = %q, want %q", cfg.GrainTreatment, GrainTreatmentAuto)
+	}
+
+	cfg.GrainTreatment = GrainTreatmentOff
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("off should validate: %v", err)
+	}
+
+	cfg.GrainTreatment = "strong"
+	if err := cfg.Validate(); err == nil {
+		t.Error("an unknown grain treatment mode should not validate")
+	}
+}

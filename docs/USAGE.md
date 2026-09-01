@@ -44,6 +44,7 @@ reel encode -v -i input.mkv -o output/
 
 **Processing**
 - `--disable-autocrop`: Skip black-bar detection and cropping
+- `--grain-treatment auto|off`: automatic grain handling in target-quality mode (default `auto`, see Grain Treatment)
 
 **Output**
 - `-l, --log-dir <DIR>`: Override the log directory (defaults to `~/.local/state/reel/logs`)
@@ -71,6 +72,10 @@ Each probe encodes and scores the **whole chunk** in one metric pass, so the sco
 Passing an explicit `--target-quality` range (other than the built-in default string) or `--cvvdp-display` forces CVVDP scoring for that encode, since both options are CVVDP-denominated.
 
 Verbose output logs each probe's whole-chunk score, the per-chunk probe count, and (for SDR <=1080p) the calibration lock line with the title's offset.
+
+## Grain Treatment
+
+Film grain is expensive to encode: a grainy 4K disc title can cost ten times the bitrate of a clean one at the same quality, and the encoder spends those bits coding noise that is random by nature. In target-quality mode Reel measures each title before encoding by encoding a handful of sample chunks from the middle of the title at a fixed CRF and looking at the bits per pixel they cost. Titles above the cutoff are encoded from a denoised source with a film grain table attached, so the player re-synthesizes grain at decode time instead; grainier titles get a stronger table than borderline ones. Clean titles, SD sources, and fixed-CRF encodes are never touched, because denoising clean content only costs quality. The verdict, the measurement behind it, and the quality the denoiser itself gives up (the "denoise ceiling", scored against the untouched source) are reported in the log and in the encode statistics, since a treated title's target-quality scores are measured against the denoised source and would otherwise read as better than what is delivered. Pass `--grain-treatment off` to encode every title untreated.
 
 ## HDR Support
 

@@ -64,6 +64,31 @@ func PeakSecondBps(r io.Reader, fpsNum, fpsDen uint32) (float64, error) {
 	return float64(peak) * 8, nil
 }
 
+// IVFVideoBytes returns the total compressed frame payload of an IVF file,
+// excluding the file and per-frame container headers. Bits-per-pixel measures
+// what the encoder spent on picture data, so the container must not count.
+func IVFVideoBytes(r io.Reader) (uint64, error) {
+	var hdr [32]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return 0, fmt.Errorf("failed to read IVF header: %w", err)
+	}
+	var total uint64
+	var frameHdr [12]byte
+	for {
+		if _, err := io.ReadFull(r, frameHdr[:]); err == io.EOF {
+			break
+		} else if err != nil {
+			return 0, fmt.Errorf("failed to read IVF frame header: %w", err)
+		}
+		size := binary.LittleEndian.Uint32(frameHdr[0:4])
+		total += uint64(size)
+		if _, err := io.CopyN(io.Discard, r, int64(size)); err != nil {
+			return 0, fmt.Errorf("failed to skip IVF frame data: %w", err)
+		}
+	}
+	return total, nil
+}
+
 // writeIVFFrame writes a single IVF frame (4 bytes size + 8 bytes pts + data).
 func writeIVFFrame(w io.Writer, data []byte, pts int64) error {
 	if err := binary.Write(w, binary.LittleEndian, uint32(len(data))); err != nil {

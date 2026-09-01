@@ -346,7 +346,7 @@ func TestCriticalPressure(t *testing.T) {
 
 	t.Run("SwapTotal/20 threshold gated by available memory", func(t *testing.T) {
 		stats := util.MemoryStats{SwapTotal: 8 << 30} // SwapTotal/20 = 429.5 MiB, well under swapCriticalGrowthBytes.
-		swapGrowth := stats.SwapTotal/20 + (10 << 20)  // Just over the SwapTotal/20 floor, far under the flat 1 GiB threshold.
+		swapGrowth := stats.SwapTotal/20 + (10 << 20) // Just over the SwapTotal/20 floor, far under the flat 1 GiB threshold.
 
 		if critical, reason := l.criticalPressure(0.40, swapGrowth, stats); critical {
 			t.Fatalf("SwapTotal/20 growth with 40%% available should not be critical, got reason %q", reason)

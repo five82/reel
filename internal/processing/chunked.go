@@ -193,7 +193,13 @@ func ProcessChunked(
 	phases.end()
 
 	// Setup encode config
+	var grainTable *string
+	if cfg.GrainTable != "" {
+		gt := cfg.GrainTable
+		grainTable = &gt
+	}
 	encCfg := &encode.EncodeConfig{
+		GrainTable:            grainTable,
 		CRF:                   qualitySetting,
 		Preset:                cfg.SVTAV1Preset,
 		Tune:                  cfg.SVTAV1Tune,
@@ -202,7 +208,9 @@ func ProcessChunked(
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
 		LevelOfParallelism:    cfg.SVTAV1LevelOfParallelism,
+		Denoise:               cfg.Denoise,
 	}
+	var grainStats *perf.GrainTreatmentStats
 	if cfg.Verbose {
 		encCfg.StatusCallback = func(message string) {
 			rep.Verbose(message)
@@ -215,8 +223,35 @@ func ProcessChunked(
 		rep.Warning(message)
 	}
 
+	// Grain treatment. The gate needs the chunk plan and the crop rectangle,
+	// and its verdict must be settled before the first chunk is encoded, so it
+	// runs between chunk planning and encoding. Fixed-CRF mode is never gated:
+	// without quality feedback there is nothing to spend the freed bits on.
+	gated := cfg.QualityMode == config.QualityModeTarget
+	gateInput := encode.GrainGateInput{
+		InputPath:  inputPath,
+		WorkDir:    workDir,
+		Info:       vidInf,
+		Chunks:     chunks,
+		CropRect:   cropRect,
+		BandTopJOD: float64(cfg.TargetQualityTarget + cfg.TargetQualityTolerance),
+		Verbose:    rep.Verbose,
+	}
+
 	phases.start("Resume setup")
-	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting)
+	// The manifest records the treatment the chunks in this work directory
+	// were encoded under, so it is built from the verdict already recorded
+	// there (if any) and rewritten below once the gate decides. A run under a
+	// different treatment then sees a mismatched manifest and starts over
+	// instead of mixing treated and untreated chunks in one output.
+	recorded := encode.GrainTreatment{}
+	if gated {
+		recorded, err = encode.RecordedGrainTreatment(cfg.GrainTreatment, encCfg, gateInput)
+		if err != nil {
+			return CropResult{}, err
+		}
+	}
+	manifest, err := buildResumeManifest(inputPath, vidInf, cfg, chunks, cropResult.CropFilter, chunkDuration, qualitySetting, recorded)
 	if err != nil {
 		return CropResult{}, err
 	}
@@ -227,11 +262,53 @@ func ProcessChunked(
 	if resumeReset {
 		rep.Warning("Input or encode settings changed since the interrupted encode; discarded stale resume state and starting over")
 	}
+	phases.end()
+
+	var displayPath string
+	if gated {
+		// SSIMU2 runs still need the display model: each title warms up with
+		// CVVDP probes to calibrate its SSIMU2 offset (see encode/tq_calibration.go).
+		displayPath, err = quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
+		if err != nil {
+			return CropResult{}, err
+		}
+		gateInput.DisplayPath = displayPath
+
+		phases.start("Grain gate")
+		treatment, err := encode.ResolveGrainTreatment(ctx, cfg.GrainTreatment, encCfg, gateInput)
+		phases.end()
+		if err != nil {
+			return CropResult{}, fmt.Errorf("grain treatment failed: %w", err)
+		}
+		newDenoise, newTable := treatmentIdentity(treatment)
+		oldDenoise, oldTable := treatmentIdentity(recorded)
+		if newDenoise != oldDenoise || newTable != oldTable {
+			// The gate decided just now (or the recorded verdict went away
+			// with stale state), so pin the decision in the manifest. Nothing
+			// is encoded yet, so overwriting is safe.
+			manifest.Denoise, manifest.GrainTable = newDenoise, newTable
+			if err := chunk.WriteResumeManifest(workDir, manifest); err != nil {
+				return CropResult{}, err
+			}
+		}
+		encCfg.Denoise = treatment.Denoise
+		encCfg.GrainTable = nil
+		if treatment.TablePath != "" {
+			tablePath := treatment.TablePath
+			encCfg.GrainTable = &tablePath
+		}
+		grainStats = treatment.Stats
+		perfc.SetGrainTreatment(grainStats)
+		perfc.UpdateMeta(func(m *perf.Meta) { m.Denoise = encCfg.Denoise })
+		for _, line := range encode.GrainTreatmentSummary(grainStats) {
+			rep.StageProgress(reporter.StageProgress{Stage: "Encoding", Message: line})
+		}
+	}
+
 	resumeInfo, err := chunk.GetResume(workDir)
 	if err != nil {
 		return CropResult{}, fmt.Errorf("failed to load resume info: %w", err)
 	}
-	phases.end()
 	resumedFrames := resumeInfo.Validate(workDir, chunks).TotalEncodedFrames()
 
 	// Adaptive encoding starts conservatively, tests higher worker counts by
@@ -351,12 +428,6 @@ func ProcessChunked(
 	if cfg.QualityMode == config.QualityModeTarget {
 		metric := probeMetricFor(cfg, vidInf)
 		tqTarget, tqTolerance := cfg.TargetQualityTarget, cfg.TargetQualityTolerance
-		// SSIMU2 runs still need the display model: each title warms up with
-		// CVVDP probes to calibrate its SSIMU2 offset (see encode/tq_calibration.go).
-		displayPath, err := quality.EnsureDisplayModel(workDir, vidInf, cfg.CVVDPDisplay)
-		if err != nil {
-			return CropResult{}, err
-		}
 		if metric == quality.MetricCVVDP {
 			rep.Verbose(fmt.Sprintf("Target-quality CVVDP: target %.2f +/- %.2f JOD, CRF range %s, initial CRF %s with adaptive priors, whole-chunk probes (every probe scores the full chunk), metric workers %d, display %s", tqTarget, tqTolerance, cfg.CRFSearchRange, quality.FormatCRF(qualitySetting), cfg.MetricWorkers, displayPath))
 			rep.Verbose(cvvdpDisplaySummary(cfg, vidInf))
@@ -375,15 +446,16 @@ func ProcessChunked(
 			cropRect,
 			progressCallback,
 			encode.TargetQualityConfig{
-				Metric:        metric,
-				Target:        tqTarget,
-				Tolerance:     tqTolerance,
-				CRFMin:        cfg.CRFSearchMin,
-				CRFMax:        cfg.CRFSearchMax,
-				MaxProbes:     cfg.TargetQualityMaxProbes,
-				MetricWorkers: cfg.MetricWorkers,
-				DisplayPath:   displayPath,
-				InitialCRF:    qualitySetting,
+				Metric:         metric,
+				Target:         tqTarget,
+				Tolerance:      tqTolerance,
+				CRFMin:         cfg.CRFSearchMin,
+				CRFMax:         cfg.CRFSearchMax,
+				MaxProbes:      cfg.TargetQualityMaxProbes,
+				MetricWorkers:  cfg.MetricWorkers,
+				DisplayPath:    displayPath,
+				InitialCRF:     qualitySetting,
+				GrainTreatment: grainStats,
 				Verbose: func(message string) {
 					rep.Verbose(message)
 				},
@@ -591,6 +663,15 @@ func gcd(a, b uint64) uint64 {
 	return a
 }
 
+// treatmentIdentity is what the resume manifest records about a treatment:
+// the two values that change the encoded bits.
+func treatmentIdentity(t encode.GrainTreatment) (denoise, table string) {
+	if t.Stats == nil {
+		return "", ""
+	}
+	return t.Stats.Denoise, t.Stats.GrainTable
+}
+
 func buildResumeManifest(
 	inputPath string,
 	vidInf *video.Info,
@@ -599,10 +680,16 @@ func buildResumeManifest(
 	cropFilter string,
 	chunkDuration float64,
 	qualitySetting float32,
+	treatment encode.GrainTreatment,
 ) (chunk.ResumeManifest, error) {
 	stat, err := os.Stat(inputPath)
 	if err != nil {
 		return chunk.ResumeManifest{}, fmt.Errorf("failed to stat input for resume manifest: %w", err)
+	}
+	denoise, grainTableRef := treatmentIdentity(treatment)
+	if cfg.QualityMode != config.QualityModeTarget {
+		// Fixed-CRF mode never gates, so only the experimental flags apply.
+		denoise, grainTableRef = cfg.Denoise, cfg.GrainTable
 	}
 	return chunk.ResumeManifest{
 		InputPath:             chunk.CanonicalInputPath(inputPath),
@@ -624,6 +711,9 @@ func buildResumeManifest(
 		EnableVarianceBoost:   cfg.SVTAV1EnableVarianceBoost,
 		VarianceBoostStrength: cfg.SVTAV1VarianceBoostStrength,
 		VarianceOctile:        cfg.SVTAV1VarianceOctile,
+		GrainTreatment:        cfg.GrainTreatment,
+		Denoise:               denoise,
+		GrainTable:            grainTableRef,
 		ChunkDurationSecs:     chunkDuration,
 		ChunkFingerprint:      chunk.ChunkFingerprint(chunks),
 	}, nil

@@ -198,6 +198,7 @@ func ProcessVideos(
 			m.DurationSeconds = videoProps.DurationSecs
 			m.QualityMode = fileCfg.QualityMode
 			m.Preset = fileCfg.SVTAV1Preset
+			m.Denoise = fileCfg.Denoise
 			m.MetricWorkers = fileCfg.MetricWorkers
 			m.MaxAdaptiveWorkers = encodepipe.MaxAdaptiveWorkers()
 			m.Hostname = sysInfo.Hostname

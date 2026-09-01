@@ -27,11 +27,17 @@ func availableMemoryBytes() uint64 {
 
 // EncodeConfig contains configuration for the parallel encode pipeline.
 type EncodeConfig struct {
-	CRF                float32 // Quality (CRF value)
-	Preset             uint8   // SVT-AV1 preset
-	Tune               uint8   // SVT-AV1 tune
-	GrainTable         *string // Optional film grain table path
-	LevelOfParallelism uint32  // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
+	CRF        float32 // Quality (CRF value)
+	Preset     uint8   // SVT-AV1 preset
+	Tune       uint8   // SVT-AV1 tune
+	GrainTable *string // Optional film grain table path
+	// Denoise is an experimental libavfilter graph string (for example
+	// "hqdn3d=2:1.5:3:2.25") applied to every frame before it reaches the
+	// encoder AND to every reference frame the quality metric reads, so
+	// target-quality scoring measures the encode against the denoised source
+	// rather than the original. Empty disables it.
+	Denoise            string
+	LevelOfParallelism uint32 // SVT-AV1 level_of_parallelism (1-6); 0 lets Reel choose
 	// StatusCallback receives verbose-only limiter status (ramp-up messages).
 	StatusCallback func(message string)
 	// WarningCallback receives degraded-behavior limiter status (worker
@@ -326,7 +332,7 @@ func streamingWorker(
 		}
 		if src == nil {
 			var err error
-			src, err = video.Open(inputPath, 1)
+			src, err = video.OpenFiltered(inputPath, 1, cfg.Denoise)
 			if err != nil {
 				limiter.release()
 				resultChan <- worker.EncodeResult{
@@ -337,8 +343,15 @@ func streamingWorker(
 			}
 		}
 
+		// A worker reuses one Source across consecutive chunks, so reset
+		// temporal denoise state at every chunk start: the scorers open a fresh
+		// Source per chunk, and both sides must filter a frame with the same
+		// history for the metric reference to be bit-identical to what the
+		// encoder consumed.
+		src.ResetFilter()
+
 		// Encode the chunk using streaming (decode one frame, encode, repeat)
-		result := encodeChunkStreaming(ctx, src, ch, inf, cropRect, cfg, chunk.IVFPath(workDir, ch.Idx), cfg.CRF, width, height, progressCb)
+		result := encodeChunkStreaming(ctx, src.FrameReader(inf, cropRect), ch, inf, cfg, chunk.IVFPath(workDir, ch.Idx), cfg.CRF, width, height, progressCb)
 
 		if result.Error == nil {
 			srcNextFrame = ch.End
@@ -355,12 +368,15 @@ func streamingWorker(
 // encodeChunkStreaming decodes and encodes frames one at a time, reusing a single frame buffer.
 // This dramatically reduces memory usage compared to decoding all frames upfront.
 // Memory per worker: ~6 MB (single frame) instead of ~5 GB (all frames in chunk).
+// frames supplies the chunk's post-crop 10-bit frames: a decoder for a first
+// pass, or the reference cache for a repeat probe of the same chunk. Callers
+// that reuse a decoder across chunks must reset its denoise filter state
+// before this call.
 func encodeChunkStreaming(
 	ctx context.Context,
-	src *video.Source,
+	frames video.FrameReader,
 	ch chunk.Chunk,
 	inf *video.Info,
-	cropRect *video.CropRect,
 	cfg *EncodeConfig,
 	outputPath string,
 	crf float32,
@@ -392,7 +408,7 @@ func encodeChunkStreaming(
 			return fmt.Errorf("readFrame called after all frames consumed")
 		}
 		idx := ch.Start + frameIdx
-		if err := src.ReadFrame(idx, buf, inf, cropRect); err != nil {
+		if err := frames.ReadFrame(idx, buf); err != nil {
 			return err
 		}
 		frameIdx++

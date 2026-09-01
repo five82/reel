@@ -315,15 +315,16 @@ func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQua
 		}
 	}
 	data, err := json.MarshalIndent(struct {
-		Metric            quality.MetricKind `json:"metric"`
-		Target            float32            `json:"target"`
-		Tolerance         float32            `json:"tolerance"`
-		CalibrationOffset *float32           `json:"ssimu2_calibration_offset,omitempty"`
-		CRFMin            float32            `json:"crf_min"`
-		CRFMax            float32            `json:"crf_max"`
-		MetricWorkers     int                `json:"metric_workers"`
-		DefaultInitialCRF float32            `json:"default_initial_crf"`
-		Chunks            []chunkTargetLog   `json:"chunks"`
+		Metric            quality.MetricKind        `json:"metric"`
+		Target            float32                   `json:"target"`
+		Tolerance         float32                   `json:"tolerance"`
+		CalibrationOffset *float32                  `json:"ssimu2_calibration_offset,omitempty"`
+		CRFMin            float32                   `json:"crf_min"`
+		CRFMax            float32                   `json:"crf_max"`
+		MetricWorkers     int                       `json:"metric_workers"`
+		DefaultInitialCRF float32                   `json:"default_initial_crf"`
+		GrainTreatment    *perf.GrainTreatmentStats `json:"grain_treatment,omitempty"`
+		Chunks            []chunkTargetLog          `json:"chunks"`
 	}{
 		Metric:            metric,
 		Target:            tq.Target,
@@ -333,6 +334,7 @@ func writeAggregateTargetLog(workDir string, logs []chunkTargetLog, tq TargetQua
 		CRFMax:            tq.CRFMax,
 		MetricWorkers:     tq.MetricWorkers,
 		DefaultInitialCRF: tq.InitialCRF,
+		GrainTreatment:    tq.GrainTreatment,
 		Chunks:            logs,
 	}, "", "  ")
 	if err != nil {

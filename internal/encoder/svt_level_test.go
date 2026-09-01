@@ -112,16 +112,16 @@ func parseSeqLevel(t *testing.T, payload []byte) int {
 	if read(1) == 1 {
 		t.Fatal("unexpected timing_info_present_flag")
 	}
-	read(1) // initial_display_delay_present_flag
-	read(5) // operating_points_cnt_minus_1
-	read(12) // operating_point_idc[0]
+	read(1)        // initial_display_delay_present_flag
+	read(5)        // operating_points_cnt_minus_1
+	read(12)       // operating_point_idc[0]
 	return read(5) // seq_level_idx[0]
 }
 
-func TestEncodeSignalsLevel51(t *testing.T) {
+func TestEncodeSignalsLevel52(t *testing.T) {
 	ivf := encodeNoiseIVF(t, 64, 64, 8)
-	if got := seqLevelIdx(t, ivf); got != 13 {
-		t.Errorf("seq_level_idx = %d, want 13 (level 5.1)", got)
+	if got := seqLevelIdx(t, ivf); got != 14 {
+		t.Errorf("seq_level_idx = %d, want 14 (level 5.2)", got)
 	}
 }
 
@@ -139,9 +139,9 @@ func TestMaxBitRateCapsBitstream(t *testing.T) {
 	uncappedMbps := float64(uncapped) * 8 / 2 / 1e6
 	t.Logf("capped %.1f Mbps, uncapped %.1f Mbps", cappedMbps, uncappedMbps)
 
-	// Noise at CRF 1 must overwhelm the 40 Mbps cap for this test to mean
+	// Noise at CRF 1 must overwhelm the 60 Mbps cap for this test to mean
 	// anything; if this fires, make the content more demanding.
-	if uncappedMbps < 80 {
+	if uncappedMbps < 120 {
 		t.Fatalf("uncapped baseline only %.1f Mbps; test content not demanding enough", uncappedMbps)
 	}
 	if capped >= uncapped/2 {
@@ -151,9 +151,10 @@ func TestMaxBitRateCapsBitstream(t *testing.T) {
 	// this pins max_bit_rate's units as bits/second (a kbps misread would
 	// crush the output to single-digit Mbps). The regulator lands anywhere
 	// from ~50% to ~130% of the cap depending on platform and threading
-	// (observed: ~20 Mbps on an ARM LOP-3 CI runner, ~39 Mbps locally), so
-	// the floor only needs to clear the single-digit kbps-misread case.
-	if cappedMbps < 12 || cappedMbps > 55 {
-		t.Errorf("capped encode %.1f Mbps not tracking the 40 Mbps cap", cappedMbps)
+	// (observed at the old 40 Mbps cap: ~20 Mbps on an ARM LOP-3 CI runner,
+	// ~39 Mbps locally), so the floor only needs to clear the single-digit
+	// kbps-misread case.
+	if cappedMbps < 18 || cappedMbps > 80 {
+		t.Errorf("capped encode %.1f Mbps not tracking the 60 Mbps cap", cappedMbps)
 	}
 }

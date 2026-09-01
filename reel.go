@@ -62,6 +62,11 @@ type EncodeStats = perf.Report
 // TargetQualityStats summarizes a target-quality run's CRF search.
 type TargetQualityStats = perf.TargetQualityStats
 
+// GrainTreatmentStats records the grain-treatment gate's verdict: what the
+// title's bits-at-CRF measured, whether it was denoised with a film grain
+// table, and the honest denoise ceiling the reported scores sit under.
+type GrainTreatmentStats = perf.GrainTreatmentStats
+
 // TargetQualityMetricStats aggregates the CRF search outcomes for the chunks
 // scored with one metric.
 type TargetQualityMetricStats = perf.TargetQualityMetricStats

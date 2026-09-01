@@ -54,7 +54,11 @@ type TargetQualityConfig struct {
 	MetricWorkers int
 	DisplayPath   string
 	InitialCRF    float32
-	Verbose       func(string)
+	// GrainTreatment is the grain gate's verdict for this title, recorded in
+	// target-quality.json so a run's scores can be read next to the treatment
+	// (and the honest denoise ceiling) they were measured under.
+	GrainTreatment *perf.GrainTreatmentStats
+	Verbose        func(string)
 }
 
 type targetQualityResult struct {
@@ -685,6 +689,8 @@ func (r *targetQualityRun) encodeChunk(ctx context.Context, ch chunk.Chunk, plan
 	fail := func(err error) targetQualityResult {
 		return targetQualityResult{EncodeResult: worker.EncodeResult{ChunkIdx: ch.Idx, Error: err}, Log: log}
 	}
+	cache := r.newRefCache(ch)
+	defer cache.remove()
 	state := quality.NewSearchState(searchCtx)
 
 	for {
@@ -692,7 +698,7 @@ func (r *targetQualityRun) encodeChunk(ctx context.Context, ch chunk.Chunk, plan
 		if !ok {
 			break
 		}
-		probe, err := r.encodeAndScoreProbe(ctx, ch, crf, plan.pool)
+		probe, err := r.encodeAndScoreProbe(ctx, ch, crf, plan.pool, cache)
 		if err != nil {
 			return fail(err)
 		}
@@ -702,7 +708,7 @@ func (r *targetQualityRun) encodeChunk(ctx context.Context, ch chunk.Chunk, plan
 			var s2 float32
 			if err := r.withSlotReleased(ctx, func() error {
 				var scoreErr error
-				s2, _, scoreErr = r.scoreProbe(ctx, plan.dualPool, probeIVFPath(r.workDir, ch.Idx, crf), ch)
+				s2, _, scoreErr = r.scoreProbe(ctx, plan.dualPool, probeIVFPath(r.workDir, ch.Idx, crf), ch, cache)
 				return scoreErr
 			}); err != nil {
 				return fail(err)
@@ -779,7 +785,7 @@ func (r *targetQualityRun) encodeChunk(ctx context.Context, ch chunk.Chunk, plan
 // probe IVF is kept (fsynced) so the converged probe can be reused verbatim as
 // the final chunk. The encode slot is released while the GPU scores, so other
 // chunks can encode during the metric wait.
-func (r *targetQualityRun) encodeAndScoreProbe(ctx context.Context, ch chunk.Chunk, crf float32, pool chan quality.ChunkScorer) (quality.Probe, error) {
+func (r *targetQualityRun) encodeAndScoreProbe(ctx context.Context, ch chunk.Chunk, crf float32, pool chan quality.ChunkScorer, cache *chunkRefCache) (quality.Probe, error) {
 	if ch.Frames() <= 0 {
 		return quality.Probe{}, fmt.Errorf("chunk %04d has no frames", ch.Idx)
 	}
@@ -787,7 +793,7 @@ func (r *targetQualityRun) encodeAndScoreProbe(ctx context.Context, ch chunk.Chu
 
 	encodeStart := time.Now()
 	// Whole-chunk probe; reusable as the final chunk, so keep the fsync.
-	probeResult := r.encodeProbe(ctx, ch, probePath, crf)
+	probeResult := r.encodeProbe(ctx, ch, probePath, crf, cache)
 	if probeResult.Error != nil {
 		return quality.Probe{}, probeResult.Error
 	}
@@ -797,7 +803,7 @@ func (r *targetQualityRun) encodeAndScoreProbe(ctx context.Context, ch chunk.Chu
 	var metricSeconds float64
 	if err := r.withSlotReleased(ctx, func() error {
 		var scoreErr error
-		score, metricSeconds, scoreErr = r.scoreProbe(ctx, pool, probePath, ch)
+		score, metricSeconds, scoreErr = r.scoreProbe(ctx, pool, probePath, ch, cache)
 		return scoreErr
 	}); err != nil {
 		return quality.Probe{}, err
@@ -834,7 +840,7 @@ func probePeakSecondBps(probePath string, inf *video.Info) (float64, error) {
 	return peakBps, nil
 }
 
-func (r *targetQualityRun) scoreProbe(ctx context.Context, pool chan quality.ChunkScorer, probePath string, ch chunk.Chunk) (float32, float64, error) {
+func (r *targetQualityRun) scoreProbe(ctx context.Context, pool chan quality.ChunkScorer, probePath string, ch chunk.Chunk, cache *chunkRefCache) (float32, float64, error) {
 	var scorer quality.ChunkScorer
 	select {
 	case scorer = <-pool:
@@ -842,6 +848,15 @@ func (r *targetQualityRun) scoreProbe(ctx context.Context, pool chan quality.Chu
 		return 0, 0, ctx.Err()
 	}
 	defer func() { pool <- scorer }()
+
+	// The probe encode that just ran materialized the chunk's filtered frames,
+	// so the reference comes from the cache instead of a second decode+filter
+	// pass over the source.
+	var reference video.FrameReader
+	if cached := cache.open(); cached != nil {
+		defer cached.Close()
+		reference = cached
+	}
 
 	metricStart := time.Now()
 	score, metricSeconds, err := scorer.ScoreChunk(ctx, quality.ChunkScoreRequest{
@@ -852,6 +867,8 @@ func (r *targetQualityRun) scoreProbe(ctx context.Context, pool chan quality.Chu
 		CropRect:   r.cropRect,
 		Width:      r.width,
 		Height:     r.height,
+		Denoise:    r.cfg.Denoise,
+		Reference:  reference,
 	})
 	if err != nil {
 		return 0, 0, err
@@ -869,13 +886,35 @@ func probeIVFPath(workDir string, chunkIdx int, crf float32) string {
 // encodeProbe encodes a whole-chunk probe or final chunk to outputPath. The IVF
 // is always fsynced: every probe is reusable as the final chunk and relied on
 // for resume.
-func (r *targetQualityRun) encodeProbe(ctx context.Context, ch chunk.Chunk, outputPath string, crf float32) worker.EncodeResult {
-	src, err := video.Open(r.inputPath, 1)
+func (r *targetQualityRun) encodeProbe(ctx context.Context, ch chunk.Chunk, outputPath string, crf float32, cache *chunkRefCache) worker.EncodeResult {
+	if cached := cache.open(); cached != nil {
+		defer cached.Close()
+		return encodeChunkStreaming(ctx, cached, ch, r.inf, r.cfg, outputPath, crf, r.width, r.height, nil)
+	}
+
+	src, err := video.OpenFiltered(r.inputPath, 1, r.cfg.Denoise)
 	if err != nil {
 		return worker.EncodeResult{ChunkIdx: ch.Idx, Error: fmt.Errorf("failed to open source for probe: %w", err)}
 	}
 	defer src.Close()
-	return encodeChunkStreaming(ctx, src, ch, r.inf, r.cropRect, r.cfg, outputPath, crf, r.width, r.height, nil)
+	// Fresh decoder, but reset explicitly so the filter history contract is
+	// stated at every chunk start rather than relied on implicitly.
+	src.ResetFilter()
+
+	frames, done := cache.fill(src.FrameReader(r.inf, r.cropRect))
+	result := encodeChunkStreaming(ctx, frames, ch, r.inf, r.cfg, outputPath, crf, r.width, r.height, nil)
+	done(result.Error == nil)
+	return result
+}
+
+// newRefCache returns the chunk's filtered-frame cache, or nil when there is
+// no filter to amortize: without a denoise graph a repeat read is a plain
+// decode, which is cheaper than the tens of gigabytes the cache would cost.
+func (r *targetQualityRun) newRefCache(ch chunk.Chunk) *chunkRefCache {
+	if r.cfg.Denoise == "" {
+		return nil
+	}
+	return newChunkRefCache(r.workDir, ch, video.FrameSize(r.inf, r.cropRect), r.cfg.WarningCallback)
 }
 
 func copyFile(srcPath, dstPath string) error {

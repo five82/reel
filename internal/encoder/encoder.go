@@ -17,7 +17,7 @@ type EncConfig struct {
 	Preset             uint8       // SVT-AV1 preset (0-13)
 	Tune               uint8       // SVT-AV1 tune
 	Output             string      // Output IVF path
-	GrainTable         *string     // Optional film grain table path (not supported with library)
+	GrainTable         *string     // EXPERIMENTAL: libaom "filmgrn1" grain table path; attaches FGS params to the bitstream at no encode cost
 	Width              uint32      // Frame width (after cropping)
 	Height             uint32      // Frame height (after cropping)
 	Frames             int         // Number of frames to encode
@@ -151,7 +151,7 @@ func SvtParamsDisplay(acBias float32, enableVarianceBoost bool, tune uint8) stri
 		"keyint=10s",
 		"scd=0",
 		"scm=0",
-		"level=5.1",
+		fmt.Sprintf("level=%d.%d", signaledLevel/10, signaledLevel%10),
 		fmt.Sprintf("mbr=%d", maxBitRateBps),
 	)
 

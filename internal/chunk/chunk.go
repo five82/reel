@@ -67,6 +67,9 @@ type ResumeManifest struct {
 	EnableVarianceBoost   bool    `json:"enable_variance_boost"`
 	VarianceBoostStrength uint8   `json:"variance_boost_strength"`
 	VarianceOctile        uint8   `json:"variance_octile"`
+	GrainTreatment        string  `json:"grain_treatment,omitempty"`
+	Denoise               string  `json:"denoise,omitempty"`
+	GrainTable            string  `json:"fgs_table,omitempty"`
 	ChunkDurationSecs     float64 `json:"chunk_duration_secs"`
 	ChunkFingerprint      string  `json:"chunk_fingerprint"`
 }
@@ -358,6 +361,15 @@ func resetResumeState(workDir string) error {
 		}
 	}
 	return nil
+}
+
+// WriteResumeManifest overwrites the manifest without the staleness check.
+// The chunked pipeline uses it to pin a decision (the grain gate's verdict)
+// that is only known after EnsureResumeManifest has validated the directory,
+// while nothing has been encoded yet.
+func WriteResumeManifest(workDir string, manifest ResumeManifest) error {
+	manifest.Version = 1
+	return writeResumeManifest(filepath.Join(workDir, "resume.json"), manifest)
 }
 
 func writeResumeManifest(path string, manifest ResumeManifest) error {

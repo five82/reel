@@ -97,6 +97,13 @@ type ChunkScoreRequest struct {
 	CropRect   *video.CropRect
 	Width      uint32
 	Height     uint32
+	// Denoise is the experimental libavfilter graph the encoder ran the source
+	// through. The reference frames must go through the same graph, otherwise
+	// the metric would score the encode against pixels it never saw.
+	Denoise string
+	// Reference optionally supplies the chunk's reference frames already
+	// decoded, cropped, and filtered, bypassing the decode+filter pass here.
+	Reference video.FrameReader
 }
 
 // ChunkScorer scores whole chunks with one metric. Implementations own a
@@ -142,6 +149,8 @@ func (s *cvvdpChunkScorer) ScoreChunk(ctx context.Context, req ChunkScoreRequest
 		CropRect:   req.CropRect,
 		Width:      req.Width,
 		Height:     req.Height,
+		Denoise:    req.Denoise,
+		Reference:  req.Reference,
 		Processor:  s.proc,
 	})
 	if err != nil {
@@ -165,6 +174,8 @@ func (s *ssimu2ChunkScorer) ScoreChunk(ctx context.Context, req ChunkScoreReques
 		CropRect:   req.CropRect,
 		Width:      req.Width,
 		Height:     req.Height,
+		Denoise:    req.Denoise,
+		Reference:  req.Reference,
 		Processor:  s.proc,
 	})
 	if err != nil {
