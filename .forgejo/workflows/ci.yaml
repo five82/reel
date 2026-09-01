@@ -25,6 +25,7 @@ jobs:
             build-essential \
             ca-certificates \
             git \
+            libavfilter-dev \
             libffms2-dev \
             libsvtav1enc-dev \
             pkg-config
