@@ -1,123 +1,152 @@
 # reel
 
-AV1 encoding tool using the SVT-AV1 encoder library and FFmpeg/libav for parallel chunked encoding. Uses opinionated defaults so you can encode without dealing with encoder complexity.
+Reel is an AV1 encoding tool for home-streaming libraries, with opinionated defaults and quality feedback instead of manual encoder tuning. It uses SVT-AV1 and FFmpeg/libav for parallel chunked encoding and is available as a CLI and a Go library.
 
-## Expectations
+Reel prioritizes throughput and consistent viewing quality over archival fidelity. Target-quality mode aims for more consistent quality across varied content than fixed CRF, accepting quality tradeoffs that are invisible at normal viewing distances rather than spending more compute chasing near-optimal per-scene quality.
 
-This repository is shared as is. reel is a personal encoding tool I built for my own workflow, hardware, and preferences. I've open sourced it because I believe in sharing but I'm not an active maintainer.
+## Project status
 
-- Experimental: This is an early stage project. I would recommend looking at [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav) for parallel chunked encoding.
-- Personal-first: Things will change and break as I iterate.
-- Best-effort only: This is a part-time hobby project and I work on it when I'm able to. I may be slow to respond to questions or may not respond at all.
+Reel is an experimental personal project, shared as is. It is built around my own workflow, hardware, and preferences; behavior and APIs may change or break. Support is best-effort, and questions may go unanswered. For other parallel chunked encoding tools, consider [av1an](https://github.com/rust-av/Av1an) or [xav](https://github.com/emrakyz/xav).
 
 ## Features
 
-- Parallel chunked encoding with shot-aware chunk planning
-- Default target-quality mode with whole-chunk probes and adaptive CRF search (CVVDP for HDR and above-1080p sources; SSIMULACRA2 with per-title CVVDP calibration for SDR at or below 1080p)
-- Automatic black bar crop detection
+- Parallel encoding with automatic worker adjustment
+- Target-quality encoding by default, with fixed CRF available
+- Automatic black-bar crop detection
+- [Automatic grain treatment](docs/USAGE.md#grain-treatment) in target-quality mode
 - HDR10/HLG metadata preservation
 - Multi-track audio transcoding to Opus
-- Post-encode validation (codec, dimensions, duration, HDR)
-- Library API for embedding
+- Resume interrupted encodes from completed chunks
+- Post-encode validation of codecs, dimensions, duration, audio sync, and HDR
+- Go library API for embedding
 
-## Design Goals
+## Installation
 
-reel encodes media libraries for home streaming watched at normal viewing distances. It is not an archival or reference quality encoding tool. The aim is "fast" target quality encodes that have more consistent quality across varied content compared to fixed CRF. Speed is a first class goal. When a tradeoff buys meaningful encode time at a quality cost that is invisible in normal viewing, reel takes it.
+Reel is developed and tested on Linux. Both build options below require native libraries and cgo; the default build also requires an NVIDIA GPU compatible with your CUDA installation.
 
-This is a deliberately different point on the speed/quality/size curve from typical target quality encoding tools which chase near optimal per-scene quality at the expense of more compute.
-
-## Requirements
+### Common dependencies
 
 - Go 1.27.1+
-- libSvtAv1Enc (SVT-AV1 encoder shared library)
-- libopusenc shared library (for Opus audio encoding)
-- FFmpeg/libav development libraries: libavformat, libavcodec, libavutil, libswscale, libswresample
-- libvship + CUDA for the default VSHIP target-quality build, or build with `-tags no_vship` for fixed-CRF-only use. **Build libvship with `MITIGATE_MALLOC_ASYNC=on`** (e.g. `make build BACKEND=Cuda MITIGATE_MALLOC_ASYNC=on`): reel scores probes with one VSHIP handler per metric worker concurrently, and libvship's default `cudaMallocAsync` allocator races across coexisting handlers and silently corrupts scores without this flag.
+- A C compiler and `pkg-config`, with cgo enabled
+- SVT-AV1 development headers and shared library (`libSvtAv1Enc`); automatic grain treatment requires version 2.3.0 or newer
+- `libopusenc` shared library for Opus audio encoding
+- FFmpeg/libav development libraries: `libavformat`, `libavcodec`, `libavutil`, `libavfilter`, `libswscale`, and `libswresample`
+
+On Ubuntu/Debian, install the native dependencies with:
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get install libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
-
-# Verify libopusenc is available
-ldconfig -p | grep opusenc
-
-# Verify libSvtAv1Enc is available
-ldconfig -p | grep SvtAv1Enc
+sudo apt-get install build-essential pkg-config \
+  libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev \
+  libswscale-dev libswresample-dev libopusenc0 libsvtav1enc-dev
 ```
 
-## Install
+Package versions vary by distribution release; older releases may need a newer SVT-AV1 installation. Install Go separately. The command above does not install VSHIP or CUDA.
+
+Choose one of the following builds.
+
+### Default target-quality build
+
+Requires [VSHIP](https://codeberg.org/Line-fr/Vship) (`libvship`) built with the CUDA backend, plus a working CUDA installation and compatible NVIDIA GPU.
+
+**Build VSHIP with `MITIGATE_MALLOC_ASYNC=on` to avoid silently corrupted quality scores during concurrent scoring:**
 
 ```bash
-go install -trimpath github.com/five82/reel/cmd/reel@latest                # default VSHIP/CUDA target-quality build
-go install -trimpath -tags no_vship github.com/five82/reel/cmd/reel@latest # fixed-CRF-only build without VSHIP
+# In the VSHIP source checkout
+make build BACKEND=Cuda MITIGATE_MALLOC_ASYNC=on
 ```
 
-Or build from source:
+Follow VSHIP's installation instructions to install the library. See the [concurrency bug notes](docs/VSHIP_CONCURRENCY_BUG.md) for the reason this flag is required.
+
+Then install Reel:
+
+```bash
+go install -trimpath github.com/five82/reel/cmd/reel@latest
+```
+
+### Fixed-CRF-only build
+
+Requires only the common dependencies above, without VSHIP or CUDA. Target-quality mode is unavailable in this build.
+
+```bash
+go install -trimpath -tags no_vship github.com/five82/reel/cmd/reel@latest
+```
+
+### Building from source
+
+With the dependencies for your chosen build installed:
 
 ```bash
 git clone https://github.com/five82/reel
 cd reel
-go build -trimpath -o reel ./cmd/reel                 # default VSHIP/CUDA target-quality build
-go build -trimpath -tags no_vship -o reel ./cmd/reel  # fixed-CRF-only build without VSHIP
+go build -trimpath -o reel ./cmd/reel
 ```
 
-To deploy a source checkout over the `reel` on `PATH`:
-
-```bash
-./check-ci.sh
-./deploy.sh
-```
-
-The deploy script builds with CGO and VSHIP support, keeps the previous binary
-beside the installed one, and verifies the installed copy.
+For a fixed-CRF-only build, replace the last command with `go build -trimpath -tags no_vship -o reel ./cmd/reel`.
 
 ## Usage
 
 ```bash
+# Encode a single file
 reel encode -i input.mkv -o output/
+
+# Encode a directory
 reel encode -i /videos/ -o /encoded/
+
+# Use fixed CRF instead of target-quality mode
+reel encode -i input.mkv -o output/ --quality-mode crf --crf 26.25
 ```
 
-reel splits each video into chunks, encodes chunks in parallel with SVT-AV1, merges the encoded video, then muxes Opus audio, chapters, and metadata. Fixed-CRF mode keeps simple duration-based chunking. Target-quality mode uses shot detection plus target-aware packing with a shorter 12s maximum chunk cap, so one CRF decision usually covers a visually coherent region without creating unnecessary tiny chunks. Adaptive workers start conservatively, test higher concurrency by recent throughput, and back off on RAM or swap pressure. If a run is interrupted, run the same command again to resume from completed chunks.
+Reel encodes video chunks in parallel, then merges them and muxes Opus audio, chapters, and metadata. The default build adjusts CRF using measured quality; the `no_vship` build defaults to fixed CRF.
 
-Target-quality mode scores probes through [VSHIP](https://codeberg.org/Line-fr/Vship)/CUDA and is enabled in the default build, which requires `libvship`. HDR and above-1080p sources score with CVVDP; SDR sources at or below 1080p score with the much faster SSIMULACRA2 after a short per-title CVVDP warmup that calibrates the title's SSIMU2 target (SSIMU2 values do not transfer across content, so each title measures its own offset). The search scores each probe over the whole chunk, starts from adaptive CRF priors, and requires the score to land inside the target band. The converged probe is reused as the final chunk. Build with `-tags no_vship` to disable target-quality mode entirely and default to fixed-CRF mode.
+If a run is interrupted, run the same command again to resume from completed chunks.
 
-Run `reel encode --help` for the full flag list, or see [docs/USAGE.md](docs/USAGE.md).
+Run `reel encode --help` for the full flag list. The [usage guide](docs/USAGE.md) covers quality scoring, grain treatment, HDR, audio handling, and troubleshooting.
 
-## Library Usage
+## Go library
 
-reel can be used as a Go library:
+The library uses the same native dependencies and build tags as the CLI:
 
 ```go
-import "github.com/five82/reel"
+package main
 
-encoder, err := reel.New(
-    reel.WithCRF(26.25), // fixed-CRF mode; default is target-quality mode
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/five82/reel"
 )
-if err != nil {
-    log.Fatal(err)
-}
 
-result, err := encoder.Encode(ctx, "input.mkv", "output/", func(event reel.Event) error {
-    switch e := event.(type) {
-    case reel.EncodingProgressEvent:
-        fmt.Printf("Progress: %.1f%%\n", e.Percent)
-    case reel.EncodingCompleteEvent:
-        fmt.Printf("Done: %.1f%% reduction\n", e.SizeReductionPercent)
+func main() {
+    encoder, err := reel.New()
+    if err != nil {
+        log.Fatal(err)
     }
-    return nil
-})
+
+    result, err := encoder.Encode(context.Background(), "input.mkv", "output/", nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Encoded: %s, reduction: %.1f%%\n",
+        result.OutputFile, result.SizeReductionPercent)
+}
 ```
+
+Use `reel.New(reel.WithCRF(26.25))` to select fixed-CRF mode explicitly. Pass an event handler instead of `nil` to receive progress and completion events; see the [API documentation](https://pkg.go.dev/github.com/five82/reel).
 
 ## Development
 
+Run the full local CI check before handing off changes:
+
 ```bash
-go build -trimpath ./...
-go test ./...
-golangci-lint run
-./check-ci.sh          # Full CI check
+./check-ci.sh
 ```
 
-## Credit
+To install a source checkout over the `reel` on `PATH`, use `./deploy.sh` after the checks pass. Deployment builds with VSHIP support.
+
+## Credits and license
 
 Thanks to [xav](https://github.com/emrakyz/xav) for the libav-based parallel chunked encoding approach.
+
+Reel is licensed under [GPLv3](LICENSE).
