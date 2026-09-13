@@ -62,7 +62,7 @@ current baseline; do not call the 2026-07-02 run current.
 
 ## Open work
 
-### High - implement the selected grain strategy: gated 4K fftdnoiz + FGS
+### Medium - monitor source-matched grain in ordinary library use
 
 Direction selected 2026-08-31 after phases 1-5 of the denoise study (decision
 below) plus initial living-room viewing: grainy titles get **fftdnoiz +
@@ -92,9 +92,17 @@ native 4K over the measured-dominant 1440p path (future-proofing at 10/30 TB
 used); full viewing validation happens on the first real library encodes,
 and thresholds/tiers adjust from those observations.
 
-Remaining: watch the first treated library titles (Fargo, Vacation) on the
-real fleet; adjust tier tables or cutoffs from what is seen; revisit HD
-constants once 1080p titles have real accept/complain verdicts.
+Update 2026-09-13: source-matched, sampled estimation replaces the embedded
+light/med tables, with no fallback by user decision. The gate's treat/no-treat
+cutoffs remain unchanged. See "Sampled source-matched grain" below.
+
+User viewing verdict 2026-09-13: "estimated grain looks good." Direct metric
+checks also confirmed unchanged CVVDP and SSIMU2 scores; see evidence below.
+Remaining (medium priority because the clip results are positive but broader
+production coverage is still limited): watch for sampling failures or texture
+mismatches during ordinary library use, and revisit HD gate constants only if
+production verdicts warrant it. The user requested clips only, no full encodes.
+Actual added gate wall and the <1% feature-wall target remain unmeasured.
 
 The experimental `--denoise` / `--probe-metric` / `--fgs-table` prototype
 lives as uncommitted changes on branch `denoise`.
@@ -564,6 +572,95 @@ the historical intermittent failure.
 `vship-concurrency` artifacts (since pruned).
 
 ## Denoise and film grain
+
+### Sampled source-matched grain - ADOPTED; positive clip viewing
+
+**Question:** Can source-matched parameters replace the generic grain tables
+without bringing SVT's title-long grain analysis back onto the encode path?
+The tables were selected for speed, not as an accuracy reference.
+
+**Direction:** Keep decoder-side AV1 synthesis and the existing single-entry
+`filmgrn1` attachment. Fit one per-title model using a vendored libaom-derived
+C estimator, with native 10-bit original/fftdnoiz pairs sampled during the
+existing ceiling pass. Bound candidate patches and equal per-frame quotas;
+isolate patches with unselected guard blocks so AR fits cannot cross artificial
+joins. Preserve luma/chroma scaling and correlation. Reject insufficient,
+degenerate, unrepresentable, or unstable estimates. The user explicitly chose
+no generic-table or no-synthesis fallback. Publish the decision and exact model
+atomically, include its checksum in resume identity, and reuse it verbatim.
+Old treated static-table workdirs must restart rather than mix treatments.
+
+**Evidence 2026-09-13:** Synthetic tests recover white/correlated grain,
+intensity-dependent strength, luma/chroma correlation, promoted 8-bit and
+fractional 10-bit residuals;
+reject clipping, edges, and insufficient samples; verify buffer ownership and
+deterministic replay. AddressSanitizer passed for the native estimator. A
+64x64 two-frame SVT 4.2 encode and FFmpeg header inspection confirmed that the
+estimated lag-3 AR parameters and both chroma curves reach the bitstream.
+These tests do not establish fidelity on real denoiser residuals or playback
+preference over the removed generic tables.
+
+**Decisive timing:** Ryzen 9 7950X, Go 1.27.1, GCC 14.2, ordinary cgo build.
+The 48-frame synthetic title benchmark (sampler, patch copies, fitting, model
+validation, and table generation; already-decoded frame buffers) took
+0.466-0.469 seconds at both 1920x1080 and 3840x2160 across three repeats of
+three iterations. This supports bounded estimator cost, NOT a measured
+end-to-end encode speedup or proof of the <1% feature-wall budget. SVT/libav
+are not used by this isolated benchmark; the separate bitstream smoke test
+used SVT 4.2 and libavcodec 63.8.101.
+
+**Artifacts:** `$REEL_TESTING_DIR/grain-estimation-20260913/final/` contains the
+benchmark binary/hash, environment, source snapshot, raw timings, generated
+table/IVF, and decoded/header metadata. Upstream revision, licenses, and local
+numerical changes are recorded in `internal/grain/UPSTREAM.md`.
+
+**Real-source clip evidence 2026-09-13:** Same 7950X/SVT 4.2 setup, exact
+clip-driver source/binary and dependencies captured under
+`$REEL_TESTING_DIR/grain-clips-20260913/`. All four rips (Fargo, Vacation,
+American Hustle, Mary Poppins) supplied usable patches in 48/48 sampled frames,
+with 695-768 patches and 0.44-0.48 seconds of sampling/fitting each. Mary Poppins
+covers 8-bit input promoted to 10-bit and a native 1792x1080 pillarbox crop.
+The standalone crop/decode/sample preparation took 18-99 seconds/title; this
+is not added production overhead, where ceiling frame pairs already exist.
+
+Two held-out ~30-second scenes/title produced 32 viewing MKVs: source copies,
+bare denoise, old production tables (medium Fargo, light otherwise), and
+estimated grain. All three encoded variants consumed identical cached native
+fftdnoiz frames at preset 6 / CRF 22. Across all eight scenes, every decoded
+frame matched exactly with FGS disabled. Table parameters reached the
+bitstreams; grain-enabled smoke decodes changed pixels; HDR10 metadata matched
+within AV1/HEVC format quantization. References were first-frame aligned and
+HDR references had Dolby Vision metadata stripped, without re-encoding the
+HDR10 pixels. Source rips were unchanged. No estimator changes were needed.
+The viewing files were subsequently flattened and explicitly labeled by film,
+scene, treatment, and HDR/SDR format at the user's request; the original A/B
+assignments remain in KEY.json. Container/player-title edits left video packets
+and timestamps unchanged. The artifact README, labeling-manifest.json,
+results.json, summary.json, hashes, and preparation notes retain the checks
+and harness fixes.
+
+This is clip-only evidence by user request: the driver uses twelve distributed
+sample windows, not a whole-title shot plan or bitrate gate, and runs no TQ
+search/full encode. It establishes usable real-source models and an isolated
+viewing comparison, not visual superiority or feature-level throughput.
+
+**Viewing and metric isolation 2026-09-13:** The user's overall viewing verdict
+was "estimated grain looks good"; no detailed per-scene preference was recorded.
+An additional no-encode check ran the actual `ComputeChunkCVVDP` path on the
+first 24 frames of scene 1 from each title and `ComputeChunkSSIMU2` on the SDR
+Mary Poppins case, using identical cached fftdnoiz references. Bare, old-table,
+and estimated-table variants had exactly equal scores; every SSIMU2 frame
+score matched, not just the mean. Hashes from Reel's own `video.Open` decoder
+also matched exactly. Source, binary/hash, display models, and results are in
+`grain-clips-20260913/metric-check/`. This directly checks the shared
+`AV_CODEC_EXPORT_DATA_FILM_GRAIN` decode policy rather than relying only on
+FFmpeg CLI grain-off comparisons.
+
+**Retest/next decision:** Keep the model on this evidence. Reconsider sampling
+or per-scene models if ordinary use exposes failures or texture mismatches.
+Repeat metric isolation after changing decoder/FGS handling or metric plumbing.
+Normal Reel quality metrics suppress FGS and cannot judge synthesized texture;
+external tools must likewise disable synthesis to make grain-free comparisons.
 
 ### Pre-encode denoising - NOT ADOPTED as a default; fftdnoiz on coarse grain OPEN
 

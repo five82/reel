@@ -3,8 +3,6 @@ package encode
 import (
 	"bufio"
 	"context"
-	"embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,30 +58,15 @@ const (
 // 2x at a stable estimator (0.055 vs 0.111 median bpp), so anything in
 // 0.060-0.090 classifies identically. For intuition at 3840x2160@23.976:
 //
-//	0.0703 bpp = 14 Mbps, 0.105 bpp = 21 Mbps.
+//	0.0703 bpp = 14 Mbps.
 //
-// At or above the med cutoff a title gets the medium grain table; between the
-// two cutoffs the light table; below, no treatment at all. Known accepted
-// miss: American Hustle (0.048 bpp measured, 18 Mbps delivered) sits below
-// the line under any resampling - a dark grainy title is cheap at the gate
-// CRF but expensive at the JOD target, so this signal will keep missing that
-// class; a fatter-than-expected library title is the adjustment trigger.
+// These cutoffs decide treatment, not synthesis strength. The historical
+// LightBPP names remain because they are also part of the stats contract.
 const (
 	uhdLightBPP float64 = 0.0703
-	// uhdMedBPP was 0.1205 (24 Mbps) pre-calibration; only Fargo ever
-	// reached it. 0.105 lets Vacation-class fine pervasive grain reach the
-	// medium table. A title near the line flips light/med run to run, which
-	// swaps the synthesis table, never the treat/no-treat verdict.
-	uhdMedBPP float64 = 0.105
-
-	// HD cutoffs are PROVISIONAL, low confidence: five 1080p sources, one
-	// with target-quality ground truth. 0.22 bpp (10.9 Mbps at
-	// 1920x1080@23.976) is the geometric center of the only gap in the
-	// measured data (soms 0.174 -> Mary Poppins 0.271) and matches grain
-	// reputations; the med cutoff carries the UHD med/light ratio. Revisit
-	// once a few 1080p titles have real accept/complain verdicts.
+	// HD remains provisional: five sources and only one with target-quality
+	// ground truth. Revisit after actual 1080p viewing verdicts.
 	hdLightBPP float64 = 0.22
-	hdMedBPP   float64 = 0.33
 )
 
 // Ambiguous band: a fixed-CRF median at or above these values but below the
@@ -155,23 +138,9 @@ const grainStage2Metric = quality.MetricCVVDP
 // about 0.3 CPU-seconds per 4K frame, which the reference cache amortizes.
 const grainDenoiseFilter = "fftdnoiz"
 
-// Grain tiers. The tables are prebuilt libaom "filmgrn1" tables: SVT's own
-// grain estimation halves encode speed, while a prebuilt table is free
-// (29.67 vs 29.61 fps) and is applied by the playback decoder, so it changes
-// no encoded pixel. Viewing picked medium over both the strong table (too
-// strong) and bare denoise with no table.
-const (
-	grainTierNone  = ""
-	grainTierLight = "light"
-	grainTierMed   = "med"
-
-	// grainModeOverride is the recorded mode when the experimental
-	// --denoise/--fgs-table flags decide the treatment instead of the gate.
-	grainModeOverride = "override"
-)
-
-//go:embed graintables/grain-light.tbl graintables/grain-med.tbl
-var grainTables embed.FS
+// grainModeOverride is the recorded mode when the experimental
+// --denoise/--fgs-table flags decide the treatment instead of the gate.
+const grainModeOverride = "override"
 
 // GrainTreatment is the resolved per-title treatment plus the record of how it
 // was decided.
@@ -192,8 +161,8 @@ type GrainGateInput struct {
 	Info      *video.Info
 	Chunks    []chunk.Chunk
 	CropRect  *video.CropRect
-	// DisplayPath is the CVVDP display model used to score the denoise
-	// ceiling; empty skips the ceiling measurement.
+	// DisplayPath is the CVVDP display model for the paired-frame ceiling
+	// pass. Treated titles require it; that pass also samples the grain.
 	DisplayPath string
 	// BandTopJOD is the top of the configured target-quality band, recorded
 	// in the stats for consumers judging the measured ceiling.
@@ -254,60 +223,61 @@ func resolveGrainTreatment(ctx context.Context, mode string, cfg *EncodeConfig, 
 		}}, nil
 	}
 
-	stats := loadGrainVerdict(in.WorkDir)
-	if stats == nil {
+	if err := ctx.Err(); err != nil {
+		return GrainTreatment{}, err
+	}
+	verdict, err := loadGrainVerdict(in.WorkDir)
+	if err != nil {
+		return GrainTreatment{}, err
+	}
+	if verdict == nil {
 		if !gate {
-			// Nothing decided yet, and this caller must not decide.
 			return GrainTreatment{}, nil
 		}
-		var err error
-		stats, err = runGrainGate(ctx, cfg, in)
+		stats, err := runGrainGate(ctx, cfg, in)
 		if err != nil {
 			return GrainTreatment{}, err
 		}
 		stats.BandTopJOD = in.BandTopJOD
-		// Record the verdict before the ceiling measurement: the verdict is
-		// what an interrupted run must resume with, the ceiling is only
-		// observability.
-		if err := saveGrainVerdict(in.WorkDir, stats); err != nil {
+		verdict = &grainVerdict{GrainTreatmentStats: *stats}
+		if stats.Treated {
+			if !encoder.FGSTableSupported() {
+				return GrainTreatment{}, fmt.Errorf("grain treatment requires SVT-AV1 film grain table support (>= 2.3.0)")
+			}
+			estimate, err := estimateGrainAndCeiling(ctx, in, &verdict.GrainTreatmentStats)
+			if err != nil {
+				return GrainTreatment{}, fmt.Errorf("grain estimation failed: %w", err)
+			}
+			verdict.setEstimate(estimate)
+		}
+		if err := ctx.Err(); err != nil {
 			return GrainTreatment{}, err
 		}
-		if stats.Treated {
-			measureDenoiseCeiling(ctx, in, stats)
-			if err := saveGrainVerdict(in.WorkDir, stats); err != nil {
-				return GrainTreatment{}, err
-			}
+		// No chunks can start before this returns. Publish the verdict AND
+		// exact model together only after estimation succeeds. An interruption
+		// before publication repeats the gate, never resumes a half-decision.
+		if err := saveGrainVerdict(in.WorkDir, verdict); err != nil {
+			return GrainTreatment{}, err
 		}
 	} else {
-		// A replayed verdict's timings describe the run that measured them,
-		// not this one; Reused keeps stats consumers from reading
-		// GateSeconds/CeilingSeconds as fresh wall time. Only the in-memory
-		// copy is marked: the recorded verdict stays as first written.
-		stats.Reused = true
+		verdict.Reused = true
 		if gate && in.Verbose != nil {
-			in.Verbose("Grain gate: reusing the verdict recorded in the work directory")
+			in.Verbose("Grain gate: reusing the recorded verdict and exact grain model")
 		}
 	}
 
-	treatment := GrainTreatment{Stats: stats}
-	if stats.Treated {
-		treatment.Denoise = stats.Denoise
+	treatment := GrainTreatment{Stats: &verdict.GrainTreatmentStats}
+	if verdict.Treated {
+		treatment.Denoise = verdict.Denoise
 		if gate {
 			if !encoder.FGSTableSupported() {
-				// An old SVT-AV1 cannot attach synthesis tables; denoise
-				// without re-adding texture rather than failing the encode,
-				// and record the downgrade in the stats.
-				stats.GrainTable = ""
-				if in.Verbose != nil {
-					in.Verbose("Grain gate: film grain synthesis skipped (linked SVT-AV1 lacks fgs table support)")
-				}
-			} else {
-				path, err := writeGrainTable(in.WorkDir, stats.Tier)
-				if err != nil {
-					return GrainTreatment{}, err
-				}
-				treatment.TablePath = path
+				return GrainTreatment{}, fmt.Errorf("grain treatment requires SVT-AV1 film grain table support (>= 2.3.0)")
 			}
+			path := filepath.Join(in.WorkDir, "grain-estimated.tbl")
+			if err := writeGrainFile(path, []byte(verdict.Table)); err != nil {
+				return GrainTreatment{}, err
+			}
+			treatment.TablePath = path
 		}
 	}
 	return treatment, nil
@@ -333,7 +303,7 @@ func runGrainGate(ctx context.Context, cfg *EncodeConfig, in GrainGateInput) (*p
 		stats.Reason = "SD sources are never treated"
 		return stats, nil
 	}
-	stats.AmbiguousBPPCutoff, stats.LightBPPCutoff, stats.MedBPPCutoff = bppCutoffs(in.Info.Width)
+	stats.AmbiguousBPPCutoff, stats.LightBPPCutoff = bppCutoffs(in.Info.Width)
 
 	samples := selectGrainSampleChunks(in.Chunks, in.Info.Frames)
 	if len(samples) == 0 {
@@ -369,7 +339,7 @@ func runGrainGate(ctx context.Context, cfg *EncodeConfig, in GrainGateInput) (*p
 	stats.GateSeconds = time.Since(start).Seconds()
 	stats.MedianBPP = median(stats.SampleBPP)
 	stats.GateStage = grainStageBPP
-	stats.Tier = grainTierFor(stats.MedianBPP, stats.LightBPPCutoff, stats.MedBPPCutoff)
+	stats.Treated = grainTreats(stats.MedianBPP, stats.LightBPPCutoff)
 
 	if grainStage2Applies(stats.MedianBPP, stats.AmbiguousBPPCutoff, stats.LightBPPCutoff) {
 		measure, closeScorer, err := newGrainStage2Measure(&gateCfg, in, gateDir, width, height)
@@ -387,10 +357,8 @@ func runGrainGate(ctx context.Context, cfg *EncodeConfig, in GrainGateInput) (*p
 		}
 	}
 
-	if stats.Tier != grainTierNone {
-		stats.Treated = true
+	if stats.Treated {
 		stats.Denoise = grainDenoiseFilter
-		stats.GrainTable = grainTableName(stats.Tier)
 	}
 	return stats, nil
 }
@@ -477,7 +445,7 @@ func applyGrainStage2(ctx context.Context, in GrainGateInput, stats *perf.GrainT
 	stats.Stage2DeliveredBPP = delivered
 	stats.Stage2MedianBPP = median(delivered)
 	stats.GateStage = grainStageTQProbe
-	stats.Tier = grainTierFor(stats.Stage2MedianBPP, stats.LightBPPCutoff, stats.MedBPPCutoff)
+	stats.Treated = grainTreats(stats.Stage2MedianBPP, stats.LightBPPCutoff)
 }
 
 // newGrainStage2Measure builds the production measurement: a CVVDP scorer plus
@@ -637,77 +605,6 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// measureDenoiseCeiling scores the denoised source against the real source on
-// the same sample chunks. Target-quality scores are measured against the
-// denoised reference, so without this the run would report quality it does not
-// deliver. Best effort: a ceiling failure must not fail the encode.
-func measureDenoiseCeiling(ctx context.Context, in GrainGateInput, stats *perf.GrainTreatmentStats) {
-	if in.DisplayPath == "" || len(stats.SampleChunks) == 0 {
-		stats.CeilingError = "no display model or sample chunks"
-		return
-	}
-	width, height := video.OutputDimensions(in.Info, in.CropRect)
-	proc, err := quality.NewVshipProcessor(width, height, in.Info, in.DisplayPath)
-	if err != nil {
-		stats.CeilingError = err.Error()
-		if in.Verbose != nil {
-			in.Verbose(fmt.Sprintf("Grain gate: denoise ceiling not measured: %v", err))
-		}
-		return
-	}
-	defer func() { _ = proc.Close() }()
-
-	byIdx := make(map[int]chunk.Chunk, len(in.Chunks))
-	for _, ch := range in.Chunks {
-		byIdx[ch.Idx] = ch
-	}
-	start := time.Now()
-	var scores []float64
-	for _, idx := range stats.SampleChunks {
-		ch, ok := byIdx[idx]
-		if !ok {
-			continue
-		}
-		res, err := quality.ComputeChunkDenoiseCeiling(ctx, quality.DenoiseCeilingOptions{
-			SourcePath: in.InputPath,
-			Info:       in.Info,
-			Chunk:      ch,
-			CropRect:   in.CropRect,
-			Width:      width,
-			Height:     height,
-			Denoise:    stats.Denoise,
-			Processor:  proc,
-		})
-		if err != nil {
-			stats.CeilingError = err.Error()
-			if in.Verbose != nil {
-				in.Verbose(fmt.Sprintf("Grain gate: denoise ceiling not measured: %v", err))
-			}
-			return
-		}
-		scores = append(scores, float64(res.Score))
-		if in.Verbose != nil {
-			in.Verbose(fmt.Sprintf("Grain gate ceiling chunk=%04d denoise_ceiling_jod=%.4f", ch.Idx, res.Score))
-		}
-	}
-	if len(scores) == 0 {
-		stats.CeilingError = "no sample chunks scored"
-		return
-	}
-	stats.CeilingSeconds = time.Since(start).Seconds()
-	mean, minScore := 0.0, scores[0]
-	for _, s := range scores {
-		mean += s
-		if s < minScore {
-			minScore = s
-		}
-	}
-	mean /= float64(len(scores))
-	stats.DenoiseCeilingJODMean = &mean
-	stats.DenoiseCeilingJODMin = &minScore
-	stats.CeilingMeasured = true
-}
-
 // selectGrainSampleChunks picks evenly spaced chunks that lie entirely within
 // the title's middle and are long enough to measure. Short titles fall back to
 // any long-enough chunk, and give up rather than measure noise.
@@ -742,25 +639,18 @@ func longChunksWithin(chunks []chunk.Chunk, low, high int) []chunk.Chunk {
 	return out
 }
 
-func grainTierFor(medianBPP, lightCutoff, medCutoff float64) string {
-	switch {
-	case medCutoff > 0 && medianBPP >= medCutoff:
-		return grainTierMed
-	case lightCutoff > 0 && medianBPP >= lightCutoff:
-		return grainTierLight
-	default:
-		return grainTierNone
-	}
+func grainTreats(medianBPP, cutoff float64) bool {
+	return cutoff > 0 && medianBPP >= cutoff
 }
 
-func bppCutoffs(width uint32) (ambiguous, light, med float64) {
+func bppCutoffs(width uint32) (ambiguous, treat float64) {
 	switch resolutionClass(width) {
 	case "uhd":
-		return uhdAmbiguousBPP, uhdLightBPP, uhdMedBPP
+		return uhdAmbiguousBPP, uhdLightBPP
 	case "hd":
-		return hdAmbiguousBPP, hdLightBPP, hdMedBPP
+		return hdAmbiguousBPP, hdLightBPP
 	default:
-		return 0, 0, 0
+		return 0, 0
 	}
 }
 
@@ -773,58 +663,6 @@ func resolutionClass(width uint32) string {
 	default:
 		return "sd"
 	}
-}
-
-func grainTableName(tier string) string {
-	return "grain-" + tier
-}
-
-// writeGrainTable materializes the tier's embedded table in the work
-// directory and returns its path; the SVT wrapper reads a table from a file.
-func writeGrainTable(workDir, tier string) (string, error) {
-	data, err := grainTables.ReadFile(filepath.Join("graintables", grainTableName(tier)+".tbl"))
-	if err != nil {
-		return "", fmt.Errorf("unknown grain tier %q: %w", tier, err)
-	}
-	path := filepath.Join(workDir, grainTableName(tier)+".tbl")
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write grain table: %w", err)
-	}
-	return path, nil
-}
-
-// grainVerdictPath is the recorded gate decision. It lives in the work
-// directory root, so chunk.EnsureResumeManifest's reset removes it with the
-// rest of the stale state.
-func grainVerdictPath(workDir string) string {
-	return filepath.Join(workDir, "grain-gate.json")
-}
-
-// loadGrainVerdict returns the recorded verdict, or nil when there is none.
-// An unreadable or corrupt verdict is treated as none: re-running the gate is
-// always a valid answer, and the manifest catches a disagreement.
-func loadGrainVerdict(workDir string) *perf.GrainTreatmentStats {
-	data, err := os.ReadFile(grainVerdictPath(workDir))
-	if err != nil {
-		return nil
-	}
-	var stats perf.GrainTreatmentStats
-	if err := json.Unmarshal(data, &stats); err != nil {
-		return nil
-	}
-	return &stats
-}
-
-func saveGrainVerdict(workDir string, stats *perf.GrainTreatmentStats) error {
-	data, err := json.MarshalIndent(stats, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to encode grain gate verdict: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(grainVerdictPath(workDir), data, 0644); err != nil {
-		return fmt.Errorf("failed to write grain gate verdict: %w", err)
-	}
-	return nil
 }
 
 // GrainTreatmentSummary is the human-readable verdict for the Encoding
@@ -856,7 +694,10 @@ func GrainTreatmentSummary(stats *perf.GrainTreatmentStats) []string {
 		lines[len(lines)-1] += " This title is clean, so it encodes untreated."
 		return lines
 	}
-	treated := fmt.Sprintf("This title is grainy, so it encodes denoised with %s and the %s film grain table.", stats.Denoise, stats.Tier)
+	treated := fmt.Sprintf("This title is grainy, so it encodes denoised with %s and source-matched film grain.", stats.Denoise)
+	if e := stats.Estimation; e != nil {
+		treated += fmt.Sprintf(" Grain was estimated from %d patches across %d frames in %.2fs.", e.Patches, len(e.Frames), e.Seconds)
+	}
 	if stats.DenoiseCeilingJODMean != nil && stats.DenoiseCeilingJODMin != nil {
 		treated += fmt.Sprintf(" Denoising itself costs quality: measured against the real source the samples top out at %.2f JOD on average and %.2f at worst.",
 			*stats.DenoiseCeilingJODMean, *stats.DenoiseCeilingJODMin)

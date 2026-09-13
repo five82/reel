@@ -69,6 +69,9 @@ type TargetQualityStats = perf.TargetQualityStats
 // sit under.
 type GrainTreatmentStats = perf.GrainTreatmentStats
 
+// GrainEstimationStats describes the sampled source-matched film grain model.
+type GrainEstimationStats = perf.GrainEstimationStats
+
 // TargetQualityMetricStats aggregates the CRF search outcomes for the chunks
 // scored with one metric.
 type TargetQualityMetricStats = perf.TargetQualityMetricStats

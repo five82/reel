@@ -108,13 +108,16 @@ type TargetQualityStats struct {
 type GrainTreatmentStats struct {
 	// Mode is how the treatment was decided: "auto" (the gate ran), "off"
 	// (disabled by the user), or "override" (explicit experimental flags).
-	Mode            string `json:"mode"`
-	Treated         bool   `json:"treated"`
+	Mode    string `json:"mode"`
+	Treated bool   `json:"treated"`
+	// Tier is "estimated" for source-matched grain. Historical reports used
+	// "light"/"med"; retained so embedders can still read those reports.
 	Tier            string `json:"tier,omitempty"`
 	ResolutionClass string `json:"resolution_class"`
 	// Denoise and GrainTable are what the encode actually ran with.
-	Denoise    string `json:"denoise,omitempty"`
-	GrainTable string `json:"grain_table,omitempty"`
+	Denoise    string                `json:"denoise,omitempty"`
+	GrainTable string                `json:"grain_table,omitempty"`
+	Estimation *GrainEstimationStats `json:"estimation,omitempty"`
 	// Reason explains a verdict the numbers alone do not (no eligible sample
 	// chunks, SD source, explicit override).
 	Reason string `json:"reason,omitempty"`
@@ -124,9 +127,10 @@ type GrainTreatmentStats struct {
 	SampleBPP      []float64 `json:"sample_bpp,omitempty"`
 	MedianBPP      float64   `json:"median_bpp,omitempty"`
 	LightBPPCutoff float64   `json:"light_bpp_cutoff,omitempty"`
-	MedBPPCutoff   float64   `json:"med_bpp_cutoff,omitempty"`
-	GateSeconds    float64   `json:"gate_seconds,omitempty"`
-	CeilingSeconds float64   `json:"ceiling_seconds,omitempty"`
+	// MedBPPCutoff is retained for historical reports; estimation has no tiers.
+	MedBPPCutoff   float64 `json:"med_bpp_cutoff,omitempty"`
+	GateSeconds    float64 `json:"gate_seconds,omitempty"`
+	CeilingSeconds float64 `json:"ceiling_seconds,omitempty"`
 
 	// GateStage is which stage decided the verdict: "bpp" (the fixed-CRF
 	// median alone) or "tq_probe" (the median landed in the ambiguous band
@@ -135,7 +139,7 @@ type GrainTreatmentStats struct {
 	GateStage          string  `json:"gate_stage,omitempty"`
 	AmbiguousBPPCutoff float64 `json:"ambiguous_bpp_cutoff,omitempty"`
 	// Stage2DeliveredBPP is what each sample chunk costs at the quality
-	// target, compared against the same Light/Med cutoffs as the fixed-CRF
+	// target, compared against the same treatment cutoff as the fixed-CRF
 	// median. Stage2Probes counts the probe encodes it took across all
 	// samples; Stage2Error records why a refinement that was due did not
 	// happen (the fixed-CRF verdict then stands).
@@ -147,8 +151,9 @@ type GrainTreatmentStats struct {
 
 	DenoiseCeilingJODMean *float64 `json:"denoise_ceiling_jod_mean,omitempty"`
 	DenoiseCeilingJODMin  *float64 `json:"denoise_ceiling_jod_min,omitempty"`
-	// CeilingMeasured distinguishes a measured ceiling from a skipped or
-	// failed best-effort measurement; CeilingError says why it is absent.
+	// CeilingMeasured records a completed paired-frame pass. CeilingError
+	// remains for historical best-effort reports; automatic treatment now
+	// fails if this pass cannot supply a valid grain model.
 	CeilingMeasured bool   `json:"ceiling_measured,omitempty"`
 	CeilingError    string `json:"ceiling_error,omitempty"`
 	// BandTopJOD is the top of the configured target-quality band, recorded
@@ -159,6 +164,19 @@ type GrainTreatmentStats struct {
 	// GateSeconds/CeilingSeconds then describe the run that measured them,
 	// not this one.
 	Reused bool `json:"reused,omitempty"`
+}
+
+// GrainEstimationStats records the bounded analysis that generated the table.
+// The exact table lives in grain-gate.json; SHA256 also pins resume identity.
+// Seconds is sampler/fitter wall time within CeilingSeconds, not an additional
+// full decode pass, and describes the original run when the verdict is Reused.
+type GrainEstimationStats struct {
+	Version        string  `json:"version"`
+	SHA256         string  `json:"sha256"`
+	Frames         []int   `json:"frames"`
+	AcceptedFrames int     `json:"accepted_frames"`
+	Patches        int     `json:"patches"`
+	Seconds        float64 `json:"seconds"`
 }
 
 // WorkerSummary condenses the sampled worker history: a time-weighted mean of

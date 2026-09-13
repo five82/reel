@@ -79,7 +79,7 @@ static AomFilmGrain* reel_read_fgs_table(const char* path) {
     }
     int ok = 0;
     do {
-        if (fscanf(file, "E %*d %*d %d %hu %d\n", &fg->apply_grain, &fg->random_seed, &fg->update_parameters) != 3) {
+        if (fscanf(file, "E %*lld %*lld %d %hu %d\n", &fg->apply_grain, &fg->random_seed, &fg->update_parameters) != 3) {
             break;
         }
         if (fg->update_parameters) {
@@ -214,8 +214,7 @@ import (
 )
 
 // FGSTableSupported reports whether the linked SVT-AV1 exposes the film grain
-// synthesis table API (>= 2.3.0). The grain gate skips attaching a table when
-// it is absent instead of failing the encode.
+// synthesis table API (>= 2.3.0). Automatic grain treatment requires it.
 func FGSTableSupported() bool {
 	return C.reel_fgs_table_supported() != 0
 }
@@ -256,7 +255,7 @@ func newSvtEncoder(cfg *EncConfig) (*svtEncoder, error) {
 		return nil, err
 	}
 
-	// EXPERIMENTAL: attach a prebuilt libaom "filmgrn1" grain table. This
+	// Attach a precomputed libaom "filmgrn1" grain table. This
 	// bypasses SVT's expensive in-encoder grain estimation entirely: encoded
 	// pixels and rate are unchanged, only frame headers gain synthesis
 	// params, and the table is intensity-indexed with no spatial anchoring,

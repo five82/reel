@@ -72,42 +72,28 @@ func TestSelectGrainSampleChunksShortTitles(t *testing.T) {
 	}
 }
 
-func TestGrainTierThresholds(t *testing.T) {
-	const uhdWidth, hdWidth, sdWidth = 3840, 1920, 1280
-
-	uhdAmbiguous, uhdLight, uhdMed := bppCutoffs(uhdWidth)
-	if uhdAmbiguous != uhdAmbiguousBPP || uhdLight != uhdLightBPP || uhdMed != uhdMedBPP {
-		t.Fatalf("UHD cutoffs = %v/%v/%v", uhdAmbiguous, uhdLight, uhdMed)
-	}
-	hdAmbiguous, hdLight, hdMed := bppCutoffs(hdWidth)
-	if hdAmbiguous != hdAmbiguousBPP || hdLight != hdLightBPP || hdMed != hdMedBPP {
-		t.Fatalf("HD cutoffs = %v/%v/%v, want the calibrated HD constants", hdAmbiguous, hdLight, hdMed)
-	}
-	if ambiguous, light, med := bppCutoffs(sdWidth); ambiguous != 0 || light != 0 || med != 0 {
-		t.Fatalf("SD cutoffs = %v/%v/%v, want none", ambiguous, light, med)
-	}
-
-	cases := []struct {
-		name string
-		bpp  float64
-		want string
-	}{
-		{"far above med", 0.30, grainTierMed},
-		{"exactly med", uhdMedBPP, grainTierMed},
-		{"just below med", uhdMedBPP - 1e-6, grainTierLight},
-		{"exactly light", uhdLightBPP, grainTierLight},
-		{"just below light", uhdLightBPP - 1e-6, grainTierNone},
-		{"clean", 0.01, grainTierNone},
-	}
-	for _, tc := range cases {
-		if got := grainTierFor(tc.bpp, uhdLight, uhdMed); got != tc.want {
-			t.Errorf("%s: tier(%.6f) = %q, want %q", tc.name, tc.bpp, got, tc.want)
+func TestGrainTreatmentThresholds(t *testing.T) {
+	for _, tc := range []struct {
+		width            uint32
+		ambiguous, treat float64
+	}{{3840, uhdAmbiguousBPP, uhdLightBPP}, {1920, hdAmbiguousBPP, hdLightBPP}, {1280, 0, 0}} {
+		ambiguous, treat := bppCutoffs(tc.width)
+		if ambiguous != tc.ambiguous || treat != tc.treat {
+			t.Errorf("%d: cutoffs %v/%v, want %v/%v", tc.width, ambiguous, treat, tc.ambiguous, tc.treat)
 		}
 	}
-
-	// SD has no cutoffs, so nothing can be treated there.
-	if got := grainTierFor(10, 0, 0); got != grainTierNone {
-		t.Errorf("SD tier = %q, want none", got)
+	for _, tc := range []struct {
+		bpp  float64
+		want bool
+	}{
+		{0.30, true}, {uhdLightBPP, true}, {uhdLightBPP - 1e-6, false}, {0.01, false},
+	} {
+		if got := grainTreats(tc.bpp, uhdLightBPP); got != tc.want {
+			t.Errorf("treat(%.6f) = %v, want %v", tc.bpp, got, tc.want)
+		}
+	}
+	if grainTreats(10, 0) {
+		t.Error("SD must not be treated")
 	}
 }
 
@@ -120,7 +106,6 @@ func TestGrainCutoffsMatchTheirMbpsLandmarks(t *testing.T) {
 		mbps float64
 	}{
 		{uhdLightBPP, 14},
-		{uhdMedBPP, 21},
 	} {
 		got := mbpsFromBPP(tc.bpp, 3840, 2160, inf)
 		if math.Abs(got-tc.mbps) > 0.2 {
@@ -141,25 +126,19 @@ func TestMedian(t *testing.T) {
 	}
 }
 
-// TestEmbeddedGrainTablesEncode proves the shipped tables parse through the
-// cgo "filmgrn1" reader in the SVT wrapper: a table it rejects fails the
-// encode, so a successful encode is the parse.
-func TestEmbeddedGrainTablesEncode(t *testing.T) {
-	for _, tier := range []string{grainTierLight, grainTierMed} {
-		t.Run(tier, func(t *testing.T) {
-			workDir := t.TempDir()
-			path, err := writeGrainTable(workDir, tier)
-			if err != nil {
-				t.Fatalf("writeGrainTable(%q): %v", tier, err)
-			}
-			if err := encodeWithGrainTable(path); err != nil {
-				t.Fatalf("encode with %s table: %v", tier, err)
-			}
-		})
+// Exercise the actual SVT parser/encoder with fitted AR and chroma parameters,
+// not just a hand-written white-noise fixture.
+func TestEstimatedGrainTableEncodes(t *testing.T) {
+	if !encoder.FGSTableSupported() {
+		t.Skip("linked SVT-AV1 does not support grain tables")
 	}
-
-	if _, err := writeGrainTable(t.TempDir(), "nonexistent"); err == nil {
-		t.Error("unknown tier should not resolve to a table")
+	estimate := testGrainEstimate(t)
+	path := filepath.Join(t.TempDir(), "estimated.tbl")
+	if err := writeGrainFile(path, []byte(estimate.Table)); err != nil {
+		t.Fatal(err)
+	}
+	if err := encodeWithGrainTable(path); err != nil {
+		t.Fatalf("encode with estimated grain: %v", err)
 	}
 
 	// Control: a table the reader rejects must fail, otherwise the tests above
@@ -203,21 +182,20 @@ func encodeWithGrainTable(tablePath string) error {
 // source (these calls would fail if they tried to encode sample chunks: the
 // input path does not exist).
 func TestRecordedVerdictIsReusedNotRegated(t *testing.T) {
+	if !encoder.FGSTableSupported() {
+		t.Skip("linked SVT-AV1 does not support grain tables")
+	}
 	workDir := t.TempDir()
 	recorded := &perf.GrainTreatmentStats{
 		Mode:            config.GrainTreatmentAuto,
 		Treated:         true,
-		Tier:            grainTierMed,
 		ResolutionClass: "uhd",
 		Denoise:         grainDenoiseFilter,
-		GrainTable:      "grain-med",
 		MedianBPP:       0.1904,
 		SampleChunks:    []int{20, 34, 49, 64, 79},
 		SampleBPP:       []float64{0.18, 0.19, 0.1904, 0.20, 0.21},
 	}
-	if err := saveGrainVerdict(workDir, recorded); err != nil {
-		t.Fatalf("saveGrainVerdict: %v", err)
-	}
+	saveTestGrainVerdict(t, workDir, recorded)
 
 	in := GrainGateInput{InputPath: filepath.Join(workDir, "missing.mkv"), WorkDir: workDir, Info: uhdInfo(), Chunks: makeChunks(100, 120)}
 	cfg := &EncodeConfig{}
@@ -226,7 +204,7 @@ func TestRecordedVerdictIsReusedNotRegated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveGrainTreatment: %v", err)
 	}
-	if got.Denoise != grainDenoiseFilter || got.Stats.Tier != grainTierMed {
+	if got.Denoise != grainDenoiseFilter || got.Stats.Tier != "estimated" {
 		t.Fatalf("resumed treatment = %+v", got)
 	}
 	if got.Stats.MedianBPP != recorded.MedianBPP || len(got.Stats.SampleChunks) != 5 {
@@ -241,7 +219,7 @@ func TestRecordedVerdictIsReusedNotRegated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordedGrainTreatment: %v", err)
 	}
-	if pre.Denoise != grainDenoiseFilter || pre.Stats.GrainTable != "grain-med" {
+	if pre.Denoise != grainDenoiseFilter || pre.Stats.GrainTable != recorded.GrainTable {
 		t.Errorf("recorded treatment = %+v", pre)
 	}
 	if pre.TablePath != "" {
@@ -307,7 +285,7 @@ func TestGrainTreatmentSummary(t *testing.T) {
 
 	mean, worst := 9.71, 9.62
 	treated := GrainTreatmentSummary(&perf.GrainTreatmentStats{
-		Mode: config.GrainTreatmentAuto, GateCRF: 22, Treated: true, Tier: grainTierMed,
+		Mode: config.GrainTreatmentAuto, GateCRF: 22, Treated: true, Tier: "estimated",
 		Denoise: grainDenoiseFilter, SampleBPP: []float64{0.19}, MedianBPP: 0.19,
 		LightBPPCutoff: uhdLightBPP, DenoiseCeilingJODMean: &mean, DenoiseCeilingJODMin: &worst,
 	})
@@ -318,7 +296,7 @@ func TestGrainTreatmentSummary(t *testing.T) {
 	// A stage 2 verdict says what the fixed-CRF measurement could not settle
 	// and what measuring at the target found.
 	stage2 := GrainTreatmentSummary(&perf.GrainTreatmentStats{
-		Mode: config.GrainTreatmentAuto, GateCRF: 22, Treated: true, Tier: grainTierLight,
+		Mode: config.GrainTreatmentAuto, GateCRF: 22, Treated: true, Tier: "estimated",
 		Denoise: grainDenoiseFilter, SampleBPP: []float64{0.0477}, MedianBPP: 0.0477,
 		AmbiguousBPPCutoff: uhdAmbiguousBPP, LightBPPCutoff: uhdLightBPP,
 		GateStage: grainStageTQProbe, Stage2MedianBPP: 0.0919,
@@ -343,8 +321,8 @@ func TestGrainTreatmentSummary(t *testing.T) {
 // title is cheap everywhere; at or above the treat cutoff stage 1 already
 // decides.
 func TestGrainStage2BandRouting(t *testing.T) {
-	uhdAmbiguous, uhdLight, _ := bppCutoffs(3840)
-	hdAmbiguous, hdLight, _ := bppCutoffs(1920)
+	uhdAmbiguous, uhdLight := bppCutoffs(3840)
+	hdAmbiguous, hdLight := bppCutoffs(1920)
 
 	cases := []struct {
 		name                  string
@@ -377,17 +355,17 @@ func TestGrainStage2BandRouting(t *testing.T) {
 // against the same cutoffs the fixed-CRF median was.
 func TestGrainStage2DecidesFromDeliveredBPP(t *testing.T) {
 	cases := []struct {
-		name      string
-		delivered []float64
-		wantTier  string
+		name        string
+		delivered   []float64
+		wantTreated bool
 	}{
 		// American Hustle: 0.048 bpp at CRF 22 but 18.3 Mbps delivered
 		// (0.092 bpp), the false negative stage 2 exists to catch.
-		{"delivered bits clear the treat cutoff", []float64{0.070, 0.0919, 0.110}, grainTierLight},
+		{"delivered bits clear the treat cutoff", []float64{0.070, 0.0919, 0.110}, true},
 		// Meet the Parents: 0.055 at CRF 22 and 9.9 Mbps delivered, which
 		// must stay untreated even though it measures alongside Hustle.
-		{"delivered bits stay under the cutoff", []float64{0.040, 0.0497, 0.060}, grainTierNone},
-		{"delivered bits reach the medium table", []float64{0.100, 0.120, 0.140}, grainTierMed},
+		{"delivered bits stay under the cutoff", []float64{0.040, 0.0497, 0.060}, false},
+		{"delivered bits far above cutoff", []float64{0.100, 0.120, 0.140}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -401,8 +379,8 @@ func TestGrainStage2DecidesFromDeliveredBPP(t *testing.T) {
 			}
 			applyGrainStage2(context.Background(), GrainGateInput{}, stats, samples, measure)
 
-			if stats.Tier != tc.wantTier {
-				t.Errorf("tier = %q, want %q", stats.Tier, tc.wantTier)
+			if stats.Treated != tc.wantTreated {
+				t.Errorf("treated = %v, want %v", stats.Treated, tc.wantTreated)
 			}
 			if stats.GateStage != grainStageTQProbe {
 				t.Errorf("gate stage = %q, want %q", stats.GateStage, grainStageTQProbe)
@@ -443,8 +421,8 @@ func TestGrainStage2FallsBackToStage1OnError(t *testing.T) {
 	}
 	applyGrainStage2(context.Background(), GrainGateInput{}, stats, makeChunks(3, 200), measure)
 
-	if stats.Tier != grainTierNone {
-		t.Errorf("tier = %q, want the stage 1 verdict", stats.Tier)
+	if stats.Treated {
+		t.Error("failed refinement changed the stage 1 verdict")
 	}
 	if stats.GateStage != grainStageBPP {
 		t.Errorf("gate stage = %q, want %q", stats.GateStage, grainStageBPP)
@@ -515,32 +493,31 @@ func TestGrainStage2Ladder(t *testing.T) {
 // the recorded verdict carries the target-quality measurement, so a resumed
 // run replays it instead of re-probing.
 func TestGrainVerdictRoundTripsStage2Fields(t *testing.T) {
+	if !encoder.FGSTableSupported() {
+		t.Skip("linked SVT-AV1 does not support grain tables")
+	}
 	workDir := t.TempDir()
 	recorded := &perf.GrainTreatmentStats{
 		Mode:               config.GrainTreatmentAuto,
 		Treated:            true,
-		Tier:               grainTierLight,
 		ResolutionClass:    "uhd",
 		Denoise:            grainDenoiseFilter,
-		GrainTable:         "grain-light",
 		GateCRF:            float64(grainGateCRF),
 		SampleChunks:       []int{20, 34, 49},
 		SampleBPP:          []float64{0.041, 0.0477, 0.052},
 		MedianBPP:          0.0477,
 		AmbiguousBPPCutoff: uhdAmbiguousBPP,
 		LightBPPCutoff:     uhdLightBPP,
-		MedBPPCutoff:       uhdMedBPP,
 		GateStage:          grainStageTQProbe,
 		Stage2DeliveredBPP: []float64{0.081, 0.0919, 0.102},
 		Stage2MedianBPP:    0.0919,
 		Stage2Probes:       7,
 		Stage2Seconds:      431.5,
 	}
-	if err := saveGrainVerdict(workDir, recorded); err != nil {
-		t.Fatalf("saveGrainVerdict: %v", err)
-	}
-	if loaded := loadGrainVerdict(workDir); !reflect.DeepEqual(loaded, recorded) {
-		t.Fatalf("loaded verdict = %+v, want %+v", loaded, recorded)
+	saveTestGrainVerdict(t, workDir, recorded)
+	loaded, err := loadGrainVerdict(workDir)
+	if err != nil || !reflect.DeepEqual(&loaded.GrainTreatmentStats, recorded) {
+		t.Fatalf("loaded verdict = %+v (%v), want %+v", loaded, err, recorded)
 	}
 
 	// The JSON keys are the stats contract embedders read.
@@ -581,9 +558,7 @@ func ambiguousStage1Stats() *perf.GrainTreatmentStats {
 		MedianBPP:          0.0477,
 		AmbiguousBPPCutoff: uhdAmbiguousBPP,
 		LightBPPCutoff:     uhdLightBPP,
-		MedBPPCutoff:       uhdMedBPP,
 		GateStage:          grainStageBPP,
-		Tier:               grainTierNone,
 	}
 }
 

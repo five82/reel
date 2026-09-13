@@ -48,6 +48,10 @@ type DenoiseCeilingOptions struct {
 	Height     uint32
 	Denoise    string
 	Processor  *VshipProcessor
+	// Observe receives aligned YUV420P10LE pairs on the decode producer,
+	// before their buffers are recycled. i is chunk-relative. It must not
+	// retain or modify the slices. Only the ceiling pass samples grain.
+	Observe func(i int, original, denoised []byte) error
 }
 
 // metricSourceDecoderThreads sizes the CVVDP reference decoder. One thread
@@ -110,7 +114,7 @@ func ComputeChunkCVVDP(ctx context.Context, opts CVVDPOptions) (CVVDPResult, err
 		}
 		return nil
 	}
-	return computeCVVDPFrames(ctx, opts.Processor, opts.Width, opts.Height, opts.Chunk.Frames(), readRef, readDist)
+	return computeCVVDPFrames(ctx, opts.Processor, opts.Width, opts.Height, opts.Chunk.Frames(), readRef, readDist, nil)
 }
 
 // ComputeChunkDenoiseCeiling scores the denoised source against the unfiltered
@@ -152,7 +156,7 @@ func ComputeChunkDenoiseCeiling(ctx context.Context, opts DenoiseCeilingOptions)
 		}
 	}
 	return computeCVVDPFrames(ctx, opts.Processor, opts.Width, opts.Height, opts.Chunk.Frames(),
-		read(refReader, "source"), read(distReader, "denoised"))
+		read(refReader, "source"), read(distReader, "denoised"), opts.Observe)
 }
 
 // computeCVVDPFrames runs the whole-chunk CVVDP pass. Decode runs in a
@@ -165,6 +169,7 @@ func computeCVVDPFrames(
 	width, height uint32,
 	frames int,
 	readRef, readDist func(i int, buf []byte) error,
+	observe func(i int, original, denoised []byte) error,
 ) (CVVDPResult, error) {
 	ctx, cancelDecode := context.WithCancel(ctx)
 	defer cancelDecode()
@@ -212,11 +217,7 @@ func computeCVVDPFrames(
 				decodedCh <- decodedFrame{err: ctx.Err()}
 				return
 			}
-			if err := readRef(i, pair.srcBuf); err != nil {
-				decodedCh <- decodedFrame{err: err}
-				return
-			}
-			if err := readDist(i, pair.distBuf); err != nil {
+			if err := readCVVDPPair(ctx, i, pair.srcBuf, pair.distBuf, readRef, readDist, observe); err != nil {
 				decodedCh <- decodedFrame{err: err}
 				return
 			}
@@ -255,6 +256,31 @@ func computeCVVDPFrames(
 		Frames:        frames,
 		MetricSeconds: time.Since(start).Seconds(),
 	}, nil
+}
+
+// Keep paired observation on the producer, before either ring buffer can be
+// recycled. Both readers must succeed before an estimator sees the pair.
+func readCVVDPPair(ctx context.Context, i int, source, denoised []byte,
+	readRef, readDist func(int, []byte) error, observe func(int, []byte, []byte) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := readRef(i, source); err != nil {
+		return err
+	}
+	if err := readDist(i, denoised); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if observe != nil {
+		if err := observe(i, source, denoised); err != nil {
+			return fmt.Errorf("frame-pair analysis failed on frame %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 func PlanesFromYUV420P10(buf []byte, width, height uint32) (FramePlanes, error) {
