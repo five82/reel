@@ -712,6 +712,51 @@ phases 1-3b, matched viewing pairs under `phase3/runs/`), prototype on branch
 `denoise` (uncommitted); Ryzen 9 7950X / RTX 5060 Ti, SVT-AV1 4.2 `0696282`,
 ffmpeg git-2026-08-28, libvship per `check-deps.sh`.
 
+## Crop analysis
+
+### Exact edge scanning - KEEP; further kernel tuning CLOSED
+
+**Question:** Can crop analysis avoid full-frame row/column statistics without
+changing which pixels or aspect ratios Reel preserves? Inspired by xav's recent
+edge-scan work, but independently implemented in Go without importing its assembly,
+13-sample policy, or symmetric-crop assumptions.
+
+**Decision 2026-09-14:** Keep the simpler, allocation-free traversal. Count bright
+pixels only until the existing frame-activity floor succeeds, then scan inward
+from each edge and stop each line when its count-or-contrast predicate succeeds.
+These predicates are monotone, so early success is exact. Column scans still
+include inactive rows. All 141 samples, near-frame decoding, thresholds,
+8/10-bit handling, asymmetric edges, even rounding, and mixed-aspect aggregation
+remain unchanged; no cross-frame early exit is used.
+
+**Accuracy:** The frozen old implementation matched on all 1974 sampled frames
+from 14 sources (12 SDR/HDR/CG/grain clips plus full Mary Poppins and Life of Pi
+sources), including three rejected dark samples. All six complete crop runs per
+source matched the expected final CropResult, including `bb`'s mixed-aspect flag
+and Mary Poppins' pillarbox. Known-geometry and threshold tests, 3000 randomized
+frames, and about 2.16 million differential fuzz executions passed. This proves
+baseline equivalence on the tested data, not independent visual correctness of
+the original crop policy or coverage of aspect changes between samples.
+
+**Speed:** Three repeated already-decoded synthetic benchmarks per case measured
+1.8-4.6x faster letterbox/pillarbox/windowbox analysis at 1080p and 4K, with zero
+allocations versus six. Full-frame active images benefited much more; all-black
+frames were 1.7-1.9x faster. But three alternating old/new complete crop-phase
+runs per source measured pooled medians of 144.539 -> 143.450 seconds, only
+0.75% less wall. Individual medians ranged from effectively unchanged to 2%
+faster. Seeking/decoding dominate; this is NOT an end-to-end encode speedup.
+
+**Build/hardware:** Ryzen 9 7950X, Go 1.27.1, ordinary cgo build. Both algorithms
+and complete crop paths were compiled into one hashed test binary. Native
+versions, linked paths, source snapshots, luma sample hashes, per-run timings,
+and the overlay-based corpus harness are recorded under
+`$REEL_TESTING_DIR/crop-analysis-20260914/`.
+
+**Follow-up:** Closed, low priority because analysis is no longer a meaningful
+crop-phase cost. Do not add SIMD, reduce sampling, or redesign decoding to chase
+this result. Reopen only if representative startup timings show a material crop
+bottleneck after a decoder/hardware change or a concrete library-use complaint.
+
 ## Low-value pipeline work
 
 Existing `perf.json` measurements put media-property probes, validation opens,

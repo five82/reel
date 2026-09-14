@@ -220,32 +220,43 @@ func detectLumaCrop(data []byte, width, height, stride int, is10Bit bool, lumaSh
 		return detectedCrop{}, false
 	}
 
-	stats := newLumaStats(width, height)
-	for row := 0; row < height; row++ {
-		rowOff := row * stride
-		for col := 0; col < width; col++ {
-			stats.add(row, col, readLuma8(data, rowOff, col, is10Bit, lumaShift))
-		}
-	}
-	if stats.activePixels < minActiveFramePixels(width, height) {
+	// Only the frame's activity floor and its outermost active lines matter.
+	// These predicates are monotone, so they can stop as soon as they succeed
+	// without changing the full-frame statistics result. Keep every sample:
+	// stopping across frames would lose mixed-aspect reporting. This removes
+	// allocations, but measured crop wall is decode-bound; see the performance
+	// decisions before adding more kernel complexity.
+	if !hasActiveLuma(data, width, height, stride, is10Bit, lumaShift) {
 		return detectedCrop{}, false
+	}
+	activeRow := func(row int) bool {
+		return activeLumaLine(data, row*stride, bytesPerSample, width, is10Bit, lumaShift)
+	}
+	activeCol := func(col int) bool {
+		return activeLumaLine(data, col*bytesPerSample, stride, height, is10Bit, lumaShift)
 	}
 
-	top, ok := stats.firstActiveRow()
-	if !ok {
+	top := 0
+	for top < height && !activeRow(top) {
+		top++
+	}
+	if top == height {
 		return detectedCrop{}, false
 	}
-	bottom, ok := stats.lastActiveRow()
-	if !ok {
+	bottom := height - 1
+	for bottom > top && !activeRow(bottom) {
+		bottom--
+	}
+	left := 0
+	for left < width && !activeCol(left) {
+		left++
+	}
+	if left == width {
 		return detectedCrop{}, false
 	}
-	left, ok := stats.firstActiveCol()
-	if !ok {
-		return detectedCrop{}, false
-	}
-	right, ok := stats.lastActiveCol()
-	if !ok {
-		return detectedCrop{}, false
+	right := width - 1
+	for right > left && !activeCol(right) {
+		right--
 	}
 
 	return detectedCrop{
@@ -256,102 +267,38 @@ func detectLumaCrop(data []byte, width, height, stride int, is10Bit bool, lumaSh
 	}, true
 }
 
-type lumaStats struct {
-	width        int
-	height       int
-	rowCounts    []int
-	colCounts    []int
-	rowMin       []uint8
-	rowMax       []uint8
-	colMin       []uint8
-	colMax       []uint8
-	activePixels int
-}
-
-func newLumaStats(width, height int) lumaStats {
-	stats := lumaStats{
-		width:     width,
-		height:    height,
-		rowCounts: make([]int, height),
-		colCounts: make([]int, width),
-		rowMin:    make([]uint8, height),
-		rowMax:    make([]uint8, height),
-		colMin:    make([]uint8, width),
-		colMax:    make([]uint8, width),
-	}
-	for row := range stats.rowMin {
-		stats.rowMin[row] = 255
-	}
-	for col := range stats.colMin {
-		stats.colMin[col] = 255
-	}
-	return stats
-}
-
-func (s *lumaStats) add(row, col int, value uint8) {
-	if value < s.rowMin[row] {
-		s.rowMin[row] = value
-	}
-	if value > s.rowMax[row] {
-		s.rowMax[row] = value
-	}
-	if value < s.colMin[col] {
-		s.colMin[col] = value
-	}
-	if value > s.colMax[col] {
-		s.colMax[col] = value
-	}
-	if value > blackLumaThreshold {
-		s.rowCounts[row]++
-		s.colCounts[col]++
-		s.activePixels++
-	}
-}
-
-func (s *lumaStats) activeRow(row int) bool {
-	return s.rowCounts[row] >= minActiveLinePixels(s.width) ||
-		(s.rowMax[row]-s.rowMin[row] >= contrastThreshold && s.rowCounts[row] > 0)
-}
-
-func (s *lumaStats) activeCol(col int) bool {
-	return s.colCounts[col] >= minActiveLinePixels(s.height) ||
-		(s.colMax[col]-s.colMin[col] >= contrastThreshold && s.colCounts[col] > 0)
-}
-
-func (s *lumaStats) firstActiveRow() (int, bool) {
-	for row := 0; row < s.height; row++ {
-		if s.activeRow(row) {
-			return row, true
+func hasActiveLuma(data []byte, width, height, stride int, is10Bit bool, lumaShift int) bool {
+	remaining := minActiveFramePixels(width, height)
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			if readLuma8(data, row*stride, col, is10Bit, lumaShift) > blackLumaThreshold {
+				remaining--
+				if remaining == 0 {
+					return true
+				}
+			}
 		}
 	}
-	return 0, false
+	return false
 }
 
-func (s *lumaStats) lastActiveRow() (int, bool) {
-	for row := s.height - 1; row >= 0; row-- {
-		if s.activeRow(row) {
-			return row, true
+func activeLumaLine(data []byte, offset, step, length int, is10Bit bool, lumaShift int) bool {
+	needed := minActiveLinePixels(length)
+	count := 0
+	lo, hi := uint8(255), uint8(0)
+	for i := 0; i < length; i++ {
+		value := readLuma8(data, offset, 0, is10Bit, lumaShift)
+		offset += step
+		lo = min(lo, value)
+		hi = max(hi, value)
+		if value > blackLumaThreshold {
+			count++
+		}
+		if count >= needed || (count > 0 && hi-lo >= contrastThreshold) {
+			return true
 		}
 	}
-	return 0, false
-}
-
-func (s *lumaStats) firstActiveCol() (int, bool) {
-	for col := 0; col < s.width; col++ {
-		if s.activeCol(col) {
-			return col, true
-		}
-	}
-	return 0, false
-}
-
-func (s *lumaStats) lastActiveCol() (int, bool) {
-	for col := s.width - 1; col >= 0; col-- {
-		if s.activeCol(col) {
-			return col, true
-		}
-	}
-	return 0, false
+	return false
 }
 
 func readLuma8(data []byte, rowOff, col int, is10Bit bool, lumaShift int) uint8 {
