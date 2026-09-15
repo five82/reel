@@ -12,6 +12,8 @@ package quality
 typedef struct { int id; } VshipCVVDPHandler;
 
 extern Vship_Exception Vship_SetDevice(int gpu_id);
+extern Vship_Exception Vship_PinnedMalloc2(void** ptr, uint64_t size, int gpu_id);
+extern Vship_Exception Vship_PinnedFree2(void* ptr, int gpu_id);
 extern Vship_Exception Vship_CVVDPInit2(VshipCVVDPHandler* handler, Vship_Colorspace_t src_colorspace, Vship_Colorspace_t dis_colorspace, float fps, bool resizeToDisplay, const char* model_key_cstr, const char* model_config_json_cstr);
 extern Vship_Exception Vship_CVVDPFree(VshipCVVDPHandler handler);
 extern Vship_Exception Vship_ResetCVVDP(VshipCVVDPHandler handler);
@@ -62,6 +64,22 @@ type VshipProcessor struct {
 }
 
 func VshipBuildEnabled() bool { return true }
+
+// newMetricBuffer owns page-locked host memory, not Go runtime-pinned memory.
+// The existing software decoder fills it directly. This kept a modest (~2%)
+// end-to-end wall win without changing scores; see docs/PERFORMANCE_TESTING.md.
+// The caller must release it only after both the decode producer and synchronous
+// GPU consumer have stopped. Reuse stays bounded to the existing two-pair ring.
+func newMetricBuffer(size int) ([]byte, func(), error) {
+	if size <= 0 {
+		return nil, nil, fmt.Errorf("invalid metric buffer size: %d", size)
+	}
+	var ptr unsafe.Pointer
+	if ret := C.Vship_PinnedMalloc2(&ptr, C.uint64_t(size), 0); ret != 0 {
+		return nil, nil, fmt.Errorf("Vship_PinnedMalloc2 failed: %s", vshipLastError())
+	}
+	return unsafe.Slice((*byte)(ptr), size), func() { C.Vship_PinnedFree2(ptr, 0) }, nil
+}
 
 func NewVshipProcessor(width, height uint32, inf *video.Info, displayPath string) (*VshipProcessor, error) {
 	vshipDeviceOnce.Do(func() {

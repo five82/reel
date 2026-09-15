@@ -16,6 +16,10 @@ var errVshipUnavailable = errors.New("VSHIP support is not enabled in this build
 
 func VshipBuildEnabled() bool { return false }
 
+func newMetricBuffer(_ int) ([]byte, func(), error) {
+	return nil, nil, errVshipUnavailable
+}
+
 func NewVshipProcessor(_, _ uint32, _ *video.Info, _ string) (*VshipProcessor, error) {
 	return nil, errVshipUnavailable
 }

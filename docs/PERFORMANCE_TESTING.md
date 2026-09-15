@@ -54,11 +54,14 @@ without them:
 - Worker history before 2026-07-01 was sampled at chunk completion and
   under-reports active/in-flight peaks. Later artifacts use an unbiased timer.
 
-There is currently no all-path reference baseline. The last full default matrix,
-`$REEL_TESTING_DIR/perf-runs/20260702-124007-tq-baseline-current`, predates both
-the SDR SSIMULACRA2 path and the AV1 level/bitrate contract. It is historical
-only. Refresh the default matrix plus the long matrix before an A/B that needs a
-current baseline; do not call the 2026-07-02 run current.
+The default and long baseline matrices were refreshed on 2026-09-14 using the
+clean `fb4e997` binary for the pinned-buffer experiment. They live under
+`$REEL_TESTING_DIR/pinned-metrics-20260914/runs/baseline-{default,long}/`, with
+exact source hashes and build provenance in the experiment root. Use these only
+while the binary, dependencies, hardware, source corpus, and quality policy
+remain applicable. The 2026-07-02 baseline is historical: it predates the SDR
+SSIMULACRA2 path and the AV1 level/bitrate contract. Refresh the default plus long
+matrices again when those comparison assumptions change.
 
 ## Open work
 
@@ -308,6 +311,62 @@ SSIMULACRA2 behavior over CVVDP matching.
 `20260711-124042-*`.
 
 ## Metric pipeline
+
+### GPU-pinned metric buffers - KEEP
+
+**Question:** Can C-owned, GPU-page-locked host buffers reduce target-quality wall
+without changing decoding or scoring? Four pinned buffers replace the four Go
+allocations in the existing two-pair CVVDP/SSIMULACRA2 ring, including the grain
+ceiling path. They are reused within a pass and freed after producer shutdown;
+there is no cross-pass pool, custom dav1d decoder, NVDEC, new user option, or
+change to the VSHIP device-allocation mitigation.
+
+**Decision 2026-09-15:** Keep the small change for its modest, repeatable wall
+benefit. The refreshed default plus long matrices (ten clips per variant)
+measured 7835 -> 7678 seconds pooled wall, 2.0% faster, with every clip improving
+0.4-6.1%. This was below the initial roughly-3% screening guide, but the consistent
+direction warranted reversed-order checks rather than rejecting on that guide
+alone. Air 20-minute SDR measured 412 -> 397 seconds, then 417 -> 402 with pinned
+first (3.6% both times). Sully 20-minute HDR measured 1296 -> 1262, then
+1289 -> 1271 seconds (2.6% and 1.4%). Two-run mean reductions are 3.6% and 2.0%,
+respectively. This is an end-to-end win, not a claim of a major throughput change;
+other content and hardware may gain little.
+
+**Correctness:** Native allocation/cancellation and race tests passed. Both
+variants scored live unfiltered, live fftdnoiz, and cached references identically.
+Four concurrent handlers matched serial scores across six repeats per title on
+four titles (96 concurrent chunk passes per variant), including all per-frame
+SDR SSIMULACRA2 scores. In the initial encode matrix, 580 of 588 shared
+`(chunk, metric, CRF)` probes had equal scores and sizes. The other eight had
+different encoded inputs; rescoring all 16 saved bitstreams with both buffer
+types reproduced their own recorded scores exactly, including a 0.55-JOD
+between-encode difference on a rate-heavy probe. That isolates scoring from
+encoder-output variability; it does not diagnose the latter.
+
+Independent baseline-binary fullvalidate covered both variants' initial untreated
+Air/Sully 20-minute outputs (550 chunk scores). All CVVDP-searched chunks matched
+their recorded scores exactly. Sully had zero band misses in either run, with
+mean JOD 9.60583 -> 9.60611. Air's direct-CVVDP mean was 9.64404 -> 9.63429;
+both had one below-band chunk, and above-band counts were 17 -> 15. Its proxy
+outliers and small centering difference remain the existing calibrated-SSIMULACRA2
+tradeoff, not proof that every SDR chunk meets the JOD band. Initial output sizes
+varied -3.1% to +2.9% as completion order changed priors/calibration.
+
+**Build/hardware:** Ryzen 9 7950X / RTX 5060 Ti 16 GiB, Go 1.27.1, SVT 4.2,
+VSHIP 5.1.1 CUDA, NVIDIA driver 615.71.09. Baseline is clean `fb4e997`; candidate
+binaries and exact source snapshots are preserved. Native libraries, display
+policy, and source bytes were unchanged. Sources were hashed; all 24 clip encodes
+used fresh retained workdirs and ran sequentially.
+
+**Follow-up:** The medium-priority evaluation is closed. Retest only after a
+material hardware/VSHIP/decoder change or if production shows allocation failures
+or lost wall benefit. Do not add pooling, decoder allocators, or deeper rings
+without new profiling evidence. Rerun native lifetime and fixed-input concurrent
+score checks after changing ownership or teardown.
+
+**Artifacts:** `$REEL_TESTING_DIR/pinned-metrics-20260914/` contains hashes,
+source/binaries, matrix and reverse runs, fixed-bitstream rescores, fullvalidate
+JSON/logs, and the exact test recipes.
 
 ### Metric workers - KEEP current four-worker policy
 

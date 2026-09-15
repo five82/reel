@@ -87,10 +87,17 @@ func ComputeChunkSSIMU2(ctx context.Context, opts SSIMU2Options) (SSIMU2Result, 
 	frameSize := yuv420p10Size(opts.Width, opts.Height)
 	freeCh := make(chan *framePair, 2)
 	for i := 0; i < 2; i++ {
-		pair := &framePair{
-			srcBuf:  make([]byte, frameSize),
-			distBuf: make([]byte, frameSize),
+		srcBuf, releaseSrc, err := newMetricBuffer(frameSize)
+		if err != nil {
+			return SSIMU2Result{}, err
 		}
+		defer releaseSrc() // Runs after the producer's cancel/drain defer below.
+		distBuf, releaseDist, err := newMetricBuffer(frameSize)
+		if err != nil {
+			return SSIMU2Result{}, err
+		}
+		defer releaseDist()
+		pair := &framePair{srcBuf: srcBuf, distBuf: distBuf}
 		if pair.srcPlanes, err = PlanesFromYUV420P10(pair.srcBuf, opts.Width, opts.Height); err != nil {
 			return SSIMU2Result{}, err
 		}
